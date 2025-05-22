@@ -39,11 +39,12 @@ $module = explode('/', $uri)[2];
 );
 
 try {
-    $auth = new \bX\Auth("woz.min..", 'XOR_KEY_2o25'); # CHANGE default obfuscation regulary
+
     $token = $_SERVER["HTTP_AUTHORIZATION"] ?? '';
     if(empty($token) && !empty($_COOKIE["authToken"])) $token = $_COOKIE["authToken"];
     if(!empty($token)) {
-        $account_id = $auth->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
+        $account = new \bX\Account("woz.min..", 'XOR_KEY_2o25'); # CHANGE default obfuscation regulary
+        $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
         if($account_id) {
             $profile = new \bX\Profile();
             $profile->load(['account_id' => $account_id]);
