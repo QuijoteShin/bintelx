@@ -230,6 +230,7 @@ The CDC (Clinical Data Capture) module employs a **multi-layered architecture** 
 ---
 
 ## 5.1 Architectural Overview
+
 * **CDC Application Layer (`cdc_*` tables & `Business/` logic):** This layer acts as the **"Clinical Brain"**. It understands and manages the *context* and *structure* of the clinical trial: studies, sites, patients, protocol versions (flowcharts), visit schedules, form definitions, user roles, and operational workflows (Draft, Finalized, Locked, Queries). It defines *what* data needs to be collected and *under what circumstances*.
 * **Data Capture Service (`bX\DataCaptureService` - DCS):** This layer acts as the **"Secure Vault & Ledger"**. It is a generic, low-level engine focused *exclusively* on storing individual data points (`CaptureData`), versioning every change (`CaptureDataVersion`), and maintaining a full, auditable trail. It doesn't know *why* it's storing '120', only that it's the value for 'VSORRES_SYSBP' in a specific context.
 
@@ -331,7 +332,7 @@ This hierarchical approach ensures comprehensive versioning:
 1.  **Protocol/Flowchart Versioning:** When a study protocol is amended, a **new `cdc_flow_chart` record** (or set of records) is created with an updated `flow_chart_version`.
 2.  **Capture-Time Version Linking:** When a user enters data, the CDC application identifies the **currently active `flow_chart_version`** and stores it in the `cdc_isf` and, critically, in the **`cdc_form_instance`** record.
 3.  **Data Versioning:** Every time `DataCaptureService::saveRecord` is called for a field (except perhaps in a 'DRAFT' state, depending on your logic), DCS creates a **new `capture_data_version` record**.
-4.  **Data Display:** Every time `DataCaptureService::getRecord` is called for a field or form group.
+4. **Data Versioning:** Every time `DataCaptureService::saveRecord` is called for a field (except perhaps in a 'DRAFT' state, depending on your logic), DCS creates a **new `capture_data_version` record**.
 5.  **Traceability:** To understand any piece of data fully, you query DCS for its value and history. Then, using the `context_group_id`, you link back to `cdc_form_instance` to find out *which `flow_chart_version`* was in effect when that data (and all its historical versions) was captured.
 
 This ensures that you not only know how a *value* changed over time but also how the *study plan* (protocol) might have changed, providing complete context for data review and analysis.
