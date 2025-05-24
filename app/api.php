@@ -1,5 +1,13 @@
 <?php # app/api.php
 require_once '../bintelx/WarmUp.php';
+
+   # const timeZoneIANA = Intl.DateTimeFormat().resolvedOptions().timeZone;
+   # console.log(timeZoneIANA); // Imprimirá algo como "America/Santiago" HTTP TimeZone
+  if(empty($_SERVER["HTTP_X_USER_TIMEZONE"])) {
+    $_SERVER["HTTP_X_USER_TIMEZONE"] = "America/Santiago";
+  }
+  \bx\CONN::nodml("SET time_zone = '" . $_SERVER["HTTP_X_USER_TIMEZONE"] . "'");
+
 new \bX\Args();
 header("Access-Control-Allow-Origin: http://svelte.localhost:5173");
 header("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS");
