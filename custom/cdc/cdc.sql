@@ -41,22 +41,24 @@ CREATE TABLE `cdc_flow_chart` (
 ) ENGINE=InnoDB COMMENT='Planned schedule of visits for a study version (Flowchart)';
 
 -- Links forms/domains (items) to specific flowchart visit entries
+-- Links forms/domains (items) to specific flowchart visit entries
 CREATE TABLE `cdc_flow_chart_item` (
   `flow_chart_item_id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `flow_chart_id_ref` BIGINT UNSIGNED NOT NULL COMMENT 'FK to cdc_flow_chart (a specific visit entry)',
   `form_domain` VARCHAR(50) NOT NULL COMMENT 'CDISC Domain code (e.g., VS, DM, AE). Links conceptually to cdc_form_fields',
   `item_title` VARCHAR(255) NULL DEFAULT NULL COMMENT 'User friendly title for this item, e.g., Vital Signs',
   `item_type` VARCHAR(50) NOT NULL DEFAULT 'FORM' COMMENT 'Type: FORM, SECTION, PROCEDURE',
-  `item_order` INT NULL DEFAULT 0 COMMENT 'Order of this form/activity within the visit',
-  `is_mandatory` BOOLEAN NOT NULL DEFAULT TRUE COMMENT 'If this form MUST be filled for the visit',
-  `details_json` JSON NULL DEFAULT NULL COMMENT 'Optional: Visit-specific instructions, NOT form structure.',
+  `item_order` INT NULL DEFAULT 0 COMMENT 'Order of this form/activity within the visit for the specified branch',
+  `branch_code` VARCHAR(50) NULL DEFAULT '__COMMON__' COMMENT 'Branch/Arm identifier. "__COMMON__" or NULL for items applicable to all branches of this visit.',
+  `is_mandatory` BOOLEAN NOT NULL DEFAULT TRUE COMMENT 'If this form MUST be filled for the visit and branch',
+  `details_json` JSON NULL DEFAULT NULL COMMENT 'Optional: Visit-specific instructions for this item/branch, NOT form structure.',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`flow_chart_item_id`),
   INDEX `idx_cdc_flow_chart_item_flow_chart_id` (`flow_chart_id_ref`),
-  UNIQUE KEY `uq_cdc_flow_chart_item_visit_domain` (`flow_chart_id_ref`, `form_domain`)
+  UNIQUE KEY `uq_item_visit_domain_branch` (`flow_chart_id_ref`, `form_domain`, `branch_code`)
   -- ,FOREIGN KEY (`flow_chart_id_ref`) REFERENCES `cdc_flow_chart`(`flow_chart_id`) ON DELETE CASCADE
-) ENGINE=InnoDB COMMENT='Specific forms/activities planned for a visit in a flowchart';
+) ENGINE=InnoDB COMMENT='Specific forms/activities planned for a visit in a flowchart, branch-aware.';
 
 -- =============================================================================
 -- NEW/ESSENTIAL TABLE: Defines the structure (fields, order, sections)
@@ -111,6 +113,7 @@ CREATE TABLE `cdc_form_instance` (
   `visit_num_actual` VARCHAR(255) NOT NULL COMMENT 'Actual visit identifier when data was captured',
   `flow_chart_item_id_ref` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional FK to cdc_flow_chart_item',
   `flow_chart_version` VARCHAR(255) NOT NULL COMMENT 'Denormalized: Protocol Flowchart version used for this data.',
+  `branch_code_actual` VARCHAR(50) NULL DEFAULT NULL COMMENT 'The specific branch code active when this form instance data was captured/saved.',
   `form_domain` VARCHAR(50) NOT NULL COMMENT 'CDISC Domain code (e.g., VS, DM, AE)',
   `status` ENUM('DRAFT', 'OPEN', 'FINALIZED', 'CANCELLED', 'LOCKED') NOT NULL DEFAULT 'DRAFT' COMMENT 'Status of this specific form instance.',
   `form_version` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Internal version of this form instance data.',
