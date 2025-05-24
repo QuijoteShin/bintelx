@@ -1,4 +1,4 @@
-<?php
+<?php # custom/cdc/Business/Study/Setup.php
 
 namespace CDC; // Or CDC\Study if you prefer deeper nesting
 
