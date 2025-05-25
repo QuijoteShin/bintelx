@@ -180,7 +180,48 @@ Esta sección resume las decisiones tomadas y los puntos que aún requieren defi
 
 ---
 
-## 11. Conclusión
+## 11. Info para IA
 
-El módulo CDC, con la arquitectura propuesta, ofrece una base sólida para un sistema de captura de datos clínicos robusto, versionado y trazable. La combinación de las tablas CDC para la estructura y el flujo, junto con `DataCaptureService` para el almacenamiento detallado, proporciona una solución potente y flexible. Los puntos pendientes deben abordarse para completar el diseño detallado.
+Vamos a trabajar en el desarrollo del módulo CDC (Clinical Data Capture) para nuestro framework Bintelx. Te he proporcionado acceso a un repositorio Git que contiene varios archivos `.md` con las especificaciones y el diseño conceptual que hemos elaborado hasta ahora, incluyendo:
 
+* `cdc.md`: El README general del proyecto ( this file ) , que describe la arquitectura de dos capas, la estrategia de datos, los componentes clave y los flujos de trabajo principales. **Es crucial que comprendas bien este documento, especialmente las secciones sobre la jerarquía de datos y los puntos resueltos/pendientes.**
+* `cdc.sql`: El esquema de base de datos consolidado para las tablas específicas del módulo CDC.
+* `.md` individuales para las clases de negocio: `Study.md`, `CRF.md`, `Flowchart.md`, `FormInstance.md`, `ISF.md`. (Definiremos `Query.md` y `AuditTrail.md` a continuación). Estos describen el propósito, dependencias y la interfaz (métodos) de cada clase.
+* `CDC_Operator_Workflows.md`: Un documento que describe los casos de uso y flujos de trabajo desde la perspectiva del operador, resaltando requisitos funcionales clave.
+
+**Mi Objetivo Principal para el Módulo CDC:**
+
+Quiero construir un sistema **robusto, granular, con alta atomicidad en sus operaciones y, fundamentalmente, auditable a todos los niveles.** Esto es para un entorno de ensayos clínicos, por lo que el cumplimiento de GxP y la integridad de los datos son primordiales.
+
+**Por Qué Es Tan Importante Seguir las Reglas/Diseño que Hemos Definido:**
+
+Hemos invertido considerable tiempo en refinar la arquitectura para abordar preocupaciones específicas, basadas en experiencia previa con sistemas EDC. Los puntos más críticos que el diseño actual busca resolver son:
+
+1.  **Versionado Dual y Trazabilidad Completa:**
+  * **Datos del Paciente:** `bX\DataCaptureService` (DCS) maneja el versionado atómico de cada dato. Esto es fundamental.
+  * **Configuración del Estudio (Setup):** Este es un punto de gran importancia para mí. Necesitamos poder reconstruir **exactamente cómo estaba configurado el estudio (flowchart, estructura de formularios, branches) para cualquier `flow_chart_version` publicada.** Esto se logra versionando `cdc_form_fields` junto con `cdc_flow_chart` y `cdc_flow_chart_item` bajo una `flow_chart_version_string`. La `cdc_form_instance` luego "sella" la `flow_chart_version_actual` y `branch_code_actual` al momento de la captura. Esto es vital para auditorías y para entender datos históricos.
+2.  **Manejo de Branches (Ramas del Estudio):** El sistema debe permitir definir diferentes caminos (branches) y que los pacientes puedan ser asignados y, si es necesario, cambiados de branch, manteniendo siempre la trazabilidad de qué configuración se siguió para cada dato capturado. La tabla `cdc_patient_study_branch` y el uso de `branch_code` en `cdc_flow_chart_item` y `branch_code_actual` en `cdc_isf` y `cdc_form_instance` son claves.
+3.  **Claridad entre Setup y Data Entry:** El flujo DRAFT -> PUBLISHED para las `flow_chart_version` (manejado por `cdc_flowchart_versions_status`) es para asegurar que el setup se pueda trabajar iterativamente sin afectar la captura de datos en versiones publicadas. Las versiones publicadas de la configuración deben ser inmutables.
+4.  **Modularidad y Responsabilidades Claras:** La arquitectura de dos capas (CDC App sobre DCS) y la definición de clases de negocio específicas (`Study`, `CRF`, `Flowchart`, `ISF`, `FormInstance`, etc.) buscan una separación clara de responsabilidades.
+
+**Restricciones y Fundamentos:**
+
+* **Headless:** El sistema es un backend con una API. No hay generación de HTML en las clases de negocio.
+* **Uso de Componentes Bintelx:** Debemos usar `bX\CONN`, `bX\Log`, y `bX\DataCaptureService` según lo especificado. Para la **identificación del actor (`actorUserId`)**, las clases de negocio CDC deben obtenerlo internamente desde el framework Bintelx (por ejemplo, a través de `\bX\Profile::$account_id` o el identificador de **cuenta de usuario** que esté realizando la acción, no necesariamente un `profile_id` que puede ser compartido o contextual a un sitio). La atribución correcta al individuo/cuenta es crucial.
+* **Consistencia:** Mantener la consistencia en la nomenclatura de métodos, parámetros, y estructura de retornos (ej. `['success' => bool, 'data_key' => ..., 'message' => string]`).
+* **SQL:** El `cdc.sql` proporcionado es la base de datos con la que deben interactuar las clases CDC. Por favor, no introduzcas Foreign Keys físicas si están comentadas en el script DDL; manejaremos la integridad referencial a nivel de aplicación o las definiremos explícitamente más adelante si es necesario.
+
+**Quiero Alinearme Contigo Desde un Principio:**
+
+He trabajado extensamente para llegar a estas especificaciones. Mi temor es que, si no se siguen de cerca estos `.md` y el `cdc.sql`, podríamos derivar a soluciones que no aborden mis preocupaciones fundamentales sobre el versionado del setup, la auditabilidad y la correcta atribución de acciones, o que reintroduzcan complejidades que ya hemos decidido evitar.
+
+Por favor, antes de proponer una implementación para una clase, asegúrate de haber comprendido completamente su `.md` correspondiente y cómo encaja en el `cdc.md` (README general) y el `CDC_Operator_Workflows.md`. Si tienes dudas o ves una forma *mejor* de lograr el mismo objetivo *dentro de estas restricciones y principios*, por favor, plantéalo para que podamos discutirlo.
+
+**Nuestro Próximo Paso Inmediato Juntos:**
+
+Será definir los `.md` para `CDC\Query` y `CDC\AuditTrail`. Luego, podríamos empezar con la implementación PHP de `Flowchart.php`, ya que su `.md` está bastante completo.
+
+Agradezco tu ayuda para construir un sistema que sea eficiente, robusto y, sobre todo, que cumpla con los altos estándares de integridad y auditoría que requieren los ensayos clínicos."
+
+
+##
