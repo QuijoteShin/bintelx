@@ -1,17 +1,19 @@
 # `CDC\Study\Setup` - Study Configuration Orchestration
 
 **File:** `custom/cdc/Business/Study/Setup.php`
+**Namespace:** `CDC\Study` (o `CDC` si prefieres una estructura más plana para `Setup`)
 
 ## 1. Purpose
 
-The `Setup` class, residing within the `CDC\Study` namespace, acts as an **orchestrator** for the configuration and setup processes related to a specific clinical study. While other classes (`Study`, `CRF`, `Flowchart`) manage their specific entities, `Setup` provides higher-level methods to execute multi-step configuration tasks, such as defining all the forms for a study or configuring a specific form by linking all its fields in the correct order. It primarily *uses* methods from other CDC business classes to achieve its goals.
+The `Setup` class, residing within the `CDC\Study` (or `CDC`) namespace, acts as an **orchestrator** for the configuration and setup processes related to a specific clinical study. While other classes (`Study`, `CRF`, `Flowchart`) manage their specific entities, `Setup` provides higher-level methods to execute multi-step configuration tasks. Its primary current function is to configure the detailed structure of a form (`form_domain`) for a specific study **and a specific `flow_chart_version`** by linking all its fields in the correct order, thereby populating `cdc_form_fields`. It primarily *uses* methods from other CDC business classes.
 
 ## 2. Dependencies
 
 * `bX\Log`: For detailed logging of the setup process.
-* `bX\Profile`: To retrieve the acting user's ID (`account_id` or `profile_id`).
+* `bX\Profile`: Used internally to retrieve the `actorUserId`.
 * `CDC\Study`: To validate the existence of the target study.
-* `CDC\CRF`: To link CRF fields (`field_name`) to form domains (`form_domain`) within the study context.
+* `CDC\CRF`: To link CRF fields (`field_name`) to form domains (`form_domain`) within the study context, **for a specific `flow_chart_version`**.
+* `CDC\Flowchart`: (Potentially) To ensure the provided `flow_chart_version` is in a 'DRAFT' status before allowing form configuration.
 
 ## 3. Database Interaction
 
@@ -19,74 +21,60 @@ This class primarily interacts with the database *indirectly* by calling methods
 
 ## 4. Core Static Methods
 
-### `configureForm(string $studyId, array $data): array`
+*Actor ID for methods creating/modifying data is obtained internally via `\bX\Profile`.*
 
-* **Purpose:** Configures a single form (`form_domain`) for a specific study. It takes a list of fields and their desired order/options and uses `CDC\CRF::addFormField` to create these links in the database (`cdc_form_fields`). This is a key step in defining *how* a form should look and behave for a particular study.
+### `configureForm(string $studyId, string $flowchartVersion, string $formDomain, array $fieldsToConfigure): array`
+
+* **Purpose:** Configures the detailed field structure for a single `form_domain` within a specific `studyId` **and for a given `flowchartVersion`**. It iterates through a list of fields, calling `CDC\CRF::addFormField` for each to populate `cdc_form_fields` specific to that `flowchartVersion`. This method should typically be used when the target `flowchartVersion` is in a 'DRAFT' state.
 * **Parameters:**
-    * `$studyId` (string, **required**): The public/protocol identifier for the study (e.g., 'PROT-001').
-    * `$data` (array, **required**): An associative array containing the form configuration details:
-        * `'form_domain'` (string, **required**): The identifier for the form to be configured (e.g., 'VS').
-        * `'fields'` (array, **required**): An associative array where:
-            * *Keys* are the `field_name`s (e.g., 'VSPERF', 'VSDTC').
-            * *Values* are arrays containing configuration for that field within this form:
-                * `'order'` (int, **required**): The display order for the field.
-                * `'options'` (array, optional): An array passed directly to `CRF::addFormField` for `is_mandatory`, `attributes_override_json`, `section_name`, etc.
-* **Returns:** `['success' => bool, 'message' => string]` - Summarizes the success or failure of configuring all provided fields for the form.
+    * `$studyId` (string, **required**): The public/protocol identifier for the study.
+    * `$flowchartVersion` (string, **required**): The specific flowchart/protocol version for which this form structure is being defined.
+    * `$formDomain` (string, **required**): The identifier for the form being configured (e.g., 'VS').
+    * `$fieldsToConfigure` (array, **required**): An associative array where:
+        * *Keys* are the `field_name`s (e.g., 'VSPERF', 'VSDTC').
+        * *Values* are arrays containing configuration for that field within this form:
+            * `'item_order'` (int, **required**): The display order for the field.
+            * `'options'` (array, optional): An array passed directly to `CRF::addFormField` for `is_mandatory`, `attributes_override_json`, `section_name`, etc.
+* **Returns:** `['success' => bool, 'message' => string, 'details' => array]`
+    * `details`: An array containing results for each field processed, e.g., `['fieldName' => 'VSPERF', 'success' => true, 'form_field_id' => 123]`.
+* **Internal Logic Example:**
+    1.  Validate `$studyId` (using `CDC\Study::getStudyDetails`).
+    2.  (Recommended) Validate `$flowchartVersion` status (e.g., ensure it's 'DRAFT' via `CDC\Flowchart::getFlowchartVersionStatusDetails`).
+    3.  Loop through `$fieldsToConfigure`:
+        * Call `\CDC\CRF::addFormField($studyId, $flowchartVersion, $formDomain, $fieldName, $fieldConfig['item_order'], $fieldConfig['options'] ?? [])`.
+        * Collect results.
 
 ## 5. Example Usage
 
 ```php
-<?php
-use CDC\Study\Setup;
+// Assume necessary classes are available
+// use CDC\Study\Setup;
+// use bX\Profile;
+// use bX\Log;
 
-// Define the structure for the 'VS' form
-$vsFields = [
-    'VSPERF'        => ['order' => 10],
-    'VSDTC'         => ['order' => 20],
-    'VSORRES_SYSBP' => ['order' => 30, 'options' => ['section_name' => 'Blood Pressure']],
-    'VSORRES_DIABP' => ['order' => 40, 'options' => ['section_name' => 'Blood Pressure']],
-];
-
-// Prepare the data packet
-$vsConfigData = [
-    "form_domain" => "VS", 
-    "fields"      => $vsFields
-];
-
-// Configure the 'VS' form for study 'PROT-001'
-$setupResult = Setup::configureForm('PROT-001', $vsConfigData);
-
-// Check the result
-if ($setupResult['success']) {
-    \bX\Log::logInfo("VS Form setup completed for PROT-001.");
-} else {
-    \bX\Log::logError("VS Form setup failed for PROT-001: " . $setupResult['message']);
-}
-
-?>
-```
-
-```PHP
-// Assuming bX\Profile::$profile_id is set, otherwise pass $actorId
+// Assume \bX\Profile::$account_id is set for the actor
 
 $studyId = 'PROT-001';
+$draftFlowchartVersion = 'PROT_V1.0-DRAFT'; // Configuring for this DRAFT version
 $formDomainVS = 'VS';
 
-$vsFields = [
-    'VSPERF'        => ['order' => 10],
-    'VSDTC'         => ['order' => 20],
-    'VSORRES_SYSBP' => ['order' => 30, 'options' => ['section_name' => 'Blood Pressure', 'is_mandatory' => true]],
-    'VSORRES_DIABP' => ['order' => 40, 'options' => ['section_name' => 'Blood Pressure', 'is_mandatory' => true]],
-    'VSORRES_PULSE' => ['order' => 50, 'options' => ['section_name' => 'Pulse']],
-    'VSORRES_TEMP'  => ['order' => 60, 'options' => ['section_name' => 'Temperature']],
-    'VSPOS'         => ['order' => 70, 'options' => ['is_mandatory' => false]],
+$vsFieldsToConfigure = [
+    'VSPERF'        => ['item_order' => 10, 'options' => ['section_name' => 'Visit Details', 'is_mandatory' => true]],
+    'VSDTC'         => ['item_order' => 20, 'options' => ['section_name' => 'Visit Details']],
+    'VSORRES_SYSBP' => ['item_order' => 30, 'options' => ['section_name' => 'Blood Pressure Results']],
+    'VSORRES_DIABP' => ['item_order' => 40, 'options' => ['section_name' => 'Blood Pressure Results']],
 ];
 
-$dataToConfigure = [
-    "form_domain" => $formDomainVS,
-    "fields"      => $vsFields
-];
+// Configure the 'VS' form structure for study 'PROT-001' and version 'PROT_V1.0-DRAFT'
+$setupResult = \CDC\Study\Setup::configureForm($studyId, $draftFlowchartVersion, $formDomainVS, $vsFieldsToConfigure);
 
-$setupResult = \CDC\Setup::configureForm($studyId, $dataToConfigure);
-print_r($setupResult);
+if ($setupResult['success']) {
+    \bX\Log::logInfo("VS Form structure configured successfully for study $studyId, version $draftFlowchartVersion.");
+    // print_r($setupResult['details']);
+} else {
+    \bX\Log::logError("VS Form structure configuration failed for study $studyId, version $draftFlowchartVersion: " . $setupResult['message']);
+}
 ```
+
+---
+
