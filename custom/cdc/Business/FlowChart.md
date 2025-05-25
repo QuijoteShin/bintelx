@@ -1,151 +1,199 @@
-# `CDC\Flowchart` - Study Flowchart and Visit Management
+# `CDC\Flowchart` - Study Flowchart and Visit Schedule Management
 
 **File:** `custom/cdc/Business/Flowchart.php`
+**Namespace:** `CDC`
 
 ## 1. Purpose
 
-The `Flowchart` class is responsible for managing the **planned schedule of visits** and the **activities (primarily forms/domains, potentially branch-specific) within those visits** for a clinical study. It interacts primarily with the `cdc_flow_chart` and `cdc_flow_chart_item` tables.
+The `Flowchart` class is responsible for managing the **entire lifecycle of a study's versioned schedule of assessments (flowcharts)**. This includes:
 
-This class allows for:
-* Defining visits within a specific, versioned flowchart for a study.
-* Associating `form_domain`s (representing CRFs) to these planned visits, specifying their order, and indicating if they are common to all study branches or specific to a particular `branch_code`.
-* Retrieving the complete flowchart (schedule of assessments) for a given study, flowchart version, and optionally, a specific `branch_code`.
-* Managing the active status of different flowchart versions.
+* Creating and versioning distinct flowchart configurations (`flow_chart_version_string`) for a study, managed via `cdc_flowchart_versions_status`.
+* Defining the timeline of visits within each `flow_chart_version_string` by placing "Visit Definitions" (from `cdc_visit_definitions`) onto the schedule, creating `cdc_flow_chart` records.
+* Assigning specific forms (`form_domain`s) to these visit placements, potentially making these assignments branch-specific (`branch_code` in `cdc_flow_chart_item`). The structure of these assigned forms is determined by `cdc_form_fields` for the corresponding `flow_chart_version_string`.
+* Orchestrating the "DRAFT" -> "PUBLISHED" -> "ARCHIVED" lifecycle of flowchart versions.
+* Providing functionality to copy an existing flowchart version's setup (visits, items, and associated form structures) as a basis for a new version or amendment.
+* Retrieving the detailed structure of a specific flowchart version for UI rendering or operational use (e.g., by `ISF`).
+
+This class ensures that the study setup is auditable, version-controlled, and that changes to a published protocol result in a new, distinct version, preserving historical accuracy.
 
 ## 2. Dependencies
 
 * `bX\CONN`: For all database interactions.
 * `bX\Log`: For logging operations and errors.
-* `CDC\Study`: To validate study existence and retrieve `study_internal_id`.
-* (Implicitly) `CDC\CRF`: The `form_domain`s managed are expected to have their internal structures defined via `CRF::addFormField` (in `cdc_form_fields`).
+* `bX\Profile`: Used internally to retrieve the `actorUserId`.
+* `CDC\Study`: To validate study existence and link flowcharts to `study_internal_id`.
+* `CDC\VisitDefinitions` (Assumed Class/Methods): To validate `visit_code` and retrieve `visit_definition_id`.
+* `CDC\CRF`: (Indirectly) The `form_domain`s placed on the flowchart are expected to have their detailed, versioned structures defined in `cdc_form_fields` (managed via `CRF::addFormField` which now includes `flow_chart_version`).
 
-## 3. Database Tables
+## 3. Database Tables Primarily Managed or Interacted With
 
-* **`cdc_flow_chart`**: Stores definitions for each visit within a specific `study_internal_id_ref` and `flow_chart_version`. Each row typically represents one planned visit.
-* **`cdc_flow_chart_item`**: Stores the specific forms (`form_domain`) or activities planned for each entry in `cdc_flow_chart`. **Crucially, this table includes a `branch_code` column** to specify if an item is common to all branches or specific to one.
+* **`cdc_flowchart_versions_status`**: Manages the lifecycle (DRAFT, PUBLISHED, ARCHIVED) and identity of each `flow_chart_version_string` for a study.
+* **`cdc_visit_definitions`**: Referenced to identify the *type* of visit being placed.
+* **`cdc_flow_chart`**: Stores the specific placement (order, timing, overrides) of a `visit_definition_id` within a `flow_chart_version_string`.
+* **`cdc_flow_chart_item`**: Stores which `form_domain`s (and for which `branch_code`) are associated with a specific `flow_chart_id` (a visit placement).
+* **`cdc_form_fields`**: Read (conceptually) during copy operations to duplicate form structures for a new `flow_chart_version_string`. (Actual read might be implicit if copy logic queries this table).
 
 ## 4. Key Concepts
 
-* **`flow_chart_version`**: A string identifier (e.g., "v1.0", "Protocol Amendment 2") that groups a complete set of visit definitions for a study under a specific protocol version.
-* **`branch_code`**: An identifier (e.g., "ArmA", "CohortX", or a special value like "__COMMON__" or `NULL` for items applicable to all branches) used within `cdc_flow_chart_item` to specify branch-level variations in forms per visit.
-* **Visit (`cdc_flow_chart` record)**: Represents a single planned encounter or timepoint in the study (e.g., "Screening", "Week 4 Visit"). Identified by `visit_num` or `visit_name` within a `flow_chart_version`.
-* **Visit Item (`cdc_flow_chart_item` record)**: Represents a specific activity, usually a form identified by `form_domain`, that is scheduled for a specific visit and `branch_code`.
+* **`flow_chart_version_string`**: The unique, operator-defined named version for an entire study setup configuration (e.g., "Protocol_v1.0", "Amendment2_DRAFT"). Its lifecycle is managed in `cdc_flowchart_versions_status`.
+* **Visit Definition (`cdc_visit_definitions` record)**: A master definition of a *type* of visit (e.g., "Screening" with `visit_code`="SCR").
+* **Visit Placement (`cdc_flow_chart` record)**: A specific instance of a `Visit Definition` placed onto the timeline of a `flow_chart_version_string`, identified by its own `flow_chart_id` (PK). It includes protocol-version-specific timing and order.
+* **Visit Item (`cdc_flow_chart_item` record)**: A `form_domain` assigned to a `Visit Placement` (`flow_chart_id`) for a specific `branch_code`. The structure of this `form_domain` is fetched from `cdc_form_fields` using the corresponding `flow_chart_version_string`.
+* **Immutable Published Versions**: Once a `flow_chart_version_string` is 'PUBLISHED', its associated configuration (visits in `cdc_flow_chart`, items in `cdc_flow_chart_item`, and form structures in `cdc_form_fields` for that version string) should be treated as immutable. Changes require creating a new DRAFT version.
 
-## 5. Core Static Methods (Updated)
+## 5. Core Static Methods (Revised & Expanded)
 
-### `addVisitToFlowchart(string $studyId, string $flowchartVersion, array $visitDetails, string $actorUserId): array`
+*Actor ID for all methods creating/modifying data is obtained internally via `\bX\Profile`.*
 
-* **Purpose:** Adds a new planned visit to a specific flowchart version for a study. Creates a record in `cdc_flow_chart`. This visit definition is generally common across branches; branch-specific forms are defined later.
-* **Parameters:**
-    * `$studyId` (string, **required**): The public ID of the study.
-    * `$flowchartVersion` (string, **required**): The version identifier for this flowchart.
-    * `$visitDetails` (array, **required**): Associative array with visit properties:
-        * `'visit_name'` (string, **required**): Descriptive name (e.g., "Screening Visit").
-        * `'visit_num'` (string, **required**): Unique shorter identifier within the `flowchartVersion` (e.g., "SCR", "V1"). Essential for `UNIQUE KEY`.
-        * `'order_num'` (int, optional, default: 0): Sequence of this visit.
-        * `'day_nominal'` (int, optional): Nominal day of the visit.
-        * `'day_min'` (int, optional): Minimum day for visit window.
-        * `'day_max'` (int, optional): Maximum day for visit window.
-        * `'description'` (string, optional): Further description.
-        * `'is_active'` (bool, optional, default: true): If this visit definition is active.
-    * `$actorUserId` (string, **required**): ID of the user performing the action.
-* **Returns:** `['success' => bool, 'flow_chart_id' => int|null, 'message' => string]` (`flow_chart_id` is the PK of the newly created `cdc_flow_chart` record).
-* **Note:** Should handle idempotency using `INSERT ... ON DUPLICATE KEY UPDATE` based on `study_internal_id_ref`, `flow_chart_version`, `visit_num`.
+### Flowchart Version Lifecycle Management
 
-### `addFormToVisit(int $flowChartId, string $formDomain, int $itemOrder, ?string $branchCode = "__COMMON__", array $options = [], string $actorUserId): array`
+#### `createFlowchartVersion(string $studyId, string $newFlowchartVersionString, ?string $description = null, ?string $copyFromFlowchartVersionString = null): array`
 
-* **Purpose:** Links a `form_domain` to a specific planned visit (identified by `$flowChartId`), associating it with a `branch_code` (or marking it as common to all). Creates/updates a record in `cdc_flow_chart_item`.
-* **Parameters:**
-    * `$flowChartId` (int, **required**): The `flow_chart_id` (PK from `cdc_flow_chart`) of the visit.
-    * `$formDomain` (string, **required**): The identifier of the form/domain (e.g., 'VS', 'DM').
-    * `$itemOrder` (int, **required**): The order of this form/item within the visit for the specified branch.
-    * `$branchCode` (string, optional, default: "__COMMON__"): The specific branch this form applies to for this visit. A special value like "__COMMON__" (or `NULL` in DB) indicates it applies to all branches for this visit.
-    * `$options` (array, optional): Associative array for `cdc_flow_chart_item` properties:
-        * `'item_title'` (string, optional): User-friendly title. Defaults to `formDomain`.
-        * `'item_type'` (string, optional, default: 'FORM'): e.g., 'FORM', 'PROCEDURE'.
-        * `'is_mandatory'` (bool, optional, default: true): If this form is mandatory.
-        * `'details_json'` (string|array, optional): Visit-specific instructions.
-    * `$actorUserId` (string, **required**): ID of the user performing the action.
-* **Returns:** `['success' => bool, 'flow_chart_item_id' => int|null, 'message' => string]`
-* **Note:** Should handle idempotency using `INSERT ... ON DUPLICATE KEY UPDATE` based on `flow_chart_id_ref`, `form_domain`, `branch_code`.
-
-### `getFlowchartDetails(string $studyId, string $flowchartVersion, ?string $targetBranchCode = null): array`
-
-* **Purpose:** Retrieves the schedule of visits and the applicable forms/items for a specific study, flowchart version, and optionally, a target `branch_code`. If `$targetBranchCode` is provided, items specific to that branch AND common items are returned. If `null`, only common items might be returned, or behavior needs further definition (e.g., return all items for all branches, grouped).
-* **Parameters:**
-    * `$studyId` (string, **required**): The public ID of the study.
-    * `$flowchartVersion` (string, **required**): The version of the flowchart.
-    * `$targetBranchCode` (string, optional): The specific branch for which to retrieve the effective schedule. If not provided, might retrieve for a "common" or "all branches" view.
-* **Returns:** `['success' => bool, 'flowchart' => array|null, 'message' => string]`
-    * `flowchart`: An array of visit objects. Each visit object contains its details and an `items` sub-array. The `items` will be filtered based on `$targetBranchCode` (including items where `cdc_flow_chart_item.branch_code` matches `$targetBranchCode` OR is `'__COMMON__'`/`NULL`).
-        ```json
-        // Conceptual structure for a specific targetBranchCode
-        {
-            "flow_chart_id": 1,
-            "visit_name": "Screening", // ... other cdc_flow_chart fields ...
-            "items": [ // Filtered for targetBranchCode + __COMMON__
-                {
-                    "flow_chart_item_id": 101,
-                    "form_domain": "DM",
-                    "branch_code": "__COMMON__", // ... other fields ...
-                },
-                {
-                    "flow_chart_item_id": 102,
-                    "form_domain": "AE_ARM_A_SPECIFIC",
-                    "branch_code": "ArmA", // This item only shows if targetBranchCode is 'ArmA'
-                }
-            ]
-        }
-        ```
-
-### `setActiveFlowchartVersion(string $studyId, string $flowchartVersion, string $actorUserId): array`
-
-* **Purpose:** Sets a specific `flowchartVersion` as active for a study (and deactivates others for the same study).
+* **Purpose:** Creates a new flowchart version entry in `cdc_flowchart_versions_status` with status 'DRAFT'. If `$copyFromFlowchartVersionString` is provided, it performs a deep copy of the entire setup (visits, visit items, and associated `cdc_form_fields` definitions) from the source version to the `newFlowchartVersionString`.
 * **Parameters:**
     * `$studyId` (string, **required**).
-    * `$flowchartVersion` (string, **required**).
-    * `$actorUserId` (string, **required**).
-* **Returns:** `['success' => bool, 'message' => string]`
-* **Note:** Must be transactional.
+    * `$newFlowchartVersionString` (string, **required**): The name for the new version.
+    * `$description` (string, optional).
+    * `$copyFromFlowchartVersionString` (string, optional): If provided, the setup from this version is copied.
+* **Returns:** `['success' => bool, 'flowchart_version_status_id' => int|null, 'message' => string]`
 
-## 6. Example Usage (Conceptual - During Study Setup with Branches)
+#### `publishFlowchartVersion(string $studyId, string $draftFlowchartVersionString, ?string $finalPublishedVersionName = null): array`
+
+* **Purpose:** Changes the status of a `flow_chart_version_string` in `cdc_flowchart_versions_status` from 'DRAFT' to 'PUBLISHED'. Optionally allows renaming the version string to a "clean" name upon publication. Handles deactivation of other 'PUBLISHED' versions if the system enforces only one active published version at a time for data entry initiation.
+* **Parameters:**
+    * `$studyId` (string, **required**).
+    * `$draftFlowchartVersionString` (string, **required**): The DRAFT version to publish.
+    * `$finalPublishedVersionName` (string, optional): If provided, the `flow_chart_version_string` is updated to this name.
+* **Returns:** `['success' => bool, 'message' => string]`
+
+#### `archiveFlowchartVersion(string $studyId, string $publishedFlowchartVersionString): array`
+
+* **Purpose:** Changes the status of a 'PUBLISHED' `flow_chart_version_string` to 'ARCHIVED'. Archived versions are typically read-only and not used for new data entry.
+* **Parameters:** `$studyId`, `$publishedFlowchartVersionString`.
+* **Returns:** `['success' => bool, 'message' => string]`
+
+#### `getFlowchartVersionStatusDetails(string $studyId, string $flowchartVersionString): array`
+
+* **Purpose:** Retrieves details from `cdc_flowchart_versions_status`.
+* **Returns:** `['success' => bool, 'details' => array|null, 'message' => string]`
+
+#### `listFlowchartVersions(string $studyId, ?string $status = null): array`
+
+* **Purpose:** Lists flowchart versions for a study, optionally filtered by status.
+* **Returns:** `['success' => bool, 'versions' => array|null, 'message' => string]`
+
+### Visit Placement Management (Operates on a 'DRAFT' `flow_chart_version_string`)
+
+#### `addVisitToFlowchart(string $studyId, string $draftFlowchartVersionString, string $visitCode, int $orderNum, array $placementDetails = []): array`
+
+* **Purpose:** Adds a `Visit Definition` (identified by `$visitCode`) to a DRAFT `flow_chart_version_string`. Creates a record in `cdc_flow_chart`.
+* **Parameters:**
+    * `$studyId` (string, **required**).
+    * `$draftFlowchartVersionString` (string, **required**): Must reference a version in 'DRAFT' status.
+    * `$visitCode` (string, **required**): The code from `cdc_visit_definitions`.
+    * `$orderNum` (int, **required**): Order of this visit in this flowchart version.
+    * `$placementDetails` (array, optional): Overrides for `day_nominal`, `day_min`, `day_max`, `visit_name_override`, `description_override`.
+* **Returns:** `['success' => bool, 'flow_chart_id' => int|null, 'message' => string]` (PK from `cdc_flow_chart`).
+* **Note:** Should handle idempotency using `INSERT ... ON DUPLICATE KEY UPDATE` based on `study_internal_id`, `draftFlowchartVersionString`, `visit_definition_id` (resolved from `visitCode`), `order_num`.
+
+#### `updateVisitInFlowchart(int $flowChartId, array $placementDetails): array`
+
+* **Purpose:** Modifies details of a visit placement (`cdc_flow_chart` record) within a DRAFT flowchart version.
+* **Parameters:** `$flowChartId` (PK), `$placementDetails`.
+* **Returns:** `['success' => bool, 'message' => string]`
+
+#### `removeVisitFromFlowchart(int $flowChartId): array`
+
+* **Purpose:** Removes a visit placement (and its associated `cdc_flow_chart_item`s) from a DRAFT flowchart version.
+* **Returns:** `['success' => bool, 'message' => string]`
+
+### Visit Item (Form Assignment) Management (Operates on a `flow_chart_id` from a DRAFT flowchart version)
+
+#### `addFormToVisit(int $flowChartId, string $formDomain, int $itemOrder, ?string $branchCode = "__COMMON__", array $options = []): array`
+
+* **Purpose:** Links a `form_domain` to a `Visit Placement` (`flowChartId`), for a specific `branch_code`. Creates/updates `cdc_flow_chart_item`. The `flowChartId` must belong to a DRAFT `flow_chart_version`.
+* **Parameters:**
+    * `$flowChartId` (int, **required**): PK from `cdc_flow_chart`.
+    * `$formDomain` (string, **required**).
+    * `$itemOrder` (int, **required**).
+    * `$branchCode` (string, optional, default: "__COMMON__").
+    * `$options` (array, optional): `item_title_override`, `item_type`, `is_mandatory`, `details_json`.
+* **Returns:** `['success' => bool, 'flow_chart_item_id' => int|null, 'message' => string]`
+* **Note:** Handles idempotency via `UNIQUE KEY (flow_chart_id, form_domain, branch_code)`.
+
+#### `updateFormInVisit(int $flowChartItemId, int $itemOrder, ?string $branchCode = "__COMMON__", array $options = []): array`
+* **Purpose:** Modifies an existing `cdc_flow_chart_item` within a DRAFT flowchart.
+* **Returns:** `['success' => bool, 'message' => string]`
+
+#### `removeFormFromVisit(int $flowChartItemId): array`
+* **Purpose:** Removes a `cdc_flow_chart_item` from a visit within a DRAFT flowchart.
+* **Returns:** `['success' => bool, 'message' => string]`
+
+### Retrieval
+
+#### `getFlowchartDetails(string $studyId, string $flowchartVersionString, ?string $targetBranchCode = null): array`
+
+* **Purpose:** Retrieves the full schedule for a given `flowchartVersionString` (typically 'PUBLISHED' for data entry, 'DRAFT' for setup UI). Filters items by `targetBranchCode`.
+* **Parameters:** `$studyId`, `$flowchartVersionString`, `$targetBranchCode` (optional).
+* **Returns:** `['success' => bool, 'flowchart_details' => array|null, 'message' => string]`
+    * `flowchart_details`: Array of visit placement objects (from `cdc_flow_chart`, joined with `cdc_visit_definitions`), each containing an `items` array (from `cdc_flow_chart_item`, filtered by branch). The structure of `items` should also contain enough information about the `form_domain` (like its defined title from `cdc_form_fields` for that `flowchartVersionString`).
+
+## 6. Example Usage (Conceptual - Study Setup Lifecycle)
 
 ```php
-<?php
-use CDC\Flowchart;
+// Assume CDC\Flowchart, CDC\Study, CDC\VisitDefinitions classes exist
+// Actor ID is handled internally by the methods
 
-$actor = 'STUDY_DESIGNER';
-$studyId = 'PROT-ONCO-001';
-$currentVersion = 'v1.0-Draft';
+$studyId = 'ONCO-007';
 
-// 1. Define common Screening Visit
-$scrVisit = Flowchart::addVisitToFlowchart($studyId, $currentVersion, ['visit_name' => 'Screening', 'visit_num' => 'SCR'], $actor);
-if ($scrVisit['success']) {
-    $scrVisitId = $scrVisit['flow_chart_id'];
-    // Common forms for Screening
-    Flowchart::addFormToVisit($scrVisitId, 'DM', 10, '__COMMON__', [], $actor);
-    Flowchart::addFormToVisit($scrVisitId, 'MH', 20, '__COMMON__', [], $actor);
+// 1. Create a new DRAFT flowchart version for the study
+$versionResult = \CDC\Flowchart::createFlowchartVersion($studyId, "Protocol_V1-DRAFT", "Initial draft for protocol v1");
+if (!$versionResult['success']) { exit("Failed to create draft version: " . $versionResult['message']); }
+$draftVersion = "Protocol_V1-DRAFT";
 
-    // Form specific to Arm A during Screening
-    Flowchart::addFormToVisit($scrVisitId, 'ELIG_ARMA', 30, 'ArmA', [], $actor);
-    // Form specific to Arm B during Screening
-    Flowchart::addFormToVisit($scrVisitId, 'ELIG_ARMB', 30, 'ArmB', [], $actor); // Same order, different branch
+// 2. Define visits (assuming visit_codes 'SCR', 'C1D1', 'C2D1' exist in cdc_visit_definitions for this study)
+$scrVisit = \CDC\Flowchart::addVisitToFlowchart($studyId, $draftVersion, 'SCR', 10, ['day_nominal' => -7]);
+$c1d1Visit = \CDC\Flowchart::addVisitToFlowchart($studyId, $draftVersion, 'C1D1', 20, ['day_nominal' => 1]);
+
+if ($scrVisit['success'] && $c1d1Visit['success']) {
+    $scrVisitFcId = $scrVisit['flow_chart_id'];
+    $c1d1VisitFcId = $c1d1Visit['flow_chart_id'];
+
+    // 3. Add forms to Screening visit
+    \CDC\Flowchart::addFormToVisit($scrVisitFcId, 'DM', 10, '__COMMON__');
+    \CDC\Flowchart::addFormToVisit($scrVisitFcId, 'MH', 20, '__COMMON__');
+    \CDC\Flowchart::addFormToVisit($scrVisitFcId, 'ELIG_ARM_A', 30, 'ArmA'); // ArmA specific eligibility
+    \CDC\Flowchart::addFormToVisit($scrVisitFcId, 'ELIG_ARM_B', 30, 'ArmB'); // ArmB specific eligibility
+
+    // 4. Add forms to C1D1 visit
+    \CDC\Flowchart::addFormToVisit($c1d1VisitFcId, 'VS', 10, '__COMMON__');
+    \CDC\Flowchart::addFormToVisit($c1d1VisitFcId, 'TRT_A', 20, 'ArmA'); // ArmA treatment
+    \CDC\Flowchart::addFormToVisit($c1d1VisitFcId, 'TRT_B', 20, 'ArmB'); // ArmB treatment
 }
 
-// 2. Define Cycle 1 Day 1 Visit
-$c1d1Visit = Flowchart::addVisitToFlowchart($studyId, $currentVersion, ['visit_name' => 'Cycle 1 Day 1', 'visit_num' => 'C1D1'], $actor);
-if ($c1d1Visit['success']) {
-    $c1d1VisitId = $c1d1Visit['flow_chart_id'];
-    // Common forms
-    Flowchart::addFormToVisit($c1d1VisitId, 'VS', 10, '__COMMON__', [], $actor);
-    Flowchart::addFormToVisit($c1d1VisitId, 'AE', 20, '__COMMON__', [], $actor);
-
-    // Treatment form for Arm A
-    Flowchart::addFormToVisit($c1d1VisitId, 'TRT_A_DOSE', 30, 'ArmA', [], $actor);
-    // Treatment form for Arm B
-    Flowchart::addFormToVisit($c1d1VisitId, 'TRT_B_DOSE', 30, 'ArmB', [], $actor);
+// 5. Operator reviews the setup for $draftVersion ... all looks good.
+// Now, publish it with a clean name.
+$publishResult = \CDC\Flowchart::publishFlowchartVersion($studyId, $draftVersion, "Protocol_v1.0");
+if ($publishResult['success']) {
+    \bX\Log::logInfo("Protocol_v1.0 is now PUBLISHED for study $studyId.");
+    // UI for data entry would now use "Protocol_v1.0"
 }
 
-// To retrieve for a patient in ArmA:
-// $armAFlowchart = Flowchart::getFlowchartDetails($studyId, $currentVersion, 'ArmA');
-?>
+// --- LATER, AN AMENDMENT IS NEEDED ---
+
+// 6. Create a new DRAFT version for amendment, copying from the published v1.0
+$amendmentDraftVersion = "Protocol_v1.1-DRAFT";
+$copyResult = \CDC\Flowchart::createFlowchartVersion($studyId, $amendmentDraftVersion, "Amendment 1 draft", "Protocol_v1.0");
+if (!$copyResult['success']) { exit("Failed to copy for amendment: " . $copyResult['message']); }
+
+// 7. Modify the $amendmentDraftVersion (e.g., add a new form to C1D1 for ArmA)
+// First, find the flow_chart_id for C1D1 in this new draft version.
+// (Conceptual: This requires querying cdc_flow_chart for studyId, $amendmentDraftVersion, and visit_definition_id for C1D1)
+// $c1d1_v1_1_FcId = ... result of query ...
+// \CDC\Flowchart::addFormToVisit($c1d1_v1_1_FcId, 'NEW_AE_FORM', 25, 'ArmA');
+
+// 8. Publish the amendment
+// $publishAmendmentResult = \CDC\Flowchart::publishFlowchartVersion($studyId, $amendmentDraftVersion, "Protocol_v1.1_Amd1");
+```
+
+---
