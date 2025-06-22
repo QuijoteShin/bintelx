@@ -196,8 +196,8 @@ class Account {
      * @param string $token The JWT token string (may include "Bearer " prefix).
      * @return string|false The account_id from payload[1]['id'] if valid, false otherwise.
      */
-    public function verifyToken(string $token): string|false {
-        if (str_starts_with($token, 'Bearer ') === 0) {
+    public function verifyToken(string $token, $REMOTE_ADDR = ''): string|false {
+        if (str_starts_with($token, 'Bearer ')) {
             $token = substr($token, 7);
         }
 
@@ -208,7 +208,6 @@ class Account {
 
         try {
             $jwt = new JWT($this->jwtSecret, $token);
-
             // The validateSignature method in your JWT class should verify the signature based on
             // its current header and payload.
             if (!$jwt->validateSignature()) {
@@ -217,10 +216,9 @@ class Account {
             }
 
             $payload = $jwt->getPayload(); // Expecting: [ 0 => "somedate", 1 => ["id" => $accountId] ]
-
             // Validate the structure and extract account_id
-            if (is_array($payload) && count($payload) === 2 &&
-                isset($payload[1]) && is_array($payload[1]) &&
+            if (( is_array($payload) && count($payload) >= 2 ) &&
+                ( is_array($payload[1]) ) &&
                 isset($payload[1]['id']) && !empty(trim((string)$payload[1]['id']))) {
 
                 $accountIdFromToken = (string)$payload[1]['id'];

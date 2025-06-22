@@ -18,9 +18,7 @@ class Profile {
     public static int $entity_id = 0; // The main entity linked to this profile
     public static int $comp_id = 0;   // Current company context
     public static int $comp_branch_id = 0; // Current branch context (0 if not specific)
-
-    // Add a property to store determined scope/roles for the current request
-    private static array $userPermissions = []; // Could store granular permissions/roles
+    public static array $userPermissions = []; // Could store granular permissions/roles
 
     /**
      * Constructor.

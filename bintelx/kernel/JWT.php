@@ -34,8 +34,8 @@ class JWT {
     if ($jwt) {
       $jwtParts = explode('.', $jwt);
       $jwtParts[0] = str_replace('Bearer', '', $jwtParts[0]);
-      $this->header = json_decode($this->base64url_decode($jwtParts[0]));
-      $this->payload = json_decode($this->base64url_decode($jwtParts[1]));
+      $this->header = json_decode($this->base64url_decode($jwtParts[0]), true);
+      $this->payload = json_decode($this->base64url_decode($jwtParts[1]), true);
       $this->signature = $this->base64url_decode($jwtParts[2]);
     }
   }
