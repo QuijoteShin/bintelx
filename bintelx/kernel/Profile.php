@@ -18,7 +18,11 @@ class Profile {
     public static int $entity_id = 0; // The main entity linked to this profile
     public static int $comp_id = 0;   // Current company context
     public static int $comp_branch_id = 0; // Current branch context (0 if not specific)
-    public static array $userPermissions = []; // Could store granular permissions/roles
+
+    public static bool $isLoggedIn = false;
+    public static array $roles = []; # plain assoc array ['ROLE_NAME', 'ANOTHER']
+    public static array $superCowPermissions = []; // Could store granular permissions/roles
+
 
     /**
      * Constructor.
@@ -162,14 +166,13 @@ class Profile {
             $this->data_raw = $profileRows[0]; // Store raw data in instance
             $this->data = $this->formatData($this->data_raw); // Store formatted data in instance
 
-            // Populate static properties for global access within the request
             self::$account_id = $this->data['account_id'];
-            self::$profile_id = $this->data['profile_id'];
-            self::$entity_id = $this->data['entity_id'] ?? 0; // entity_id can be null
+            self::$profile_id = $this->data['profile_id'] ?? 0; # profile_id can be null
+            self::$entity_id = $this->data['entity_id'] ?? 0; # entity_id can be null
             self::$comp_id = $this->data['comp_id'];
-            self::$comp_branch_id = $this->data['comp_branch_id'];
+            self::$comp_branch_id = $this->data['comp_branch_id'] ?? 0; # comp_branch_id may be null
 
-            // After loading profile, fetch granular permissions
+            // using profile data, fetch granular permissions
             self::loadUserPermissions(self::$account_id, self::$comp_id); // Or self::$profile_id
 
             Log::logDebug("Profile loaded: account_id=" . self::$account_id . ", profile_id=" . self::$profile_id . ", entity_id=" . self::$entity_id);
@@ -188,7 +191,7 @@ class Profile {
         self::$entity_id = 0;
         self::$comp_id = 0;
         self::$comp_branch_id = 0;
-        self::$userPermissions = [];
+        self::$superCowPermissions = [];
     }
 
     /**
@@ -200,7 +203,7 @@ class Profile {
     private static function loadUserPermissions(int $accountId, int $companyId): void {
         // Example: Query a `account_roles` and `role_permissions` table
         // For now, let's hardcode for demonstration. Replace with actual DB queries.
-        // self::$userPermissions = []; // Reset
+        // self::$superCowPermissions = []; // Reset
         // $sql = "SELECT p.permission_key
         //         FROM account_x_role axr
         //         JOIN role_x_permission rxp ON axr.role_id = rxp.role_id
@@ -208,16 +211,17 @@ class Profile {
         //         WHERE axr.account_id = :account_id AND (axr.comp_id = :comp_id OR axr.comp_id IS NULL)";
         // $permissionsData = \bX\CONN::dml($sql, [':account_id' => $accountId, ':comp_id' => $companyId]);
         // foreach($permissionsData as $row) {
-        //    self::$userPermissions[] = $row['permission_key']; // e.g., 'ORDER_READ', 'ORDER_WRITE', 'USER_ADMIN'
+        //    self::$superCowPermissions[] = $row['permission_key']; // e.g., 'ORDER_READ', 'ORDER_WRITE', 'USER_ADMIN'
         // }
 
         // Simplified example: if account_id is 1, grant 'write', else 'read' if logged in
         if ($accountId === 1) { // Superadmin example
-            self::$userPermissions = ['ROLE_ADMIN', 'CAN_WRITE_ALL', 'CAN_READ_ALL'];
+            self::$superCowPermissions = ['ROLE_ADMIN', 'CAN_WRITE_ALL', 'CAN_READ_ALL'];
+            self::$roles = ['ROLE_USER'];
         } elseif ($accountId > 0) { // Other logged-in users
-            self::$userPermissions = ['ROLE_USER', 'CAN_READ_ORDERS']; // Example permission
+            self::$roles = ['ROLE_USER']; // Example permission
         }
-        Log::logDebug("User permissions loaded for account_id $accountId: " . json_encode(self::$userPermissions));
+        Log::logDebug("User permissions loaded for account_id $accountId: " . json_encode(self::$superCowPermissions));
     }
 
     /**
@@ -233,13 +237,13 @@ class Profile {
 
         // Check for granular permissions (this part needs to be tailored to your permission system)
         // Example: if user has a 'CAN_WRITE_ALL' permission or a specific 'WRITE_moduleContext' permission
-        if (!empty(self::$userPermissions)) {
-            if (in_array('CAN_WRITE_ALL', self::$userPermissions) ||
-                ($moduleContext && in_array('WRITE_' . strtoupper($moduleContext), self::$userPermissions))) {
+        if (!empty(self::$superCowPermissions)) {
+            if (in_array('CAN_WRITE_ALL', self::$superCowPermissions) ||
+                ($moduleContext && in_array('WRITE_' . strtoupper($moduleContext), self::$superCowPermissions))) {
                 return ROUTER_SCOPE_WRITE;
             }
-            if (in_array('CAN_READ_ALL', self::$userPermissions) ||
-                ($moduleContext && in_array('READ_' . strtoupper($moduleContext), self::$userPermissions))) {
+            if (in_array('CAN_READ_ALL', self::$superCowPermissions) ||
+                ($moduleContext && in_array('READ_' . strtoupper($moduleContext), self::$superCowPermissions))) {
                 return ROUTER_SCOPE_READ;
             }
         }
@@ -256,10 +260,10 @@ class Profile {
     public static function hasPermission(string $permissionKey): bool {
         if (self::$account_id <= 0) return false; // Not logged in
         // Superadmin (account_id 1 in example) has all permissions implicitly
-        if (self::$account_id === 1 && (in_array('ROLE_ADMIN', self::$userPermissions) || in_array('CAN_WRITE_ALL', self::$userPermissions)) ) {
+        if (self::$account_id === 1 && (in_array('ROLE_ADMIN', self::$superCowPermissions) || in_array('CAN_WRITE_ALL', self::$superCowPermissions)) ) {
             return true;
         }
-        return in_array($permissionKey, self::$userPermissions);
+        return in_array($permissionKey, self::$superCowPermissions);
     }
 
     /**

@@ -1,127 +1,53 @@
-# `bX\Router` - HTTP Request Routing
-
-**File:** `bintelx/kernel/Router.php`
+`# bintelx/doc/Router.md`
+---
+# `bX\Router` - HTTP Request Routing Engine
 
 ## Purpose
 
-The `bX\Router` class is responsible for handling incoming HTTP requests, matching them against registered route definitions, checking user permissions (scopes), and dispatching them to the appropriate callback handlers (controller methods or closures). It is a core component for directing traffic within Bintelx applications.
+The `bX\Router` class is the core engine for handling incoming HTTP requests. Its primary responsibilities are to match a request's URI and method against registered route definitions, and then validate access by checking against a dynamic, role-based permission map.
 
-It works in conjunction with `bX\Profile` to determine user authentication status and permission scope.
+It is designed to be a pure and reusable routing engine. It does **not** determine user permissions itself; instead, it receives a pre-built permission map from the application's entry point (e.g., `app/api.php`), making it highly configurable and decoupled from business logic.
 
 ## Key Features
 
-*   **Module-Based Routing:** Routes can be grouped by "module," typically inferred from the directory structure of endpoint files.
-*   **Regex-Based Matching:** Uses regular expressions to define URI patterns for routes.
-*   **HTTP Method Matching:** Routes are specific to HTTP methods (GET, POST, PUT, DELETE, etc.).
-*   **Scope-Based Authorization:** Integrates with `bX\Profile::getEffectiveScope()` to enforce basic access levels:
-    *   `ROUTER_SCOPE_PUBLIC`: Open to all.
-    *   `ROUTER_SCOPE_PUBLIC_WRITE`: Open to all, for write actions (use with extreme care).
-    *   `ROUTER_SCOPE_PRIVATE`: Requires user to be authenticated.
-    *   `ROUTER_SCOPE_READ`: Requires authenticated user with at least 'read' privileges (as determined by `Profile`).
-    *   `ROUTER_SCOPE_WRITE`: Requires authenticated user with 'write' privileges (as determined by `Profile`).
-*   **Dynamic Route Loading:** Uses `bX\Cardex` via `Router::load()` to discover and process endpoint definition files.
-*   **Parameter Extraction:** Captures named groups from URI regexes and passes them as arguments to callback handlers.
-
-## Global Constants
-
-*   `ROUTER_ENDPOINT_PREFIX`: A regex string defining the common base path for API endpoints, typically capturing a `module_id` (e.g., `'/api/(?P<module_id>\w+)/'`).
-*   `ROUTER_SCOPE_*`: Constants defining the permission scopes.
+* **Configurable API Base Path:** The main API prefix (e.g., `/api`) is injected during initialization, making all route and permission definitions independent of the base URL.
+* **Module-Based Routing:** Routes are grouped by "module," typically inferred from the file system, allowing for organized code.
+* **Regex-Based Route Matching:** Uses regular expressions for powerful and flexible URI pattern definitions.
+* **Dynamic, Role-Based Authorization:**
+    * The router's permission decisions are driven by the `Router::$currentUserPermissions` static property.
+    * This property is an array (`['path_regex' => 'scope']`) that is built and set externally by the application.
+    * This allows for a granular, centralized permission system where a user's multiple roles are resolved into a final set of access rights for the current request.
+* **Hierarchical Scopes:** Enforces a clear permission hierarchy (`WRITE` > `READ` > `PRIVATE`) when comparing the user's effective scope against the scope required by a route.
 
 ## Core Static Methods
 
-### `__construct(string $uri)` (Called as `new \bX\Router($uri)`)
-*   **Purpose:** Initializes the router for the current request. Sets the request URI and method, and determines the current user's scope via `determineCurrentUserScope()`.
-*   **Parameters:**
-    *   `$uri`: The processed URI path (e.g., `/api/module/action/param`) from the entry script.
+### `__construct(string $uri, string $apiBasePath)`
+* **Purpose:** Initializes the router for the current request, injecting application-specific configuration.
+* **Usage:** `new \bX\Router($requestUri, '/api');`
+* **Parameters:**
+    * `$uri`: The full request URI path.
+    * `$apiBasePath`: The application's base path for the API (e.g., `/api`, `/v2`). This is stored internally and used to correctly parse URIs for matching.
 
-### `load(array $data = [], callable $loaderCallback = null): void`
-*   **Purpose:** Discovers and loads route definition files (e.g., `endpoint.php` files). These files are expected to call `Router::register()` to define their routes.
-*   **Parameters:**
-    *   `$data`: `['find_str' => string (base path for Cardex search), 'pattern' => string (glob pattern)]`.
-    *   `$loaderCallback` (optional): A function that receives the context of each found file and is responsible for its inclusion (e.g., `require_once`). Used in `api.php` to filter loading by module.
-*   **Side Effects:** Populates `Router::$CurrentRouteFileContext` during the processing of each file.
-
-### `register(array|string $methods, string $regexPattern, string|callable $callback, string $scope = ROUTER_SCOPE_PRIVATE): void`
-*   **Purpose:** Called from within endpoint files to define a specific route.
-*   **Parameters:**
-    *   `$methods`: HTTP method(s) (e.g., 'GET', `['POST', 'PUT']`).
-    *   `$regexPattern`: The regex pattern for the URI part *after* the `ROUTER_ENDPOINT_PREFIX` and module segment (e.g., `item\/(?P<id>\d+)`, or an empty string for the module root).
-    *   `$callback`: The handler (e.g., `'Namespace\MyController::actionMethod'`, or a `Closure`).
-    *   `$scope` (optional): The required permission scope (e.g., `ROUTER_SCOPE_READ`). Defaults to `ROUTER_SCOPE_PRIVATE`.
+### `register(array|string $methods, string $regexPattern, callable $callback, string $scope)`
+* **Purpose:** Called from endpoint files to define a specific route.
+* **Parameters:**
+    * `$methods`: HTTP method(s) (e.g., `['POST', 'PUT']`).
+    * `$regexPattern`: A regex pattern for the URI part *after* the module name. **It must not include the API base path.** (e.g., `item\/(?P<id>\d+)`).
+    * `$callback`: The handler to execute (e.g., `MyController::class, 'action'`).
+    * `$scope`: The minimum permission scope required for this route (e.g., `ROUTER_SCOPE_READ`).
 
 ### `dispatch(string $requestMethod, string $requestUri): void`
-*   **Purpose:** The main method called by the entry script (e.g., `api.php`) to handle the current request. It finds a matching route, checks permissions, and executes the callback.
-*   **Parameters:**
-    *   `$requestMethod`: The current HTTP request method.
-    *   `$requestUri`: The full URI path of the request.
-*   **Behavior:**
-    1.  Determines the target module from `$requestUri` using `ROUTER_ENDPOINT_PREFIX`.
-    2.  Calculates the URI path relative to the module base for matching against registered `regex_pattern`s.
-    3.  Iterates through routes for the determined module (and a 'default' module as fallback).
-    4.  For the first route that matches the method, relative URI path, and user scope:
-        *   Executes the callback, passing captured regex parameters (from both prefix and route pattern).
-    5.  Sends appropriate HTTP responses (404 Not Found, 403 Forbidden, 500 Internal Server Error).
+* **Purpose:** The main method that orchestrates the entire routing process for a request.
+* **Behavior:**
+    1.  **Cleans URI:** Removes the configured `$apiBasePath` from the request URI to get a relative path for matching.
+    2.  **Finds Module:** Determines the target module from the start of the relative path.
+    3.  **Matches Route:** Finds a registered route that matches the HTTP method and the remaining URI pattern.
+    4.  **Checks Permissions:** Calls the internal `hasPermission()` method, passing it the route's required scope and the cleaned, relative request path.
+    5.  **Executes Callback:** If permission is granted, it executes the route's callback.
+    6.  **Responds:** Sends an appropriate HTTP response (e.g., 404 Not Found, 403 Forbidden) if no route is successfully dispatched.
 
-## Setup & Workflow (Typical in `app/api.php`)
+## Caveats & Design Philosophy
 
-**Important Note on Execution Order**: For correct scope evaluation, it is essential that user authentication and profile
-loading (using `\bX\Account` and `\bX\Profile`) occur before the `\bX\Router` is instantiated with `new \bX\Router()`. 
-This ensures the router's constructor correctly determines the user's scope (`ROUTER_SCOPE_PRIVATE`, etc.) from the start.
-
-1.  **Bootstrap Bintelx (`WarmUp.php`).**
-2.  **Handle Headers & Input.**
-3.  **Instantiate Router:** `$router = new \bX\Router($processedUriPath);`
-    *   This sets `$router::$URI`, `$router::$METHOD`, and calls `determineCurrentUserScope()`.
-4.  **Load Route Definitions:**
-    ```php
-    $moduleFromUri = explode('/', $processedUriPath)[1]; // Or a more robust way to get current module
-    \bX\Router::load(
-        ["find_str"=> \bX\WarmUp::$BINTELX_HOME . '../custom/', 'pattern'=> '{*/,}{endpoint,controller}.php'],
-        function ($routeFileContext) use ($moduleFromUri) {
-            // Conditionally load file if it belongs to $moduleFromUri
-            if(is_file($routeFileContext['real']) && strpos($routeFileContext['real'], "/$moduleFromUri/") !== false) {
-                require_once $routeFileContext['real'];
-            }
-        }
-    );
-    ```
-5.  **Authenticate User & Load Profile:**
-    ```php
-    $auth = new \bX\Account(...);
-    // ... token verification ...
-    if ($accountId) {
-        $profile = new \bX\Profile();
-        $profile->load(['account_id' => $accountId]);
-        // Router::$currentUserScope will be re-evaluated if needed, or ensure Profile load influences it.
-        // The current Router constructor calls determineCurrentUserScope once. If Profile is loaded *after*
-        // Router instantiation, Router's initial scope determination might be outdated.
-        // SOLUTION: Router constructor should be called *after* Profile is loaded, or Router
-        // needs a method to re-evaluate scope. (Current implementation in Router constructor is fine if Profile is loaded before dispatch)
-        // In your api.php, Profile is loaded *after* Router instantiation but *before* dispatch.
-        // Router::determineCurrentUserScope() should ideally be called just before dispatch, OR
-        // Profile loading must happen before Router instantiation for the constructor's call to be effective.
-        // The current Router implementation calls determineCurrentUserScope in the constructor. If Auth/Profile loading
-        // happens after that, the scope won't reflect the logged-in user unless determineCurrentUserScope is called again
-        // or Router is instantiated after Profile is loaded.
-        // Your api.php structure: new Router -> load routes -> Auth/Profile -> dispatch.
-        // This means Router::determineCurrentUserScope() (in constructor) runs *before* Profile is loaded.
-        // It should be: Auth/Profile -> new Router -> load routes -> dispatch.
-        // OR Router::determineCurrentUserScope() must be callable from dispatch or just before it.
-        // The provided Router code calls determineCurrentUserScope() in its constructor. This needs to align with api.php flow.
-        // For now, assuming api.php calls `$auth` and `$profile->load()` *before* `new \bX\Router()`.
-        // If not, `Router::determineCurrentUserScope()` needs to be called again before `dispatch()`.
-        // Let's adjust api.php's order or Router.
-    }
-    ```
-    *(Self-correction on above note: `api.php` does `new \bX\Router()`, then `\bX\Router::load()`, then `new \bX\Account()` and `$profile->load()`, then `\bX\Router::dispatch()`. The `determineCurrentUserScope()` in the Router constructor will use a non-authenticated state. It *must* be called again or implicitly used by `hasPermission` just before dispatch, or the `Profile` loading must happen before `new Router`. The current `Router`'s `hasPermission` directly uses the `self::$currentUserScope` which was set in constructor. This is a mismatch. `determineCurrentUserScope` should be called in `dispatch` or `hasPermission` should get it fresh.)*
-
-6.  **Dispatch Request:** `\bX\Router::dispatch($requestMethod, $processedUriPath);`
-
-## Dependencies
-*   `bX\Profile` (for `getEffectiveScope()`).
-*   `bX\Log` (for logging).
-*   `bX\Cardex` (for `load()`).
-*   `bX\ArrayProcessor` (utility).
-*   `bX\UrlMatcher` (for matching regex patterns against URI segments).
-
----
+* **Separation of Concerns:** A key insight from our chat is that the `Router` is intentionally "unaware" of *how* user permissions are determined. It doesn't know about roles or special user IDs. Its only job is to evaluate a pre-built permission map (`$currentUserPermissions`) against a requested URI. This makes it a clean, reusable engine.
+* **Configuration over Convention:** The API base path is now an injected configuration parameter in the constructor, rather than a hardcoded convention, making the system more flexible for future changes.
+* **Centralized Permission Logic:** The responsibility of building the permissions map now lies in the application's entry point (`app/api.php`). This is where you should translate your application-specific roles and rules into the generic format the `Router` understands.

@@ -1,32 +1,40 @@
-# `bX\Profile` - User Context Management
-
-**File:** `bintelx/kernel/Profile.php`
+`# bintelx/doc/Profile.md`
+---
+# `bX\Profile` - User Context Data Container
 
 ## Purpose
 
-The `bX\Profile` class is central to managing the **current user's context** within a single stateless API request in Bintelx. After successful authentication (typically handled by `bX\Account`), an instance of `Profile` is loaded, and its static properties are populated with the authenticated user's details like `account_id`, `profile_id`, `entity_id`, `comp_id`, and `comp_branch_id`.
+The `bX\Profile` class is a **request-scoped data container**. Its primary purpose is to be loaded once per API request (after successful authentication) and then hold the current user's essential context in its static properties.
 
-This class acts as a request-scoped global access point for user context, eliminating the need to pass user identity objects through every layer of the application. It also includes logic for determining the user's effective permission scope for routing and a helper to check for granular permissions.
+This provides a simple, global access point to user identity information (`Profile::$account_id`, `Profile::$comp_id`, etc.) and, critically, their **assigned roles**. It eliminates the need to pass a user object through every layer of the application.
 
 ## Key Features
 
-*   **Stateless Context:** Holds user information for the duration of a single request.
-*   **Static Properties:** Provides easy global access to key identifiers (`Profile::$account_id`, etc.).
-*   **Permission Scoping:** Includes `Profile::getEffectiveScope()` used by `bX\Router` to determine basic access levels (`public`, `private`, `read`, `write`).
-*   **Granular Permissions:** Supports checking for specific permission keys via `Profile::hasPermission()`.
-*   **Loading Mechanism:** `load()` method populates static context from the database based on `account_id`.
+* **Static Context:** Holds user information globally for the duration of a single request.
+* **Role-Based Permission Input:** The `Profile` is responsible for loading a user's roles (e.g., into a `Profile::$roles` array). This array is the primary input used by `app/api.php` to construct the user's final permission map.
+* **Loading Mechanism:** The `load()` method populates the static context from the database based on a given `account_id`.
 
-## Static Properties (Request-Scoped Context)
+## Static Properties (Available after `load()`)
 
-Once `Profile->load(['account_id' => $accountId])` is successfully called:
-
-*   `Profile::$profile_id`: (int) The ID of the user's primary profile record.
-*   `Profile::$account_id`: (int) The ID of the user's account (login identity).
-*   `Profile::$entity_id`: (int) The ID of the main entity associated with this profile (can be 0 if not linked).
-*   `Profile::$comp_id`: (int) The ID of the current company context for the user.
-*   `Profile::$comp_branch_id`: (int) The ID of the current company branch context (0 if not branch-specific).
+* `Profile::$isLoggedIn`: (bool) A flag indicating if a profile has been successfully loaded.
+* `Profile::$account_id`: (int) The ID of the user's account (login identity).
+* `Profile::$profile_id`: (int) The ID of the user's primary profile record.
+* `Profile::$entity_id`: (int) The ID of the main entity (person/company) associated with this profile.
+* `Profile::$comp_id`: (int) The ID of the current company context.
+* `Profile::$roles`: (array) **Crucial for permissions.** An array of strings representing the user's assigned roles (e.g., `['JEFE_BODEGA', 'FINANZAS_USER']`).
 
 ## Core Static Methods
+
+### `load(array $criteria = []): bool`
+* **Purpose:** The main method to initialize the user context. It queries the database and populates all the static properties of the class, including the user's roles.
+* **Usage:** `(new \bX\Profile())->load(['account_id' => $accountId]);`
+* **Parameters:**
+    * `$criteria`: Must contain `['account_id' => int]`.
+* **Returns:** `true` if a profile and its associated data (like roles) are loaded successfully, `false` otherwise.
+
+### `hasPermission(string $permissionKey): bool`
+* **Purpose:** Checks if the user has a specific, granular permission key.
+* **Note:** This relies on the internal permission-loading logic within the `load()` method and is a good tool for fine-grained checks *inside* a controller method, separate from route-level access control.
 
 ### `load(array $criteria = []): bool`
 *   **Purpose:** Loads a user's profile information into the static properties of the class. This is the primary method to initialize the user context for the current request.
@@ -81,3 +89,9 @@ if ($profile->load(['account_id' => $accountId])) {
     // The Router can now use Profile::getEffectiveScope().
     // Application logic can use Profile::hasPermission('SPECIFIC_ACTION').
 }
+```
+
+## Caveats & Design Philosophy
+
+* **Data Container, Not Logic Engine:** The `Profile` class's main job is to fetch and hold data ("who is this user?" and "what roles do they have?"). The logic for *interpreting* what those roles mean in terms of API access has been moved to `app/api.php`. This is a strong separation of concerns. `Profile` provides the "what", `api.php` decides "so what?".
+* **Stateless by Design:** Remember that all static properties are reset on every new API request, ensuring no data leakage between requests.

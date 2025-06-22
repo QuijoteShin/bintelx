@@ -1,80 +1,80 @@
-
+`# app/api.md`
 ---
 
-**Important Note on `Router.php` and `api.php` interaction:**
+# `app/api.php` - Application Entry Point & Permission Orchestrator
 
-As noted in the `Router.md`, the order of operations in your `api.php` is:
-1. `new \bX\Router($uri);` (Constructor calls `determineCurrentUserScope()`)
-2. `\bX\Router::load(...);`
-3. `new \bX\Auth(...)` and `$profile->load(...)`
-4. `\bX\Router::dispatch(...);`
+## Purpose
 
-The `determineCurrentUserScope()` inside the `Router` constructor will run *before* `Profile` is loaded with the authenticated user's data. This means `Profile::$account_id` will be 0 at that point, and `currentUserScope` in the `Router` will be set to `ROUTER_SCOPE_PUBLIC`.
+The `app/api.php` script is the single entry point for all API requests in the Bintelx application. Its primary responsibilities are to bootstrap the framework, handle the request lifecycle, and, most importantly, act as the **permission orchestrator**. It translates application-specific user roles into a concrete permission map that it then provides to the `bX\Router`.
 
-To fix this, you have a few options:
+## Execution Flow
 
-*   **Option 1 ( Use of `api.php` order - Recommended ):**
-    ```php
-    // In app/api.php
-    // ... (headers, input handling) ...
-    require_once '../bintelx/WarmUp.php';
-    use \bX\Cardex;
-    new \bX\Args();
-    \bX\Log::$logToUser = true;
+The script follows a strict and logical order of operations:
 
-    // --- START: Authentication and Profile Loading FIRST ---
-    $authenticatedAccountId = null;
-    try {
-        $auth = new \bX\Account("woz.min..", 'XOR_KEY_2o25');
-        $token = $_SERVER["HTTP_AUTHORIZATION"] ?? '';
-        if(empty($token) && !empty($_COOKIE["authToken"])) $token = $_COOKIE["authToken"];
+1.  **Bootstrap:** Includes `bintelx/WarmUp.php` to initialize the environment, constants, and autoloading.
+2.  **Handle Pre-flight & Headers:** Manages CORS headers and OPTIONS requests.
+3.  **Authentication & Profile Loading:**
+    * It retrieves the authentication token from the request.
+    * It uses `bX\Account` to verify the token and get a valid `account_id`.
+    * If authentication is successful, it uses `bX\Profile` to load the full user context, including their assigned roles (e.g., from `Profile::$roles`).
+4.  **Permission Map Construction (Core Logic):**
+    * This is the new, critical responsibility of `api.php`.
+    * It initializes an empty `$userPermissions` array.
+    * It checks for special cases, like a "Super Admin" `account_id`, and can grant universal access immediately.
+    * It iterates through the user's roles (from `Profile::$roles`) and, using a centrally defined `ROLE_PERMISSIONS_MAP`, builds the final permission map for the current user. This map resolves any overlaps by granting the most permissive scope.
+    * Finally, it assigns the completed map to the `Router`: `\bX\Router::$currentUserPermissions = $userPermissions;`.
+5.  **Router Initialization:**
+    * It instantiates the `Router`, **injecting** the application's configuration, such as the `apiBasePath`.
+    * Example: `$router = new \bX\Router($requestUri, '/api');`
+6.  **Route Loading & Dispatching:**
+    * It calls `\bX\Router::load()` to include the endpoint definition files for the relevant module.
+    * It calls `\bX\Router::dispatch()` to trigger the final routing and permission evaluation process.
 
-        if(!empty($token)) {
-            $accountId = $auth->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
-            if($accountId) {
-                $profileInstance = new \bX\Profile(); // Instance
-                if ($profileInstance->load(['account_id' => $accountId])) {
-                     $authenticatedAccountId = $accountId; // Flag that profile is loaded
-                }
-            }
-        }
-    } catch (\Exception $e) { // Catch potential exceptions from Auth/Profile
-        \bX\Log::logError("Auth/Profile loading error: " . $e->getMessage(), $e->getTrace());
-    }
-    // --- END: Authentication and Profile Loading ---
+## Example: Building the Permission Map
 
-    $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-    $method = $_SERVER['REQUEST_METHOD'];
+This conceptual code block illustrates how `api.php` acts as the orchestrator.
 
-    // Now instantiate Router, so its constructor's determineCurrentUserScope() uses the loaded Profile
-    $routerInstance = new \bX\Router($uri); // Constructor will now see Profile::$account_id
+```php
+// In app/api.php, after Profile is loaded...
 
-    $module = explode('/', $uri)[2] ?? null; // Get module from URI
-    if ($module) { // Only load routes if a module is identified
-        \bX\Router::load(
-            ["find_str"=> \bX\WarmUp::$BINTELX_HOME . '../custom/', 'pattern'=> '{*/,}*{endpoint,controller}.php'],
-            function ($routeFileContext) use ($module) {
-                // Your existing filter to load only relevant module's endpoints
-                if(isset($routeFileContext['real']) && is_file($routeFileContext['real']) && 
-                   isset($routeFileContext['module']) && is_array($routeFileContext['module']) &&
-                   in_array($module, $routeFileContext['module'])) { // Check if current module is in Cardex path
-                    require_once $routeFileContext['real'];
-                }
-            }
-        );
-    } else {
-        \bX\Log::logWarning("Router: No module identified from URI '$uri' for route loading.");
-    }
+$userPermissions = [];
+
+// Rule 1: Check for Super Admin by ID
+if (isset(\bX\Profile::$account_id) && \bX\Profile::$account_id == 1) {
+    $userPermissions['*'] = ROUTER_SCOPE_WRITE; // Grant access to everything
+} else if (\bX\Profile::$isLoggedIn) {
+    // Rule 2: Build permissions from user roles
     
-    try {
-        \bX\Router::dispatch($method, $uri);
-    } catch (\ErrorException $e) { // Changed to ErrorException as per your api.php
-        \bX\Log::logError("Dispatch ErrorException: ".$e->getMessage(), $e->getTrace());
-        http_response_code(500);
-        echo json_encode(['status' => 'error', 'message' => 'Server error during dispatch.']);
+    // This map should be defined in a central config file
+    $rolePermissionsMap = [
+        'JEFE_BODEGA' => [
+            'bodega/.*' => ROUTER_SCOPE_WRITE,
+            'reports/inventory' => ROUTER_SCOPE_READ
+        ],
+        'BODEGUERO' => [
+            'bodega/items/.*' => ROUTER_SCOPE_READ,
+        ]
+    ];
+
+    // Default permission for authenticated users
+    $userPermissions['*'] = ROUTER_SCOPE_PRIVATE;
+
+    // Layer permissions from roles, letting the most permissive scope win
+    foreach (\bX\Profile::$roles as $userRole) {
+        $permissionsForRole = $rolePermissionsMap[$userRole] ?? [];
+        foreach ($permissionsForRole as $pathRegex => $scope) {
+            // ... logic to merge permissions and apply highest scope ...
+            $userPermissions[$pathRegex] = $scope;
+        }
     }
-    ```
+}
 
-*   **Option 2 (Modify `Router`):** Make `determineCurrentUserScope()` public static and call it explicitly in `api.php` after `Profile::load()` but before `Router::dispatch()`. Or, have `Router::dispatch()` call `determineCurrentUserScope()` at its beginning. Option 1 is generally cleaner as the Router is then constructed with the correct state.
+// Finally, provide the built map to the Router
+\bX\Router::$currentUserPermissions = $userPermissions;
+```
 
-I've chosen to illustrate Option 1 in the conceptual `api.php` snippet above as it makes the Router's internal state consistent from construction. Remember that `Profile::load()` now populates static properties, so `$profileInstance->load()` will set `Profile::$account_id` etc.
+## Caveats & Design Philosophy
+Orchestrator, Not Implementer: `api.php` is the "glue". It orchestrates the process but relies on dedicated classes (`Account`, `Profile`, `Router`) to do the heavy lifting.
+Centralized Rules: All business rules for permissions (e.g., "who is a super admin?", "what can a `JEFE_BODEGA` role do?") are located here, not scattered throughout the framework. This makes the system easier to understand and maintain.
+
+---

@@ -1,4 +1,4 @@
-[⚠️ Suspicious Content] # Script de Prueba: [Nombre del Módulo/Servicio]
+# Script de Prueba: [Nombre del Módulo/Servicio]
 
 **Archivo:** `app/test/[nombre_modulo_o_servicio]_test.php`
 
