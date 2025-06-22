@@ -25,7 +25,7 @@ To fix this, you have a few options:
     // --- START: Authentication and Profile Loading FIRST ---
     $authenticatedAccountId = null;
     try {
-        $auth = new \bX\Auth("woz.min..", 'XOR_KEY_2o25');
+        $auth = new \bX\Account("woz.min..", 'XOR_KEY_2o25');
         $token = $_SERVER["HTTP_AUTHORIZATION"] ?? '';
         if(empty($token) && !empty($_COOKIE["authToken"])) $token = $_COOKIE["authToken"];
 
@@ -52,7 +52,7 @@ To fix this, you have a few options:
     $module = explode('/', $uri)[2] ?? null; // Get module from URI
     if ($module) { // Only load routes if a module is identified
         \bX\Router::load(
-            ["find_str"=> \bX\WarmUp::$BINTELX_HOME . '../custom/', 'pattern'=> '{*/,}{endpoint,controller}.php'],
+            ["find_str"=> \bX\WarmUp::$BINTELX_HOME . '../custom/', 'pattern'=> '{*/,}*{endpoint,controller}.php'],
             function ($routeFileContext) use ($module) {
                 // Your existing filter to load only relevant module's endpoints
                 if(isset($routeFileContext['real']) && is_file($routeFileContext['real']) && 

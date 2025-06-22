@@ -64,6 +64,10 @@ It works in conjunction with `bX\Profile` to determine user authentication statu
 
 ## Setup & Workflow (Typical in `app/api.php`)
 
+**Important Note on Execution Order**: For correct scope evaluation, it is essential that user authentication and profile
+loading (using `\bX\Account` and `\bX\Profile`) occur before the `\bX\Router` is instantiated with `new \bX\Router()`. 
+This ensures the router's constructor correctly determines the user's scope (`ROUTER_SCOPE_PRIVATE`, etc.) from the start.
+
 1.  **Bootstrap Bintelx (`WarmUp.php`).**
 2.  **Handle Headers & Input.**
 3.  **Instantiate Router:** `$router = new \bX\Router($processedUriPath);`
@@ -83,7 +87,7 @@ It works in conjunction with `bX\Profile` to determine user authentication statu
     ```
 5.  **Authenticate User & Load Profile:**
     ```php
-    $auth = new \bX\Auth(...);
+    $auth = new \bX\Account(...);
     // ... token verification ...
     if ($accountId) {
         $profile = new \bX\Profile();
@@ -109,7 +113,7 @@ It works in conjunction with `bX\Profile` to determine user authentication statu
         // Let's adjust api.php's order or Router.
     }
     ```
-    *(Self-correction on above note: `api.php` does `new \bX\Router()`, then `\bX\Router::load()`, then `new \bX\Auth()` and `$profile->load()`, then `\bX\Router::dispatch()`. The `determineCurrentUserScope()` in the Router constructor will use a non-authenticated state. It *must* be called again or implicitly used by `hasPermission` just before dispatch, or the `Profile` loading must happen before `new Router`. The current `Router`'s `hasPermission` directly uses the `self::$currentUserScope` which was set in constructor. This is a mismatch. `determineCurrentUserScope` should be called in `dispatch` or `hasPermission` should get it fresh.)*
+    *(Self-correction on above note: `api.php` does `new \bX\Router()`, then `\bX\Router::load()`, then `new \bX\Account()` and `$profile->load()`, then `\bX\Router::dispatch()`. The `determineCurrentUserScope()` in the Router constructor will use a non-authenticated state. It *must* be called again or implicitly used by `hasPermission` just before dispatch, or the `Profile` loading must happen before `new Router`. The current `Router`'s `hasPermission` directly uses the `self::$currentUserScope` which was set in constructor. This is a mismatch. `determineCurrentUserScope` should be called in `dispatch` or `hasPermission` should get it fresh.)*
 
 6.  **Dispatch Request:** `\bX\Router::dispatch($requestMethod, $processedUriPath);`
 

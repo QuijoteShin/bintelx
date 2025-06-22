@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The `bX\Profile` class is central to managing the **current user's context** within a single stateless API request in Bintelx. After successful authentication (typically handled by `bX\Auth`), an instance of `Profile` is loaded, and its static properties are populated with the authenticated user's details like `account_id`, `profile_id`, `entity_id`, `comp_id`, and `comp_branch_id`.
+The `bX\Profile` class is central to managing the **current user's context** within a single stateless API request in Bintelx. After successful authentication (typically handled by `bX\Account`), an instance of `Profile` is loaded, and its static properties are populated with the authenticated user's details like `account_id`, `profile_id`, `entity_id`, `comp_id`, and `comp_branch_id`.
 
 This class acts as a request-scoped global access point for user context, eliminating the need to pass user identity objects through every layer of the application. It also includes logic for determining the user's effective permission scope for routing and a helper to check for granular permissions.
 
@@ -69,12 +69,12 @@ The class also contains instance methods like `read(int $entityId)` and a `model
 *   Relies on `bX\CONN` for database access.
 *   Relies on `bX\Log` for logging.
 *   Assumes database tables: `profile`, and potentially tables for roles/permissions (e.g., `account_roles`, `role_permissions`, `permission`) for the `loadUserPermissions()` logic.
-*   Typically initialized in `app/api.php` after successful authentication via `bX\Auth`.
+*   Typically initialized in `app/api.php` after successful authentication via `bX\Account`.
 
 ## Example Usage (in `app/api.php`)
 
 ```php
-// After bX\Auth verifies a token and gets $accountId:
+// After bX\Account verifies a token and gets $accountId:
 $profile = new \bX\Profile();
 if ($profile->load(['account_id' => $accountId])) {
     // Profile::$account_id, Profile::$comp_id etc. are now set.

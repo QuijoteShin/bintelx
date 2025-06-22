@@ -274,7 +274,7 @@ Router::register(
  * 
  * 3. Payload de la Solicitud (POST, PUT, PATCH):
  *    - Se espera que los datos vengan en el cuerpo de la solicitud, comúnmente como JSON.
- *    - En el controlador, acceder a ellos vía `$_POST` (si `Content-Type: application/json` y `api.php` lo procesa) o `file_get_contents('php://input')` y `json_decode()`.
+ *    - In the controller or endpoint callback, access the processed input data via the static property `\bX\Args::$input` or `\bX\Args::$OPT`. The `bX\Args` class (instantiated in `api.php`) handles the parsing of `GET`, `POST` form-data, and POST JSON bodies automatically.
  *    - `bX\Args::$OPT` también puede contener los datos si `bX\Args` está configurado para procesar JSON input.
  * 
  * 4. Respuestas:
