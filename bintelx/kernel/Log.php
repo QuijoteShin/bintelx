@@ -122,6 +122,8 @@ function errorHandler(int $errno, string $errstr, string $errfile, int $errline)
   $errorLevelStr = 'ERROR'; // Default
   switch ($errno) {
     case E_USER_ERROR:
+      $errorLevelStr = 'INFO'; // O 'DEBUG' si quieres ser muy verboso
+      break;
     case E_RECOVERABLE_ERROR:
       $errorLevelStr = 'ERROR';
       break;
@@ -131,9 +133,6 @@ function errorHandler(int $errno, string $errstr, string $errfile, int $errline)
       break;
     case E_USER_NOTICE:
     case E_NOTICE:
-    case E_STRICT: // Strict podría ser INFO o DEBUG
-      $errorLevelStr = 'INFO'; // O 'DEBUG' si quieres ser muy verboso
-      break;
     case E_DEPRECATED:
     case E_USER_DEPRECATED:
       $errorLevelStr = 'WARNING'; // O 'INFO'
@@ -244,7 +243,7 @@ function phpErrorConstantToString(int $errno): string {
       E_ERROR => 'E_ERROR', E_WARNING => 'E_WARNING', E_PARSE => 'E_PARSE', E_NOTICE => 'E_NOTICE',
       E_CORE_ERROR => 'E_CORE_ERROR', E_CORE_WARNING => 'E_CORE_WARNING', E_COMPILE_ERROR => 'E_COMPILE_ERROR',
       E_COMPILE_WARNING => 'E_COMPILE_WARNING', E_USER_ERROR => 'E_USER_ERROR', E_USER_WARNING => 'E_USER_WARNING',
-      E_USER_NOTICE => 'E_USER_NOTICE', E_STRICT => 'E_STRICT', E_RECOVERABLE_ERROR => 'E_RECOVERABLE_ERROR',
+      E_USER_NOTICE => 'E_USER_NOTICE', E_RECOVERABLE_ERROR => 'E_RECOVERABLE_ERROR',
       E_DEPRECATED => 'E_DEPRECATED', E_USER_DEPRECATED => 'E_USER_DEPRECATED'
   ];
   return $errors[$errno] ?? (string)$errno;
