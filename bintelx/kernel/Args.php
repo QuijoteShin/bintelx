@@ -5,23 +5,31 @@ namespace bX;
 class Args {
 
   public static $OPT = [];
+  public static array $input = [];
 
   public function __construct(string $short_opt = '', array $long_opt = []) {
-    // Determinar el método de entrada (GET, POST o CLI)
     $method = $this->determineInputMethod();
 
-    // Procesar argumentos de la línea de comandos
-    if ($method === 'CLI' && !empty($_SERVER['argv'])) {
-      $this->processCommandLineArguments($_SERVER['argv']);
-    }
-
-    // Procesar datos de entrada POST, GET o STDIN
-    if ($method === 'POST' && !empty($_POST)) {
-      $this->populateSuperGlobal($_POST, 'POST');
-    } elseif ($method === 'GET' && !empty($_GET)) {
-      $this->populateSuperGlobal($_GET, 'GET');
-    } elseif ($method === 'STDIN') {
-      $this->processStdinData();
+    switch ($method) {
+      case 'CLI':
+        if ($_SERVER['argc'] > 1) {
+        $this->processCommandLineArguments($_SERVER['argv'] ?? []);
+        } else {
+          $this->processStdinData();
+        }
+      break;
+      case 'GET':
+        if(!empty($_GET)) $this->populateSuperGlobal($_GET, 'GET');
+      break;
+      case 'POST':
+        if (!empty($_POST)) {
+          $this->populateSuperGlobal($_POST, 'POST');
+        }
+        $this->processJsonInputStream('POST');
+      break;
+      case 'STDIN':
+        $this->processStdinData();
+      break;
     }
   }
 
@@ -41,7 +49,22 @@ class Args {
         return 'GET';
       }
     }
-    return 'STDIN';
+    return 'STDIN'; # JUST IN CASE
+  }
+
+  /**
+   * Processes the raw input stream for JSON data.
+   * This is essential for handling API requests with JSON bodies.
+   * @param string $method The HTTP method ('POST', 'PUT', etc.)
+   */
+  private function processJsonInputStream(string $method): void {
+    $jsonInput = file_get_contents('php://input');
+    if (!empty($jsonInput)) {
+      $data = json_decode($jsonInput, true);
+      if (json_last_error() === JSON_ERROR_NONE) {
+        $this->populateSuperGlobal($data, $method);
+      }
+    }
   }
 
   /**
@@ -122,24 +145,16 @@ class Args {
     $stdin = @stream_get_contents(STDIN, -1, 0);
     if (!empty($stdin)) {
       $data = [];
-      //Verificar si el stream es un JSON
+      // Check if the stream is JSON
       if (str_starts_with($stdin, '{') || str_starts_with($stdin, '[')) {
         $decodedValue = json_decode($stdin, true);
         if (json_last_error() === JSON_ERROR_NONE) {
           $data = $decodedValue;
         }
       } else {
-        // Intentar analizar como pares clave=valor
-        $lines = explode('&', $stdin);
-        foreach ($lines as $line) {
-          if (str_contains($line, '=')) {
-            [$key, $value] = explode('=', $line, 2);
-            $data[$key] = $this->processArgumentValue(urldecode($value));
-          }
-        }
+        parse_str($stdin, $data);
       }
-
-      // Buscar un indicador para forzar POST
+      // search for force POST
       $forcePost = false;
       if (isset($data['method']) && $data['method'] === 'POST') {
         $forcePost = true;
@@ -151,18 +166,20 @@ class Args {
   }
 
   /**
-   * Llena las variables superglobales $_GET o $_POST con los datos proporcionados.
-   *
-   * @param array  $data   Datos para llenar la superglobal.
-   * @param string $method 'GET' o 'POST', indica la superglobal a llenar.
+   * Populates the static properties with the provided data.
+   * @param array  $data   Data to populate with.
+   * @param string $method The source method ('GET', 'POST', 'CLI').
    */
   private function populateSuperGlobal(array $data, string $method): void {
     if ($method === 'POST') {
       $_POST = array_merge($_POST, $data);
-      Args::$OPT = array_merge(Args::$OPT, $_POST);
+      #Args::$OPT = array_merge(Args::$OPT, $_POST);
     } else {
       $_GET = array_merge($_GET, $data);
-      Args::$OPT = array_merge(Args::$OPT, $_GET);
+      #Args::$OPT = array_merge(Args::$OPT, $_GET);
     }
+
+    self::$OPT = array_merge(self::$OPT, $data);
+    self::$input = array_merge(self::$input, $data);
   }
 }
