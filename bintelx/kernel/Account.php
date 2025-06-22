@@ -6,13 +6,65 @@ use Exception;
 class Account {
     private string $jwtSecret;
     private string $xorKey; // For potential other non-JWT crypto operations
-
     private int $tokenExpiration = 3600; // Default 1 hour for generated tokens
 
     public function __construct(string $jwtSecret, string $xorKey = '') {
         $this->jwtSecret = $jwtSecret;
         $this->xorKey = $xorKey;
     }
+
+  /**
+   * Clasic Authenticates a user with username and password, and returns a JWT on success.
+   * This is the primary method for handling a login request.
+   *
+   * @param array $credentials Associative array with 'username' and 'password'.
+   * @return array An array indicating success, a message, and the token on success.
+   * e.g., ['success' => bool, 'message' => string, 'token' => ?string]
+   */
+  public function login(array $credentials): array
+  {
+    if (empty($credentials['username']) || empty($credentials['password'])) {
+      return ['success' => false, 'message' => 'Username and password are required.'];
+    }
+
+    try {
+      $sql = "SELECT account_id, password, is_active FROM account WHERE username = :username LIMIT 1";
+      $userData = CONN::dml($sql, [':username' => $credentials['username']]);
+
+      if (empty($userData[0])) {
+        Log::logWarning('Login attempt for non-existent user: ' . $credentials['username']);
+        return ['success' => false, 'message' => 'Invalid credentials.'];
+      }
+
+      $user = $userData[0];
+
+      if (!$user['is_active']) {
+        Log::logWarning('Login attempt for inactive account: ' . $user['account_id']);
+        return ['success' => false, 'message' => 'Account is inactive.'];
+      }
+
+      // Verify the provided password against the stored hash
+      if (password_verify($credentials['password'], $user['password'])) {
+        // Password is correct, generate token
+        $token = $this->generateToken((string)$user['account_id']);
+
+        if (!$token) {
+          // This case is unlikely if generateToken is solid, but good to have
+          return ['success' => false, 'message' => 'Failed to generate session token.'];
+        }
+
+        Log::logInfo('Successful login for account_id: ' . $user['account_id']);
+        return ['success' => true, 'message' => 'Login successful.', 'token' => $token];
+      } else {
+        Log::logWarning('Failed login attempt (wrong password) for account_id: ' . $user['account_id']);
+        return ['success' => false, 'message' => 'Invalid credentials.'];
+      }
+
+    } catch (Exception $e) {
+      Log::logError("Account::login - Exception: " . $e->getMessage());
+      return ['success' => false, 'message' => 'An internal server error occurred.'];
+    }
+  }
 
     /**
      * Creates a new account in the database.
@@ -145,7 +197,7 @@ class Account {
      * @return string|false The account_id from payload[1]['id'] if valid, false otherwise.
      */
     public function verifyToken(string $token): string|false {
-        if (strpos($token, 'Bearer ') === 0) {
+        if (str_starts_with($token, 'Bearer ') === 0) {
             $token = substr($token, 7);
         }
 
