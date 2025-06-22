@@ -9,7 +9,7 @@ require_once '../bintelx/WarmUp.php';
   \bx\CONN::nodml("SET time_zone = '" . $_SERVER["HTTP_X_USER_TIMEZONE"] . "'");
 
 new \bX\Args();
-header("Access-Control-Allow-Origin: http://svelte.localhost:5173");
+header("Access-Control-Allow-Origin: https://dev.local");
 header("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS");
 header('Access-Control-Allow-Headers: Origin,X-Auth-Token,X-Requested-With,Content-Type,Accept,Authorization');
 header("Access-Control-Allow-Credentials: true");
