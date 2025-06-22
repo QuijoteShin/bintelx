@@ -33,3 +33,7 @@ node_modules/
 *.log
 *.crt
 *.key
+
+log/
+
+custom/
