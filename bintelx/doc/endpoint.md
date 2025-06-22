@@ -30,7 +30,7 @@ Router::register(
 
 ## Example `*.endpoint.php` Structure
 ```php
-<?php // custom/orders/order/endpoint.php
+<?php // custom/orders/some.endpoint.php
 
 use bX\Router;
 use order\OrderHandler; // The controller class for this module
@@ -65,11 +65,18 @@ Router::register(
 
 ## Caveats & Developer Notes
 
-**- Insight** : Decoupling Route Definition from Permission Logic: When you define a route with `Router::register()`, you are only specifying the minimum required scope (e.g., `ROUTER_SCOPE_READ`). The `Router` then performs a much more complex, dynamic check against the user's permission map (`$currentUserPermissions`). Your endpoint definition is blissfully unaware of the user's roles; it just declares its own security requirement.
-Path Patterns are RELATIVE: The URI pattern you provide is relative to the module. Never include the API base path (e.g., `/api/`) in your `register()` call. The Router handles this automatically.
+**Insight** : Decoupling Route Definition from Permission Logic: When you define a route with `Router::register()`, you are only specifying the minimum required scope (e.g., `ROUTER_SCOPE_READ`).
+
+* The `Router` then performs a much more complex, dynamic check against the user's permission map (`$currentUserPermissions`).
+* Your endpoint definition is blissfully unaware of the user's roles; it just declares its own security requirement. 
+* Path Patterns are RELATIVE: The URI pattern you provide is relative to the module.
+
+
+    Never include the API base path (e.g., `/api/`) in your `register()` call.The Router handles this automatically.
 
 **- Correct** : `products/(?P<id>\d+)`
 
 **- Incorrect**: `/api/products/(?P<id>\d+)`
 
-**- Payloads & Arguments** : Data from `POST`/`PUT` bodies (JSON or form-data) is automatically parsed by `bX\Args` and is typically available in your controller method via `\bX\Args::$OPT`. URL parameters captured by named regex groups (like `(?P<id>\d+)`) are passed as arguments to your controller method.
+**Payloads & Arguments** : Data from `POST`/`PUT` bodies (JSON or form-data) is automatically parsed by `bX\Args` and is typically available in your controller method via `\bX\Args::$OPT`. 
+URL parameters captured by named regex groups (like `(?P<id>\d+)`) are passed as arguments to your controller method.
