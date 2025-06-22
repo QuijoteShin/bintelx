@@ -38,10 +38,10 @@ $route = new \bX\Router($uri);
 
 $module = explode('/', $uri)[2];
 \bX\Router::load(["find_str"=>\bX\WarmUp::$BINTELX_HOME . '../custom/',
-        'pattern'=> '{*/,}{endpoint,controller}.php']
-    , function ($route) use($module) {
-        if(is_file($route['real'])&& strpos($route['real'], "/$module/") > 1) {
-            require_once $route['real'];
+        'pattern'=> '{*/,}*{endpoint,controller}.php']
+    , function ($routeFileContext) use($module) {
+        if(is_file($routeFileContext['real'])&& strpos($routeFileContext['real'], "/$module/") > 1) {
+            require_once $routeFileContext['real'];
         }
     }
 );
