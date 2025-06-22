@@ -5,8 +5,8 @@ git config core.autocrlf input
 # deps
 sudo add-apt-repository ppa:ondrej/php # Press enter when prompted.
 sudo apt update
-sudo apt install php8.2 php8.2-{cli,bz2,curl,mbstring,intl,fpm,mysql,zlib,zip,gd,xml,bcmath,opcache} -y
-
+sudo apt install php8.4 php8.4-{cli,bz2,curl,mbstring,intl,fpm,zip,gd,xml,bcmath,opcache} -y
+# sudo apt install nginx mysql -y
 # Certs
 openssl req \
     -newkey rsa:2048 -x509 -nodes -new -reqexts SAN -extensions SAN -sha256 -days 3650 -extensions EXT \
@@ -53,10 +53,11 @@ DNS.2 = dev.local
 ')
 
 # nginx config
-sudo ln -s /var/www/bintelx/bintelx/config/server/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-available/
-sudo ln -s /etc/nginx/sites-available/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-enabled/
+# sudo ln -s /var/www/bintelx/bintelx/config/server/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-available/
+# sudo ln -s /etc/nginx/sites-available/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-enabled/
 sudo ufw allow 'Nginx Full'
-sudo service php8.2-fpm restart
+sudo service php8.4-fpm restart
 sudo service nginx restart
 sudo mysql < schema.sql
 sudo mysql bnx_labtronic < ../../doc/DataCaptureService.sql
+mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
