@@ -1,3 +1,6 @@
+`# bintelx/doc/VERSIONING_SYSTEM.md`
+---
+
 # Data Versioning and Definition Systems in Bintelx
 
 The Bintelx platform provides several distinct mechanisms for storing, versioning, and defining data. Each system serves a specific purpose and should be chosen based on the nature of the data and the required level of auditability.
@@ -16,8 +19,8 @@ This is the most advanced and granular system, designed for data that requires a
 * **Main Purpose**: To capture and version individual data points over time, maintaining a complete and auditable history of every single change.
 * **Versioning Mechanism**: **Fine-Grained (Field-Level)**. Every call to `saveRecord()` that modifies a value creates a new, immutable record in the `capture_data_version` table. This tracks who, what, when, and why for each change to a single field.
 * **Data Definition**:
-    * **Free Definition? No.** You cannot save data for an arbitrary key. Every field (e.g., `VSORRES_SYSBP`) must first be formally defined in the `capture_definition` table using the `DataCaptureService::defineCaptureField` method. This ensures that all captured data adheres to a pre-defined schema.
-    * **Special Attributes (e.g., HTML pattern)? Yes, absolutely.** This is a core feature. The `defineCaptureField` method accepts an `attributes_json` parameter. This allows you to store rich, structured metadata about the field, such as validation rules, UI hints, default values, or, as you mentioned, an HTML input `pattern`.
+    * **Free Definition? No.** You cannot save data for an arbitrary key. Every field (e.g., `VSORRES_SYSBP`) must first be formally defined the dimension in the `capture_definition` table using the `DataCaptureService::defineCaptureField` method. This ensures that all captured data adheres to a pre-defined schema.
+    * **Special Attributes (e.g., HTML pattern)? Yes, absolutely.** This is a core feature. The `defineCaptureField` method accepts an `attributes_json` parameter. This allows you to store rich, structured metadata about the field, such as validation rules, UI hints, default values, or an HTML input `pattern`.
 * **Ideal Use Case**: Capturing clinical trial data (as in your CDC module), tracking financial transaction details, or any scenario where a complete, field-level audit trail is a requirement.
 
 ---
@@ -48,11 +51,11 @@ This is not primarily a versioning system, but a structural tool for adding data
 
 ### Summary Table
 
-| Feature | `DataCaptureService` | `Snapshot` | `Entity Model` |
-| :--- | :--- | :--- | :--- |
-| **Main Purpose** | Fine-grained data capture & audit | Coarse-grained record state history | Structured entity contact/profile data |
-| **Versioning Granularity** | **Field-Level** | **Record-Level** | None (directly) |
-| **Data Structure** | Pre-defined via `defineCaptureField` | Flexible (JSON blob) | Fixed (Table columns) |
-| **Allows Free Definition?** | No | Yes | No |
-| **Supports Rich Attributes?** | **Yes** (via `attributes_json`) | No | No |
-| **Ideal Use Case** | Clinical trial data (CDC), financial ledgers | Saving an `order` state on creation | Storing multiple phone numbers for a client |
+| Feature | `DataCaptureService`                         | `Snapshot` | `Entity Model` |
+| :--- |:---------------------------------------------| :--- | :--- |
+| **Main Purpose** | Fine-grained data capture & audit            | Coarse-grained record state history | Structured entity contact/profile data |
+| **Versioning Granularity** | **Field-Level**                              | **Record-Level** | None (directly) |
+| **Data Structure** | Pre-defined via `defineCaptureField`         | Flexible (JSON blob) | Fixed (Table columns) |
+| **Allows Free Definition?** | No                                           | Yes | No |
+| **Supports Rich Attributes?** | **Yes** (via `attributes_json`)              | No | No |
+| **Ideal Use Case** | Clinical trial data (CDC), Financial Ledgers | Saving an `order` state on creation | Storing multiple phone numbers for a client |
