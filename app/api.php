@@ -28,37 +28,43 @@ if ($_SERVER['CONTENT_TYPE'] === 'application/json') {
     $_POST = json_decode(file_get_contents('php://input'), true) ?? [];
 }
 
-
-# Start up the router
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$method = $_SERVER['REQUEST_METHOD'];
-$route = new \bX\Router($uri);
-\bX\Log::$logToUser = true;
-
-
-$module = explode('/', $uri)[2];
-\bX\Router::load(["find_str"=>\bX\WarmUp::$BINTELX_HOME . '../custom/',
-        'pattern'=> '{*/,}*{endpoint,controller}.php']
-    , function ($routeFileContext) use($module) {
-        if(is_file($routeFileContext['real'])&& strpos($routeFileContext['real'], "/$module/") > 1) {
-            require_once $routeFileContext['real'];
-        }
-    }
-);
-
 try {
 
+  # Start up the router
+  $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+  $method = $_SERVER['REQUEST_METHOD'];
+  $route = new \bX\Router($uri, '/api');
+  \bX\Log::$logToUser = true;
+
     $token = $_SERVER["HTTP_AUTHORIZATION"] ?? '';
-    if(empty($token) && !empty($_COOKIE["authToken"])) $token = $_COOKIE["authToken"];
+    if(empty($token) && !empty($_COOKIE["bnxt"])) $token = $_COOKIE["bnxt"];
     if(!empty($token)) {
         $account = new \bX\Account("woz.min..", 'XOR_KEY_2o25'); # CHANGE default obfuscation regulary
         $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
         if($account_id) {
             $profile = new \bX\Profile();
             $profile->load(['account_id' => $account_id]);
+            if($account_id == 1 ) {
+              \bX\Router::$currentUserPermissions['*'] = ROUTER_SCOPE_WRITE;
+            } else {
+              # $profilePermissions = PermissionBuilder::buildFromRoles(\bX\Profile::$roles);
+              # \bX\Router::$currentUserPermissions = $profilePermissions;
+              \bX\Router::$currentUserPermissions['*'] = ROUTER_SCOPE_PRIVATE;
+            }
         }
     }
-    \bX\Router::dispatch($method, $uri);
+  
+  $module = explode('/', $uri)[2];
+  \bX\Router::load(["find_str"=>\bX\WarmUp::$BINTELX_HOME . '../custom/',
+      'pattern'=> '{*/,}*{endpoint,controller}.php']
+    , function ($routeFileContext) use($module) {
+      if(is_file($routeFileContext['real'])&& strpos($routeFileContext['real'], "/$module/") > 1) {
+        require_once $routeFileContext['real'];
+      }
+    }
+  );
+  \bX\Router::dispatch($method, $uri);
+
 } catch (\ErrorException $e) {
     \bX\Log::logError($e->getMessage(), $e->getTrace());
 }

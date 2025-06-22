@@ -32,11 +32,11 @@ Router::register(['GET','POST'], 'validate', function(...$params) {
 
 /**
  * @endpoint   /api/_demo/report
- * @method     GET
+ * @method     GET, POST
  * @scope      ROUTER_SCOPE_PUBLIC
- * @purpose    Example endpoint to fetch public information.
+ * @purpose    fetch some information.
  */
-Router::register(['GET'], 'report', function(...$params) {
+Router::register(['GET', 'POST'], 'report', function(...$params) {
   header('Content-Type: application/json');
   echo json_encode(["data" => AuthHandler::DevToolsReport()]);
-}, ROUTER_SCOPE_PUBLIC);
+}, ROUTER_SCOPE_PRIVATE);
