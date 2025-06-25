@@ -37,3 +37,4 @@ node_modules/
 log/
 
 custom/
+bintelx/config/server/nginx_quic_build/
