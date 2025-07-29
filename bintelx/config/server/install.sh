@@ -1,11 +1,12 @@
 #!/usr/bin/bash
+# pwd: /var/www/bintelx/bintelx/config/server/install.sh
 # git configs
 git config core.autocrlf input
 
 # deps
 sudo add-apt-repository ppa:ondrej/php # Press enter when prompted.
-sudo apt install curl gnupg2 ca-certificates lsb-release ubuntu-keyring
 sudo apt update
+sudo apt install curl gnupg2 ca-certificates lsb-release ubuntu-keyring
 sudo apt install php8.4 php8.4-{cli,bz2,curl,mbstring,intl,fpm,zip,gd,xml,bcmath,opcache} -y
 
 #curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
@@ -14,9 +15,7 @@ sudo apt install php8.4 php8.4-{cli,bz2,curl,mbstring,intl,fpm,zip,gd,xml,bcmath
 # quic support
 curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
 echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://packages.nginx.org/nginx-quic/ubuntu `lsb_release -cs` nginx-quic" | sudo tee /etc/apt/sources.list.d/nginx.list
-
 sudo apt update
-
 
 echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
   https://packages.nginx.org/nginx-quic/ubuntu `lsb_release -cs` nginx-quic" \
@@ -66,6 +65,10 @@ subjectAltName = @alt_names
 DNS.1 = *.dev.local
 DNS.2 = dev.local
 ')
+
+openssl dhparam -out dhparam.pem 2048
+
+openssl rand -base64 64 > quic_host_key_file
 
 sudo mysql < schema.sql
 sudo mysql bnx_labtronic < ../../doc/DataCaptureService.sql
@@ -175,8 +178,12 @@ sudo systemctl enable nginx
 
 
 # nginx config
-# sudo ln -s /var/www/bintelx/bintelx/config/server/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-available/
-# sudo ln -s /etc/nginx/sites-available/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-enabled/
+mkdir -p /etc/nginx/bintelx-snippets/
+sudo service nginx stop
+sudo mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+sudo ln -s /var/www/bintelx/bintelx/config/server/nginx.conf /etc/nginx/
+sudo ln -s /var/www/bintelx/bintelx/config/server/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-available/
+sudo ln -s /etc/nginx/sites-available/nginx.bintelx.dev.localhost.conf /etc/nginx/sites-enabled/
 sudo ufw allow 'Nginx Full'
 sudo service php8.4-fpm restart
-sudo service nginx restart
+sudo service nginx start
