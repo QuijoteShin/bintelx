@@ -76,11 +76,27 @@ class WarmUp
 
 new \bX\WarmUp();
 new \bX\Log();
-try {
-  \bX\CONN::add('mysql:host=127.0.0.1;port=3306;dbname=bnx_labtronic;charset=utf8mb4', 'quijote', 'quijotito');
-} catch (\Exception $e) {
-  \bX\Log::logError($e->getMessage());
-}
 
-# \bX\CONN::add('mysql:host=db.svelte.localhost;dbname=bnx_labtronic', 'quijote', 'quijotito');
+// Load environment configuration
+$envPath = dirname(__DIR__) . '/.env';
+\bX\Config::load($envPath);
+
+// Initialize database connection from environment variables
+try {
+  $dsn = \bX\Config::databaseDSN();
+  $dbConfig = \bX\Config::database();
+  \bX\CONN::add($dsn, $dbConfig['username'], $dbConfig['password']);
+} catch (\Exception $e) {
+  \bX\Log::logError('Database connection failed: ' . $e->getMessage());
+
+  // Fallback to hard-coded values if .env not found (backward compatibility)
+  if (!file_exists($envPath)) {
+    \bX\Log::logWarning('.env file not found, using hard-coded credentials (DEPRECATED)');
+    try {
+      \bX\CONN::add('mysql:host=127.0.0.1;port=3306;dbname=bnx_labtronic;charset=utf8mb4', 'quijote', 'quijotito');
+    } catch (\Exception $e2) {
+      \bX\Log::logError($e2->getMessage());
+    }
+  }
+}
 
