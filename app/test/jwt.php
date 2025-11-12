@@ -1,4 +1,5 @@
-<?php require_once '../../bintelx/WarmUp.php';
+<?php # bintelx/app/test/jwt.php
+require_once '../../bintelx/WarmUp.php';
 $secretKey = 'woz.min..';
 $mode = $argv[1];
 
