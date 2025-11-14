@@ -65,14 +65,28 @@ The `bX\CONN` class provides a static interface for managing database connection
 
 ## Usage Example
 
+* How to common query and interact directly with re result as it comes:
+
 ```php
-// Establish primary connection (typically in WarmUp.php or bootstrap)
+
+$data = ['draft' => [], 'in_progress' => [], 'published' => []];
+\bX\CONN::dml("SELECT * FROM my_table WHERE company = :comp", [':comp' => 999], function($row) use (&$data) {
+  $data[$row['status']][$row['id']] = $row;
+});
+
+```
+
+
+* How to transaction:
+
+```php
+# Establish primary connection (typically in WarmUp.php or bootstrap)
 \bX\CONN::connect('mysql:host=localhost;dbname=main_db', 'user', 'pass');
 
-// Add to pool (optional)
-// \bX\CONN::add('mysql:host=replica_db;dbname=main_db', 'user_ro', 'pass_ro');
+# Add to pool (optional)
+# \bX\CONN::add('mysql:host=replica_db;dbname=main_db', 'user_ro', 'pass_ro');
 
-// Start a transaction
+# Start a transaction
 try {
     \bX\CONN::begin();
 
@@ -95,10 +109,11 @@ try {
     echo "An error occurred.";
 }
 
-// Select data
-$users = \bX\CONN::dml("SELECT id, username FROM users WHERE status = :status", [':status' => 'active']);
-if ($users !== null) {
-    foreach ($users as $user) {
-        // Process $user
-    }
-}
+# simple data fetch
+$users = \bX\CONN::dml("SELECT id, username FROM users WHERE status = :status", [':status' => 'active'], function($user){
+ $ Process $user
+ return $user;
+});
+
+```
+
