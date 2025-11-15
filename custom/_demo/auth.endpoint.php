@@ -9,6 +9,7 @@ use _demo\AuthHandler;
  * @scope      ROUTER_SCOPE_PUBLIC
  * @purpose    Authenticates a user and returns a JWT.
  * @body       (JSON) {"username": "...", "password": "..."}
+ * @tag        Authentication
  */
 Router::register(['POST'], 'login', function(...$params) {
   header('Content-Type: application/json');
@@ -23,6 +24,7 @@ Router::register(['POST'], 'login', function(...$params) {
  * @scope      ROUTER_SCOPE_PUBLIC
  * @purpose    Creates a new account (without profile or entity).
  * @body       (JSON) {"username": "...", "password": "..."}
+ * @tag        Authentication
  */
 Router::register(['POST'], 'register', function(...$params) {
   header('Content-Type: application/json');
@@ -35,14 +37,8 @@ Router::register(['POST'], 'register', function(...$params) {
  * @method     POST
  * @scope      ROUTER_SCOPE_PUBLIC
  * @purpose    Creates a profile and entity for an account.
- * @body       (JSON) {
- *   "accountId": 123,
- *   "entityName": "Juan Pérez",
- *   "entityType": "person",
- *   "nationalId": "12345678-9",
- *   "nationalIsocode": "CL",
- *   "profileName": "My Profile"
- * }
+ * @body       (JSON) {"accountId": 123, "entityName": "Juan Pérez", "entityType": "person", "nationalId": "12345678-9", "nationalIsocode": "CL", "profileName": "My Profile"}
+ * @tag        Profile Management
  */
 Router::register(['POST'], 'profile/create', function(...$params) {
   header('Content-Type: application/json');
@@ -55,6 +51,7 @@ Router::register(['POST'], 'profile/create', function(...$params) {
  * @method     GET
  * @scope      ROUTER_SCOPE_PRIVATE
  * @purpose    Validates the token sent in the "Authorization" header and returns the user's profile.
+ * @tag        Authentication
  */
 Router::register(['GET','POST'], 'validate', function(...$params) {
   header('Content-Type: application/json');
@@ -66,8 +63,9 @@ Router::register(['GET','POST'], 'validate', function(...$params) {
 /**
  * @endpoint   /api/_demo/report
  * @method     GET, POST
- * @scope      ROUTER_SCOPE_PUBLIC
- * @purpose    fetch some information.
+ * @scope      ROUTER_SCOPE_PRIVATE
+ * @purpose    Fetch development tools report and system information.
+ * @tag        Development
  */
 Router::register(['GET', 'POST'], 'report', function(...$params) {
   header('Content-Type: application/json');
