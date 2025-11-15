@@ -25,7 +25,8 @@ class AuthHandler
   {
     try {
       // Instantiate the Bintelx Account service
-      $accountService = new \bX\Account("woz.min.."); // Provide your JWT secret
+      $jwtSecret = \bX\Config::get('JWT_SECRET');
+      $accountService = new \bX\Account($jwtSecret);
       $loginResult = $accountService->login($inputData);
 
       if ($loginResult['success']) {
@@ -47,31 +48,52 @@ class AuthHandler
   }
 
   /**
-   * Validates the current user's token and returns their profile information.
-   * This endpoint is private, so the framework (api.php) has already
-   * verified the token and loaded the user's profile before this method is called.
+   * Validates the current user's token.
+   * Can validate tokens from:
+   * 1. Authorization header or cookie (already validated by api.php)
+   * 2. POST body JSON with {"token": "..."} (validated here)
    *
-   * @return array An array containing the loaded profile data.
+   * @return array Simple validation result: {"success": true|false}
    */
   public static function validateToken(): array
   {
+    // Check if user is already authenticated via header/cookie (handled by api.php)
     if (\bX\Profile::isLoggedIn()) {
       http_response_code(200); // OK
-      return [
-        'success' => true,
-        'message' => 'Token is valid.',
-        'data' => [
-          'accountId' => \bX\Profile::$account_id,
-          'profileId' => \bX\Profile::$profile_id,
-          'primaryEntityId' => \bX\Profile::$entity_id,
-          'permissions' => \bX\Profile::$userPermissions ?? []
-        ]
-      ];
-    } else {
-      // This case should technically not be reachable if the router scope is working correctly.
-      http_response_code(401); // Unauthorized
-      return ['success' => false, 'message' => 'No valid session found.'];
+      return ['success' => true];
     }
+
+    // If not authenticated via header/cookie, check for token in POST body
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty(\bX\Args::$OPT['token'])) {
+      $token = \bX\Args::$OPT['token'];
+
+      try {
+        // Get JWT configuration from environment
+        $jwtSecret = \bX\Config::get('JWT_SECRET');
+        $jwtXorKey = \bX\Config::get('JWT_XOR_KEY');
+
+        $account = new \bX\Account($jwtSecret, $jwtXorKey);
+        $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"] ?? '');
+
+        if ($account_id) {
+          // Token is valid
+          http_response_code(200); // OK
+          return ['success' => true];
+        } else {
+          // Token verification failed
+          http_response_code(401); // Unauthorized
+          return ['success' => false];
+        }
+      } catch (\Exception $e) {
+        \bX\Log::logError("Token validation exception: " . $e->getMessage());
+        http_response_code(401); // Unauthorized
+        return ['success' => false];
+      }
+    }
+
+    // No valid authentication found
+    http_response_code(401); // Unauthorized
+    return ['success' => false];
   }
 
   /**
@@ -94,7 +116,8 @@ class AuthHandler
       }
 
       // Create account using Account service
-      $accountService = new \bX\Account("woz.min..");
+      $jwtSecret = \bX\Config::get('JWT_SECRET');
+      $accountService = new \bX\Account($jwtSecret);
       $accountId = $accountService->createAccount(
         $inputData['username'],
         $inputData['password'],

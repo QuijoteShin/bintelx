@@ -13,7 +13,7 @@ use _demo\AuthHandler;
  */
 Router::register(['POST'], 'login', function(...$params) {
   header('Content-Type: application/json');
-  // The business logic is encapsulated in the AuthHandler class
+  # The business logic is encapsulated in the AuthHandler class
   echo json_encode(["data" => AuthHandler::login(\bX\Args::$OPT)]);
 }, ROUTER_SCOPE_PUBLIC);
 
@@ -48,16 +48,16 @@ Router::register(['POST'], 'profile/create', function(...$params) {
 
 /**
  * @endpoint   /api/_demo/validate
- * @method     GET
- * @scope      ROUTER_SCOPE_PRIVATE
- * @purpose    Validates the token sent in the "Authorization" header and returns the user's profile.
+ * @method     GET, POST
+ * @scope      ROUTER_SCOPE_PUBLIC
+ * @purpose    Validates tokens from Authorization header or POST body JSON {"token": "..."}
  * @tag        Authentication
  */
 Router::register(['GET','POST'], 'validate', function(...$params) {
   header('Content-Type: application/json');
-  // The logic simply returns the profile already loaded by the framework
+  # The logic handles validation from header (already loaded by bnx) or POST body
   echo json_encode(["data" => AuthHandler::validateToken()]);
-}, ROUTER_SCOPE_PRIVATE);
+}, ROUTER_SCOPE_PUBLIC);
 
 
 /**
