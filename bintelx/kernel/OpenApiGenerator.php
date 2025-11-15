@@ -36,16 +36,24 @@ class OpenApiGenerator
 
     /**
      * Scan all endpoint files and extract API documentation
+     * Uses Cardex to find all endpoint files in the custom directory
      */
     public function scan(): void
     {
         $this->endpoints = [];
-        $pattern = $this->customPath . '/*/*.endpoint.php';
-        $files = glob($pattern);
 
-        foreach ($files as $file) {
-            $this->scanFile($file);
+        // Use Cardex to find endpoint files consistently with Router
+        $cardex = new Cardex();
+        $pattern = '{*/,**/}*.endpoint.php'; // Recursive pattern for all modules
+        $fileContexts = $cardex->search($this->customPath, $pattern);
+
+        foreach ($fileContexts as $fileContext) {
+            if (isset($fileContext['real']) && is_file($fileContext['real'])) {
+                $this->scanFile($fileContext['real']);
+            }
         }
+
+        Log::logInfo("OpenApiGenerator scanned " . count($fileContexts) . " endpoint files, found " . count($this->endpoints) . " endpoints");
     }
 
     /**
@@ -176,13 +184,13 @@ class OpenApiGenerator
                 'version' => $this->apiVersion,
                 'contact' => [
                     'name' => 'API Support',
-                    'url' => Config::get('APP_URL', 'https://dev.local')
+                    'url' => Config::get('APP_URL')
                 ]
             ],
             'servers' => [
                 [
-                    'url' => Config::get('APP_URL', 'https://dev.local'),
-                    'description' => 'Development server'
+                    'url' => Config::get('APP_URL'),
+                    'description' => 'App server'
                 ]
             ],
             'paths' => [],
@@ -192,7 +200,7 @@ class OpenApiGenerator
                         'type' => 'http',
                         'scheme' => 'bearer',
                         'bearerFormat' => 'JWT',
-                        'description' => 'JWT token obtained from /api/_demo/login'
+                        'description' => 'JWT token obtained from bnxt header,cookie,body'
                     ]
                 ],
                 'schemas' => []
