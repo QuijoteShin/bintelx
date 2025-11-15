@@ -14,7 +14,7 @@ class Account {
     }
 
   /**
-   * Clasic Authenticates a user with username and password, and returns a JWT on success.
+   * Authenticates a user with username and password, and returns a JWT on success.
    * This is the primary method for handling a login request.
    *
    * @param array $credentials Associative array with 'username' and 'password'.
@@ -28,15 +28,23 @@ class Account {
     }
 
     try {
-      $sql = "SELECT account_id, password, is_active FROM account WHERE username = :username LIMIT 1";
-      $userData = CONN::dml($sql, [':username' => $credentials['username']]);
+      # Direct query using target schema field names
+      $sql = "SELECT account_id, password_hash, is_active
+              FROM accounts
+              WHERE username = :username LIMIT 1";
 
-      if (empty($userData[0])) {
+      $user = null;
+
+      // Use callback to get first row efficiently
+      CONN::dml($sql, [':username' => $credentials['username']], function($row) use (&$user) {
+        $user = $row;
+        return false; // Stop after first row
+      });
+
+      if ($user === null) {
         Log::logWarning('Login attempt for non-existent user: ' . $credentials['username']);
         return ['success' => false, 'message' => 'Invalid credentials.'];
       }
-
-      $user = $userData[0];
 
       if (!$user['is_active']) {
         Log::logWarning('Login attempt for inactive account: ' . $user['account_id']);
@@ -44,12 +52,11 @@ class Account {
       }
 
       // Verify the provided password against the stored hash
-      if (password_verify($credentials['password'], $user['password'])) {
+      if (password_verify($credentials['password'], $user['password_hash'])) {
         // Password is correct, generate token
         $token = $this->generateToken((string)$user['account_id']);
 
         if (!$token) {
-          // This case is unlikely if generateToken is solid, but good to have
           return ['success' => false, 'message' => 'Failed to generate session token.'];
         }
 
@@ -72,7 +79,7 @@ class Account {
      * @param string $username
      * @param string $plainPassword The plain text password to be hashed.
      * @param bool $isActive Initial status of the account (default true).
-     * @param array $otherAccountDetails Associative array for other fields like 'email', 'snapshot_id'.
+     * @param array $otherAccountDetails Associative array for additional fields (reserved for future use).
      * @return string|false The new account_id on success, false on failure.
      */
     public function createAccount(string $username, string $plainPassword, bool $isActive = true, array $otherAccountDetails = []): string|false {
@@ -86,35 +93,33 @@ class Account {
         $hashedPassword = password_hash($plainPassword, PASSWORD_DEFAULT);
         if (!$hashedPassword) {
             Log::logError("Account::createAccount - Failed to hash password.");
-            return false; // Should not happen with valid inputs
+            return false;
         }
+
+        $status = $isActive ? 'active' : 'inactive';
+
+        $sql = "INSERT INTO accounts (username, password_hash, is_active, status)
+                VALUES (:username, :password_hash, :is_active, :status)";
 
         $dataToInsert = [
             ':username' => $username,
-            ':password' => $hashedPassword,
-            ':is_active' => (int)$isActive, // Ensure TINYINT compatibility
+            ':password_hash' => $hashedPassword,
+            ':is_active' => (int)$isActive,
+            ':status' => $status
         ];
-
-        // Add other optional details if provided
-        $optionalFields = "";
-        if (array_key_exists('email', $otherAccountDetails)) {
-            $optionalFields .= ", email";
-            $dataToInsert[':email'] = $otherAccountDetails['email'];
-        }
-        if (array_key_exists('snapshot_id', $otherAccountDetails)) {
-            $optionalFields .= ", snapshot_id";
-            $dataToInsert[':snapshot_id'] = $otherAccountDetails['snapshot_id'];
-        }
-        $optionalValues = implode(", ", array_keys(array_intersect_key($dataToInsert, array_flip(explode(", ", trim($optionalFields, ", "))))));
-
-
-        $sql = "INSERT INTO account (username, password, is_active" . (empty($optionalFields) ? "" : $optionalFields) . ") 
-                VALUES (:username, :password, :is_active" . (empty($optionalValues) ? "" : ", " . $optionalValues) . ")";
 
         try {
             // Check if username already exists
-            $existingUser = CONN::dml("SELECT account_id FROM account WHERE username = :username LIMIT 1", [':username' => $username]);
-            if (!empty($existingUser)) {
+            $checkSql = "SELECT account_id FROM accounts WHERE username = :username LIMIT 1";
+            $existingUser = null;
+
+            // Use callback to check existence efficiently
+            CONN::dml($checkSql, [':username' => $username], function($row) use (&$existingUser) {
+                $existingUser = $row;
+                return false; // Stop after first row
+            });
+
+            if ($existingUser !== null) {
                 Log::logWarning("Account::createAccount - Username '$username' already exists.");
                 return false;
             }

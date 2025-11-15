@@ -93,10 +93,9 @@ try {
   if (!file_exists($envPath)) {
     \bX\Log::logWarning('.env file not found, using hard-coded credentials (DEPRECATED)');
     try {
-      \bX\CONN::add('mysql:host=127.0.0.1;port=3306;dbname=bnx_labtronic;charset=utf8mb4', 'quijote', 'quijotito');
+      \bX\CONN::add('mysql:host=127.0.0.1;port=3306;dbname=bintelx_core;charset=utf8mb4', 'quijote', 'quijotito');
     } catch (\Exception $e2) {
       \bX\Log::logError($e2->getMessage());
     }
   }
 }
-

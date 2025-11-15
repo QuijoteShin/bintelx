@@ -18,6 +18,39 @@ Router::register(['POST'], 'login', function(...$params) {
 
 
 /**
+ * @endpoint   /api/_demo/register
+ * @method     POST
+ * @scope      ROUTER_SCOPE_PUBLIC
+ * @purpose    Creates a new account (without profile or entity).
+ * @body       (JSON) {"username": "...", "password": "..."}
+ */
+Router::register(['POST'], 'register', function(...$params) {
+  header('Content-Type: application/json');
+  echo json_encode(["data" => AuthHandler::register(\bX\Args::$OPT)]);
+}, ROUTER_SCOPE_PUBLIC);
+
+
+/**
+ * @endpoint   /api/_demo/profile/create
+ * @method     POST
+ * @scope      ROUTER_SCOPE_PUBLIC
+ * @purpose    Creates a profile and entity for an account.
+ * @body       (JSON) {
+ *   "accountId": 123,
+ *   "entityName": "Juan Pérez",
+ *   "entityType": "person",
+ *   "nationalId": "12345678-9",
+ *   "nationalIsocode": "CL",
+ *   "profileName": "My Profile"
+ * }
+ */
+Router::register(['POST'], 'profile/create', function(...$params) {
+  header('Content-Type: application/json');
+  echo json_encode(["data" => AuthHandler::createProfile(\bX\Args::$OPT)]);
+}, ROUTER_SCOPE_PUBLIC);
+
+
+/**
  * @endpoint   /api/_demo/validate
  * @method     GET
  * @scope      ROUTER_SCOPE_PRIVATE
@@ -27,7 +60,7 @@ Router::register(['GET','POST'], 'validate', function(...$params) {
   header('Content-Type: application/json');
   // The logic simply returns the profile already loaded by the framework
   echo json_encode(["data" => AuthHandler::validateToken()]);
-}, ROUTER_SCOPE_PUBLIC);
+}, ROUTER_SCOPE_PRIVATE);
 
 
 /**
