@@ -35,6 +35,12 @@ node_modules/
 *.key
 
 log/
+app/test/
+*.md
 
 custom/
 bintelx/config/server/nginx_quic_build/
+ssl/
+install/
+bintelx/config/server/
+package.xml
