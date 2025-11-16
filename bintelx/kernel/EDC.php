@@ -570,23 +570,15 @@ class EDC {
             }
 
             // Obtener datos desde DataCaptureService
-            $dataResult = DataCaptureService::getRecord(
-                subjectEntityId: $formResponseId,
-                contextPayload: [
-                    'macro_context' => 'EDC_APP',
-                    'event_context' => 'FORM_' . $formDefId,
-                    'sub_context' => 'RESPONSE_' . $formResponseId
-                ],
-                fieldNames: $variableNames
-            );
+            $dataResult = DataCaptureService::getHotData($formResponseId, $variableNames);
 
             // Transformar a formato {field_id => value}
             $fields = [];
-            foreach ($dataResult['fields'] ?? [] as $variableName => $value) {
+            foreach ($dataResult['data'] ?? [] as $variableName => $valueData) {
                 // Extraer field_id de "edc.42.full_name" → "full_name"
                 $parts = explode('.', $variableName);
                 $fieldId = end($parts);
-                $fields[$fieldId] = $value;
+                $fields[$fieldId] = $valueData['value'];
             }
 
             return [
@@ -670,15 +662,7 @@ class EDC {
             $variableName = "edc.{$formDefId}.{$fieldId}";
 
             // Obtener audit trail desde DataCaptureService
-            $auditResult = DataCaptureService::getAuditTrailForField(
-                subjectEntityId: $formResponseId,
-                contextPayload: [
-                    'macro_context' => 'EDC_APP',
-                    'event_context' => 'FORM_' . $formDefId,
-                    'sub_context' => 'RESPONSE_' . $formResponseId
-                ],
-                fieldName: $variableName
-            );
+            $auditResult = DataCaptureService::getAuditTrailForVariable($formResponseId, $variableName);
 
             if (!$auditResult['success']) {
                 return $auditResult;
@@ -688,7 +672,7 @@ class EDC {
                 'success' => true,
                 'form_response_id' => $formResponseId,
                 'field_id' => $fieldId,
-                'audit_trail' => $auditResult['timeline'] ?? []
+                'audit_trail' => $auditResult['trail'] ?? []
             ];
 
         } catch (Exception $e) {

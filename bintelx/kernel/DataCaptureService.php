@@ -63,7 +63,7 @@ class DataCaptureService {
                 ':attributes_json' => isset($fieldDefinition['attributes_json'])
                     ? json_encode($fieldDefinition['attributes_json'])
                     : null,
-                ':is_pii' => $fieldDefinition['is_pii'] ?? false,
+                ':is_pii' => (int)($fieldDefinition['is_pii'] ?? false),
                 ':status' => $fieldDefinition['status'] ?? 'active',
                 ':updated_by_profile_id' => $actorProfileId
             ];
