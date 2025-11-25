@@ -25,6 +25,14 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 ENV_FILE="${PROJECT_ROOT}/.env"
 
+# Load system configuration from .env
+if [ -f "$ENV_FILE" ]; then
+    SYSTEM_WEB_USER=$(grep ^SYSTEM_WEB_USER "$ENV_FILE" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+    SYSTEM_WEB_GROUP=$(grep ^SYSTEM_WEB_GROUP "$ENV_FILE" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+fi
+SYSTEM_WEB_USER=${SYSTEM_WEB_USER:-www-data}
+SYSTEM_WEB_GROUP=${SYSTEM_WEB_GROUP:-www-data}
+
 clear
 print_header "Configurador de Instancia Bintelx"
 
@@ -132,14 +140,14 @@ print_info "Creando configuración de pool..."
 
 sudo tee "$FPM_POOL_CONF" > /dev/null <<EOF
 [${POOL_NAME}]
-user = www-data
-group = www-data
+user = ${SYSTEM_WEB_USER}
+group = ${SYSTEM_WEB_GROUP}
 
 listen = ${FPM_LISTEN}
 $(if [[ "$FPM_LISTEN" == *".sock" ]]; then
 cat <<SOCK_EOF
-listen.owner = www-data
-listen.group = www-data
+listen.owner = ${SYSTEM_WEB_USER}
+listen.group = ${SYSTEM_WEB_GROUP}
 listen.mode = 0660
 SOCK_EOF
 fi)

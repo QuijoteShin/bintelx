@@ -267,6 +267,21 @@ prompt_with_default \
     "${PROJECT_ROOT}/uploads" \
     "UPLOAD_PATH"
 
+print_info "Configuración del sistema..."
+echo ""
+
+prompt_with_default \
+    "Usuario del servidor web" \
+    "www-data" \
+    "SYSTEM_WEB_USER"
+
+prompt_with_default \
+    "Grupo del servidor web" \
+    "www-data" \
+    "SYSTEM_WEB_GROUP"
+
+echo ""
+
 prompt_with_default \
     "¿Habilitar audit log? (true/false)" \
     "true" \
@@ -335,6 +350,12 @@ LOG_PATH=${LOG_PATH}
 UPLOAD_PATH=${UPLOAD_PATH}
 
 # ==========================================
+# SYSTEM CONFIGURATION
+# ==========================================
+SYSTEM_WEB_USER=${SYSTEM_WEB_USER}
+SYSTEM_WEB_GROUP=${SYSTEM_WEB_GROUP}
+
+# ==========================================
 # FEATURES
 # ==========================================
 ENABLE_AUDIT_LOG=${ENABLE_AUDIT_LOG}
@@ -354,7 +375,13 @@ mkdir -p "$UPLOAD_PATH"
 chmod 775 "$LOG_PATH"
 chmod 775 "$UPLOAD_PATH"
 
-print_success "Directorios creados"
+# Set group ownership
+if command -v chgrp &> /dev/null; then
+    chgrp "${SYSTEM_WEB_GROUP}" "$LOG_PATH" 2>/dev/null || true
+    chgrp "${SYSTEM_WEB_GROUP}" "$UPLOAD_PATH" 2>/dev/null || true
+fi
+
+print_success "Directorios creados con grupo: ${SYSTEM_WEB_GROUP}"
 echo ""
 
 # Summary

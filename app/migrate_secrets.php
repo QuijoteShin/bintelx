@@ -63,15 +63,18 @@ class SecretMigrator
 
     private function createSecretsDirectory(): void
     {
+        $webGroup = Config::get('SYSTEM_WEB_GROUP', 'www-data');
+
         if (!is_dir($this->secretsDir)) {
-            mkdir($this->secretsDir, 0700, true);
+            mkdir($this->secretsDir, 0750, true);
             $this->success("Created secrets directory: {$this->secretsDir}");
         } else {
             $this->info("Using existing secrets directory: {$this->secretsDir}");
         }
 
-        chmod($this->secretsDir, 0700);
-        $this->success("Set directory permissions to 0700\n");
+        chmod($this->secretsDir, 0750);
+        chgrp($this->secretsDir, $webGroup);
+        $this->success("Set directory permissions to 0750 (group: {$webGroup})\n");
     }
 
     private function findSecretsInEnv(): array
@@ -163,13 +166,15 @@ class SecretMigrator
     {
         $type = $info['type'];
         $value = $info['value'];
+        $webGroup = Config::get('SYSTEM_WEB_GROUP', 'www-data');
 
         $extension = ($type === 'json') ? 'json' : 'secret';
         $filename = strtolower($key) . '.' . $extension;
         $filepath = $this->secretsDir . '/' . $filename;
 
         file_put_contents($filepath, $value);
-        chmod($filepath, 0600);
+        chmod($filepath, 0640);
+        chgrp($filepath, $webGroup);
 
         $relativeFilepath = 'secrets/' . $filename;
         $prefix = ($type === 'json') ? 'SECRET_JSON_' : 'SECRET_PLAIN_';
@@ -187,7 +192,7 @@ class SecretMigrator
 
         $this->success("✓ Migrated {$key}");
         echo "  File: {$relativeFilepath}\n";
-        echo "  Permissions: 0600\n";
+        echo "  Permissions: 0640 (group: {$webGroup})\n";
 
         $this->migratedSecrets[$key] = [
             'file' => $filepath,
