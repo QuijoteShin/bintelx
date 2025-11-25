@@ -141,6 +141,9 @@ class TaskRouter
         // Setup HTTP-like environment
         $_SERVER['REQUEST_METHOD'] = $method;
         $_SERVER['REQUEST_URI'] = $uri;
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        $_SERVER['HTTP_X_USER_TIMEZONE'] = \bX\Config::get('DEFAULT_TIMEZONE', 'America/Santiago');
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1'; // Internal call
 
         // Inject headers
         foreach ($headers as $key => $value) {
@@ -151,13 +154,58 @@ class TaskRouter
         // Inject body for POST/PUT/PATCH
         if (in_array($method, ['POST', 'PUT', 'PATCH'])) {
             $_POST = $data;
-            \bX\Args::$OPT = $data;
         }
 
         // Inject query params for GET
         if ($method === 'GET') {
             $_GET = $data;
         }
+
+        // Initialize Args (como api.php)
+        new \bX\Args();
+
+        // Set timezone for DB
+        CONN::nodml("SET time_zone = '" . $_SERVER["HTTP_X_USER_TIMEZONE"] . "'");
+
+        // JWT Authentication (como api.php)
+        $token = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+        if (!empty($token)) {
+            $jwtSecret = \bX\Config::get('JWT_SECRET');
+            $jwtXorKey = \bX\Config::get('JWT_XOR_KEY', '');
+
+            if ($jwtSecret) {
+                $account = new \bX\Account($jwtSecret, $jwtXorKey);
+                $accountId = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
+
+                if ($accountId) {
+                    $profile = new \bX\Profile();
+                    $profile->load(['account_id' => $accountId]);
+
+                    // Set permissions
+                    if ($accountId == 1) {
+                        Router::$currentUserPermissions['*'] = ROUTER_SCOPE_WRITE;
+                    } else {
+                        Router::$currentUserPermissions['*'] = ROUTER_SCOPE_PRIVATE;
+                    }
+                }
+            }
+        }
+
+        // Extract module from URI
+        $module = explode('/', $uri)[2] ?? 'default';
+
+        // Load routes for this module (como api.php)
+        Router::load([
+            'find_str' => \bX\WarmUp::$BINTELX_HOME . '../custom/',
+            'pattern' => '{*/,}*{endpoint,controller}.php'
+        ], function($routeFileContext) use ($module) {
+            if (is_file($routeFileContext['real']) && strpos($routeFileContext['real'], "/$module/") > 1) {
+                require_once $routeFileContext['real'];
+            }
+        });
+
+        // Initialize Router (como api.php)
+        $route = new Router($uri, '/api');
 
         // Capture Router output
         ob_start();
@@ -167,6 +215,13 @@ class TaskRouter
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
+
+            // Extract JSON from output (skip any echo statements)
+            $jsonStart = strpos($output, '{');
+            if ($jsonStart !== false) {
+                $output = substr($output, $jsonStart);
+            }
+
             $result = json_decode($output, true) ?? ['raw' => $output];
 
             // Send response if ResponseBus available
