@@ -7,6 +7,12 @@ node_modules
 .env
 .env.*
 !.env.example
+
+# Secret files (referenced by SECRET_PLAIN_* and SECRET_JSON_*)
+*.secret
+*.key
+secrets/
+/run/secrets/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # OS files
