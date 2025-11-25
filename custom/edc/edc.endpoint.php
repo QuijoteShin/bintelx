@@ -14,24 +14,6 @@ use bX\EDC;
 use bX\Profile;
 use bX\Args;
 
-// ==================== TEST ENDPOINTS ====================
-
-/**
- * @endpoint   /api/edc/test
- * @method     GET
- * @scope      ROUTER_SCOPE_PUBLIC
- * @purpose    Simple test endpoint to verify EDC module loads
- * @tag        Test
- */
-Router::register(['GET'], 'test', function() {
-    header('Content-Type: application/json');
-    echo json_encode([
-        'success' => true,
-        'message' => 'EDC module loaded successfully!',
-        'timestamp' => date('c')
-    ]);
-}, ROUTER_SCOPE_PUBLIC);
-
 // ==================== FORM DEFINITIONS ====================
 
 /**
@@ -289,22 +271,3 @@ Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)/audit/(?P<fieldId>[^
     http_response_code($result['success'] ? 200 : 404);
     echo json_encode($result);
 }, ROUTER_SCOPE_PRIVATE);
-
-// ==================== TEST ENDPOINT (END) ====================
-
-/**
- * @endpoint   /api/edc/ping
- * @method     GET
- * @scope      ROUTER_SCOPE_PUBLIC
- * @purpose    Test endpoint at end of file
- * @tag        Test
- */
-Router::register(['GET'], 'ping', function() {
-    header('Content-Type: application/json');
-    echo json_encode([
-        'success' => true,
-        'message' => 'EDC ping successful - file loaded completely',
-        'endpoints_registered' => 'All endpoints should be loaded',
-        'timestamp' => date('c')
-    ]);
-}, ROUTER_SCOPE_PUBLIC);

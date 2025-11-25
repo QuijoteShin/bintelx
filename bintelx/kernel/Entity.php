@@ -42,8 +42,8 @@ class Entity {
     $existingId = $entity['entity_id'] ?? 0;
     if ($existingId > 0) {
       // Actualizar registro existente
-      $query = "UPDATE `entity`
-                      SET 
+      $query = "UPDATE `entities`
+                      SET
                           comp_id = :comp_id,
                           comp_branch_id = :comp_branch_id,
                           snapshot_id = :snapshot_id,
@@ -67,28 +67,28 @@ class Entity {
       \bX\CONN::nodml($query, $params);
       return $existingId;
     } else {
-      // Insertar nuevo registro
-      $query = "INSERT INTO `entity`
-                      (comp_id, comp_branch_id, snapshot_id, entity_type, entity_name, 
-                       entity_idn, entity_idn_clear, entity_country)
+      // Insertar nuevo registro (TARGET SCHEMA)
+      $query = "INSERT INTO `entities`
+                      (entity_type, primary_name, national_id, national_isocode,
+                       status, created_by_profile_id, updated_by_profile_id)
                       VALUES
-                      (:comp_id, :comp_branch_id, :snapshot_id, :entity_type, :entity_name, 
-                       :entity_idn, :entity_idn_clear, :entity_country)";
+                      (:entity_type, :primary_name, :national_id, :national_isocode,
+                       :status, :created_by, :updated_by)";
 
       $params = [
-        ':comp_id'            => $entity['comp_id'] ?? self::$comp_id,
-        ':comp_branch_id'     => $entity['comp_branch_id'] ?? self::$comp_branch_id,
-        ':snapshot_id'        => $entity['snapshot_id'] ?? 0,
-        ':entity_type'        => strtolower($entity['entity_type'] ?? ''),
-        ':entity_name'        => $entity['entity_name'] ?? null,
-        ':entity_idn'         => $entity['entity_idn'] ?? null,
-        ':entity_idn_clear'   => $entity['entity_idn_clear'] ?? null,
-        ':entity_country'     => $entity['entity_country'] ?? 'CL',
+        ':entity_type'        => strtolower($entity['entity_type'] ?? 'general'),
+        ':primary_name'       => $entity['entity_name'] ?? $entity['primary_name'] ?? null,
+        ':national_id'        => $entity['entity_idn'] ?? $entity['national_id'] ?? null,
+        ':national_isocode'   => $entity['entity_country'] ?? $entity['national_isocode'] ?? null,
+        ':status'             => $entity['status'] ?? 'active',
+        ':created_by'         => $entity['created_by_profile_id'] ?? null,
+        ':updated_by'         => $entity['updated_by_profile_id'] ?? null,
       ];
       $result = \bX\CONN::nodml($query, $params);
 
       if (!$result['success']) {
-        throw new \Exception("No se pudo insertar la entidad.");
+        $errorMsg = $result['error'] ?? 'Unknown error';
+        throw new \Exception("No se pudo insertar la entidad: $errorMsg");
       }
       // Retorna el nuevo ID (MySQL: lastInsertId)
       return $result['last_id'];
@@ -106,7 +106,7 @@ class Entity {
       return false;
     }
 
-    $query = "SELECT * FROM `entity` 
+    $query = "SELECT * FROM `entities` 
                   WHERE entity_id = :entity_id 
                   AND comp_id = :comp_id";
 
@@ -136,7 +136,7 @@ class Entity {
    */
   public function getAll(array $filters = []): array
   {
-    $query = "SELECT * FROM `entity` WHERE comp_id = :comp_id";
+    $query = "SELECT * FROM `entities` WHERE comp_id = :comp_id";
     $params = [
       ':comp_id' => self::$comp_id
     ];

@@ -55,7 +55,8 @@ class Profile {
         $primaryEntityId = $profileData['primary_entity_id'] ?? null;
         $profileName = $profileData['profile_name'] ?? "Profile #{$existingId}";
         $status = $profileData['status'] ?? 'active';
-        $actorProfileId = self::$profile_id ?: 1; // Who is making this change
+        // Allow override for actor_profile_id (useful for first account creation)
+        $actorProfileId = $profileData['actor_profile_id'] ?? (self::$profile_id ?: null);
 
         if ($existingId > 0) {
             // Update existing record
@@ -133,6 +134,7 @@ class Profile {
         $query = "SELECT * FROM profiles WHERE account_id = :account_id LIMIT 1";
         $params = [':account_id' => (int)$criteria['account_id']];
 
+
         $profileData = null;
 
         // Use callback to get first row efficiently without loading full array
@@ -141,13 +143,13 @@ class Profile {
             return false; // Stop after first row
         });
 
+        self::$isLoggedIn = true;
+        self::$account_id = (int)$criteria['account_id'];
         if ($profileData !== null) {
             $this->data_raw = $profileData;
             $this->data = $profileData;
 
             // Populate static properties
-            self::$isLoggedIn = true;
-            self::$account_id = $profileData['account_id'];
             self::$profile_id = $profileData['profile_id'] ?? 0;
             self::$entity_id = $profileData['primary_entity_id'] ?? 0;
 

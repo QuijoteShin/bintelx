@@ -1,4 +1,4 @@
-<?php
+<?php # bintelx/kernel/Config.php
 namespace bX;
 
 /**
@@ -14,6 +14,9 @@ class Config
 {
     private static array $config = [];
     private static bool $loaded = false;
+
+    private const SECRET_PLAIN_EXTENSIONS = ['secret', 'key', 'txt'];
+    private const SECRET_JSON_EXTENSIONS = ['json'];
 
     /**
      * Load environment variables from .env file
@@ -35,31 +38,122 @@ class Config
         $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
 
         foreach ($lines as $line) {
-            // Skip comments
             if (strpos(trim($line), '#') === 0) {
                 continue;
             }
 
-            // Parse key=value
             if (strpos($line, '=') !== false) {
                 list($key, $value) = explode('=', $line, 2);
                 $key = trim($key);
                 $value = trim($value);
 
-                // Remove quotes if present
                 if (preg_match('/^(["\'])(.*)\1$/', $value, $matches)) {
                     $value = $matches[2];
                 }
 
-                // Store in both $_ENV and internal array
-                $_ENV[$key] = $value;
-                putenv("{$key}={$value}");
-                self::$config[$key] = $value;
+                if (strpos($key, 'SECRET_PLAIN_') === 0) {
+                    $actualKey = substr($key, strlen('SECRET_PLAIN_'));
+                    $secretValue = self::loadPlainSecret($value, $actualKey);
+                    if ($secretValue !== null) {
+                        self::setConfig($actualKey, $secretValue);
+                    }
+                    continue;
+                }
+
+                if (strpos($key, 'SECRET_JSON_') === 0) {
+                    $actualKey = substr($key, strlen('SECRET_JSON_'));
+                    $secretValue = self::loadJsonSecret($value, $actualKey);
+                    if ($secretValue !== null) {
+                        self::setConfig($actualKey, $secretValue);
+                    }
+                    continue;
+                }
+
+                self::setConfig($key, $value);
             }
         }
 
         self::$loaded = true;
         return true;
+    }
+
+    private static function setConfig(string $key, string $value): void
+    {
+        $_ENV[$key] = $value;
+        putenv("{$key}={$value}");
+        self::$config[$key] = $value;
+    }
+
+    private static function validateSecretExtension(string $filePath, array $allowedExtensions, string $secretType): bool
+    {
+        $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+
+        if (!in_array($extension, $allowedExtensions, true)) {
+            error_log("Config: Invalid extension '.{$extension}' for {$secretType}. Allowed: " . implode(', ', $allowedExtensions));
+            return false;
+        }
+
+        return true;
+    }
+
+    private static function loadPlainSecret(string $filePath, string $keyName): ?string
+    {
+        $resolvedPath = self::resolveSecretPath($filePath);
+
+        if (!file_exists($resolvedPath)) {
+            error_log("Config: Secret file not found for '{$keyName}': {$resolvedPath}");
+            return null;
+        }
+
+        if (!self::validateSecretExtension($resolvedPath, self::SECRET_PLAIN_EXTENSIONS, 'SECRET_PLAIN_' . $keyName)) {
+            return null;
+        }
+
+        $content = file_get_contents($resolvedPath);
+        if ($content === false) {
+            error_log("Config: Failed to read secret file for '{$keyName}': {$resolvedPath}");
+            return null;
+        }
+
+        return trim($content);
+    }
+
+    private static function loadJsonSecret(string $filePath, string $keyName): ?string
+    {
+        $resolvedPath = self::resolveSecretPath($filePath);
+
+        if (!file_exists($resolvedPath)) {
+            error_log("Config: Secret JSON file not found for '{$keyName}': {$resolvedPath}");
+            return null;
+        }
+
+        if (!self::validateSecretExtension($resolvedPath, self::SECRET_JSON_EXTENSIONS, 'SECRET_JSON_' . $keyName)) {
+            return null;
+        }
+
+        $content = file_get_contents($resolvedPath);
+        if ($content === false) {
+            error_log("Config: Failed to read secret JSON file for '{$keyName}': {$resolvedPath}");
+            return null;
+        }
+
+        $decoded = json_decode($content, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("Config: Invalid JSON in secret file for '{$keyName}': " . json_last_error_msg());
+            return null;
+        }
+
+        return $content;
+    }
+
+    private static function resolveSecretPath(string $filePath): string
+    {
+        if (substr($filePath, 0, 1) === '/') {
+            return $filePath;
+        }
+
+        $envDir = dirname(__DIR__, 2);
+        return $envDir . '/' . $filePath;
     }
 
     /**
@@ -151,6 +245,31 @@ class Config
         }
 
         return array_map('trim', explode(',', $value));
+    }
+
+    /**
+     * Get configuration value as parsed JSON
+     *
+     * @param string $key Configuration key
+     * @param mixed $default Default value
+     * @param bool $assoc Return associative array instead of object
+     * @return mixed
+     */
+    public static function getJson(string $key, $default = null, bool $assoc = true)
+    {
+        $value = self::get($key);
+
+        if ($value === null) {
+            return $default;
+        }
+
+        $decoded = json_decode($value, $assoc);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("Config: Failed to decode JSON for '{$key}': " . json_last_error_msg());
+            return $default;
+        }
+
+        return $decoded;
     }
 
     /**

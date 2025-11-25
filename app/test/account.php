@@ -8,9 +8,12 @@ new \bX\Args();
 
 use bX\Router;
 $accountService = new \bX\Account("woz.min..", 'XOR_KEY_2o25');
-$newId = $accountService->createAccount("newuser", "securePassword123", true, ['email' => 'newuser@example.com']);
-if ($newId) {
-    // User created, newId is their account_id
+$accountData = $accountService->createAccount("newuser", "securePassword123", true, ['email' => 'newuser@example.com']);
+if ($accountData) {
+    // User created with account, entity, and profile
+    echo "Account ID: {$accountData['account_id']}\n";
+    echo "Profile ID: {$accountData['profile_id']}\n";
+    echo "Entity ID: {$accountData['entity_id']}\n";
 }
 
 

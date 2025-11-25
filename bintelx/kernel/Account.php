@@ -75,14 +75,15 @@ class Account {
 
     /**
      * Creates a new account in the database.
+     * Automatically creates a personal Profile with an empty Entity.
      *
      * @param string $username
      * @param string $plainPassword The plain text password to be hashed.
      * @param bool $isActive Initial status of the account (default true).
      * @param array $otherAccountDetails Associative array for additional fields (reserved for future use).
-     * @return string|false The new account_id on success, false on failure.
+     * @return array|false Array with account_id, entity_id, and profile_id on success, false on failure.
      */
-    public function createAccount(string $username, string $plainPassword, bool $isActive = true, array $otherAccountDetails = []): string|false {
+    public function createAccount(string $username, string $plainPassword, bool $isActive = true, array $otherAccountDetails = []): array|false {
         Log::logDebug("Account::createAccount - Attempting to create account for username: " . $username);
 
         if (empty(trim($username)) || empty(trim($plainPassword))) {
@@ -124,18 +125,68 @@ class Account {
                 return false;
             }
 
-            $result = CONN::nodml($sql, $dataToInsert);
+            // Start transaction for Account + Entity + Profile creation
+            CONN::begin();
 
-            if ($result['success'] && $result['last_id']) {
+            try {
+                // 1. Create Account
+                $result = CONN::nodml($sql, $dataToInsert);
+
+                if (!$result['success'] || !$result['last_id']) {
+                    throw new Exception("Failed to insert account: " . ($result['error'] ?? 'Unknown DB error'));
+                }
+
                 $newAccountId = (string)$result['last_id'];
-                Log::logInfo("Account::createAccount - Account created successfully for username: $username, Account ID: $newAccountId");
-                return $newAccountId;
-            } else {
-                Log::logError("Account::createAccount - Failed to insert new account for username: $username.", ['db_error' => $result['error'] ?? 'Unknown DB error']);
-                return false;
+                Log::logInfo("Account::createAccount - Account created: username=$username, account_id=$newAccountId");
+
+                // 2. Create empty Entity for this account
+                $entityId = Entity::save([
+                    'entity_type' => 'personal',
+                    'entity_name' => $username,
+                    'comp_id' => 0,
+                    'comp_branch_id' => 0
+                ]);
+
+                if (!$entityId) {
+                    throw new Exception("Failed to create entity for account $newAccountId");
+                }
+
+                Log::logInfo("Account::createAccount - Entity created: entity_id=$entityId for account_id=$newAccountId");
+
+                // 3. Create Profile linked to Account and Entity
+                $profileId = Profile::save([
+                    'account_id' => (int)$newAccountId,
+                    'primary_entity_id' => $entityId,
+                    'profile_name' => "Personal Profile - $username",
+                    'status' => 'active',
+                    'actor_profile_id' => null // First account, no actor yet
+                ]);
+
+                if (!$profileId) {
+                    throw new Exception("Failed to create profile for account $newAccountId");
+                }
+
+                Log::logInfo("Account::createAccount - Profile created: profile_id=$profileId, entity_id=$entityId for account_id=$newAccountId");
+
+                // Commit transaction
+                CONN::commit();
+
+                Log::logInfo("Account::createAccount - Complete setup: account_id=$newAccountId, entity_id=$entityId, profile_id=$profileId");
+
+                return [
+                    'account_id' => $newAccountId,
+                    'entity_id' => $entityId,
+                    'profile_id' => $profileId
+                ];
+
+            } catch (Exception $e) {
+                CONN::rollback();
+                throw $e; // Re-throw to outer catch
             }
+
         } catch (Exception $e) {
             Log::logError("Account::createAccount - Exception for username $username: " . $e->getMessage());
+            error_log("Account::createAccount EXCEPTION: " . $e->getMessage() . "\nTrace: " . $e->getTraceAsString());
             return false;
         }
     }
