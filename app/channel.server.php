@@ -19,6 +19,8 @@ use bX\Config;
 use bX\JWT;
 use bX\Log;
 use bX\Router;
+use bX\Profile;
+use bX\CONN;
 use bX\Async\TaskRouter;
 use bX\Async\SwooleResponseBus;
 use bX\Async\SwooleAsyncBusAdapter;
@@ -141,58 +143,184 @@ class ChannelServer
 
             $type = $data['type'] ?? null;
 
+            # Inferir type si viene 'route' (backward compat)
+            if (!$type && isset($data['route'])) {
+                $type = 'api';
+            }
+
             if (!$type) {
                 $this->sendError($server, $fd, 'Missing message type');
                 return;
             }
 
-            # Map WebSocket message type to Router endpoint
-            # type: 'auth' -> WS /ws/auth
-            # type: 'subscribe' -> WS /ws/subscribe
-            $uri = "/ws/{$type}";
+            # Enrutamiento limpio: WS nativo vs API REST
+            switch ($type) {
+                case 'api':
+                case 'endpoint':
+                    # Ejecutar endpoint REST directamente en Worker (Router Híbrido)
+                    $this->executeApiRoute($server, $fd, $data);
+                    break;
 
-            # Setup context for the endpoint
-            $_SERVER['REQUEST_METHOD'] = 'WS';
-            $_SERVER['REQUEST_URI'] = $uri;
-            $_SERVER['CONTENT_TYPE'] = 'application/json';
-            $_POST = $data;
-
-            # Inject WebSocket-specific context
-            $_SERVER['WS_SERVER'] = $server;
-            $_SERVER['WS_FD'] = $fd;
-            $_SERVER['WS_AUTHENTICATED_CONNECTIONS'] = &$this->authenticatedConnections;
-            $_SERVER['WS_CHANNELS'] = &$this->channels;
-
-            # Initialize Args
-            new \bX\Args();
-
-            # Initialize Router (required before dispatch)
-            $route = new Router($uri, '/ws');
-
-            # Capture output
-            ob_start();
-
-            try {
-                # Execute Router
-                Router::dispatch('WS', $uri);
-
-                $output = ob_get_clean();
-
-                # Send response to client
-                if (!empty($output)) {
-                    $server->push($fd, $output);
-                }
-
-            } catch (\Exception $e) {
-                ob_end_clean();
-                $this->sendError($server, $fd, $e->getMessage());
-                Log::logError("ChannelServer Router: " . $e->getMessage(), ['type' => $type, 'fd' => $fd]);
+                default:
+                    # Mensajes WS nativos: auth, ping, subscribe, publish, etc.
+                    $this->executeWsRoute($server, $fd, $type, $data);
+                    break;
             }
 
         } catch (\Exception $e) {
             $this->error("Error processing message from fd={$fd}: " . $e->getMessage());
             $this->sendError($server, $fd, 'Internal server error');
             Log::logError("ChannelServer: " . $e->getMessage());
+        }
+    }
+
+    # Ejecuta endpoints REST vía Router Híbrido
+    private function executeApiRoute(Swoole\WebSocket\Server $server, int $fd, array $data): void
+    {
+        $uri = $data['route'] ?? $data['uri'] ?? null;
+        $method = strtoupper($data['method'] ?? 'POST');
+        $body = $data['body'] ?? [];
+        $query = $data['query'] ?? [];
+        $correlationId = $data['correlation_id'] ?? uniqid('api_', true);
+
+        if (!$uri) {
+            $this->sendError($server, $fd, 'API calls require a "route" or "uri"');
+            return;
+        }
+
+        # Context Switching: Simular entorno HTTP
+        Profile::resetStaticProfileData();
+        Router::$currentUserPermissions = [];
+
+        $_POST = ($method === 'POST' || $method === 'PUT' || $method === 'PATCH') ? $body : [];
+        $_GET = ($method === 'GET') ? $query : [];
+        $_SERVER['REQUEST_URI'] = $uri;
+        $_SERVER['REQUEST_METHOD'] = $method;
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        $_SERVER['REMOTE_ADDR'] = $server->getClientInfo($fd)['remote_ip'] ?? '127.0.0.1';
+        $_SERVER['HTTP_X_USER_TIMEZONE'] = Config::get('DEFAULT_TIMEZONE', 'America/Santiago');
+
+        # Re-hidratar Args
+        \bX\Args::$OPT = [];
+        \bX\Args::$input = [];
+        new \bX\Args();
+
+        # Autenticación: Usar token de sesión WS si existe
+        if (isset($this->authenticatedConnections[$fd]['token'])) {
+            $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $this->authenticatedConnections[$fd]['token'];
+            $this->loadProfile($this->authenticatedConnections[$fd]['token'], $fd);
+        } elseif (!empty($data['token'])) {
+            $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $data['token'];
+            $this->loadProfile($data['token'], $fd);
+        }
+
+        # Ejecutar Router (igual que api.php)
+        ob_start();
+
+        try {
+            $route = new Router($uri, '/api');
+            Router::dispatch($method, $uri);
+
+            $output = ob_get_clean();
+
+            # Parse JSON response
+            $responseData = json_decode($output, true) ?? ['raw' => $output];
+
+            # Enviar respuesta estructurada
+            $server->push($fd, json_encode([
+                'type' => 'api_response',
+                'correlation_id' => $correlationId,
+                'status' => 'success',
+                'data' => $responseData,
+                'timestamp' => time()
+            ]));
+
+        } catch (\Exception $e) {
+            ob_end_clean();
+
+            $server->push($fd, json_encode([
+                'type' => 'api_error',
+                'correlation_id' => $correlationId,
+                'message' => $e->getMessage(),
+                'timestamp' => time()
+            ]));
+
+            Log::logError("API via WS failed", ['uri' => $uri, 'error' => $e->getMessage()]);
+        }
+
+        # Cleanup
+        Profile::resetStaticProfileData();
+    }
+
+    # Ejecuta endpoints WS nativos
+    private function executeWsRoute(Swoole\WebSocket\Server $server, int $fd, string $type, array $data): void
+    {
+        $uri = "/ws/{$type}";
+
+        # Setup context
+        $_SERVER['REQUEST_METHOD'] = 'WS';
+        $_SERVER['REQUEST_URI'] = $uri;
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        $_POST = $data;
+
+        # Inject WS context
+        $_SERVER['WS_SERVER'] = $server;
+        $_SERVER['WS_FD'] = $fd;
+        $_SERVER['WS_AUTHENTICATED_CONNECTIONS'] = &$this->authenticatedConnections;
+        $_SERVER['WS_CHANNELS'] = &$this->channels;
+
+        # Initialize Args
+        new \bX\Args();
+
+        # Initialize Router
+        $route = new Router($uri, '/ws');
+
+        # Execute
+        ob_start();
+
+        try {
+            Router::dispatch('WS', $uri);
+            $output = ob_get_clean();
+
+            if (!empty($output)) {
+                $server->push($fd, $output);
+            }
+
+        } catch (\Exception $e) {
+            ob_end_clean();
+            $this->sendError($server, $fd, $e->getMessage());
+            Log::logError("WS Route failed", ['type' => $type, 'error' => $e->getMessage()]);
+        }
+    }
+
+    # Autentica y carga Profile
+    private function loadProfile(string $token, int $fd): void
+    {
+        try {
+            $jwtSecret = Config::get('JWT_SECRET');
+            $jwtXorKey = Config::get('JWT_XOR_KEY', '');
+
+            $account = new \bX\Account($jwtSecret, $jwtXorKey);
+            $accountId = $account->verifyToken($token, $_SERVER['REMOTE_ADDR']);
+
+            if ($accountId) {
+                $profile = new Profile();
+                $profile->load(['account_id' => $accountId]);
+
+                # Guardar token en sesión WS
+                $this->authenticatedConnections[$fd]['token'] = $token;
+                $this->authenticatedConnections[$fd]['account_id'] = $accountId;
+                $this->authenticatedConnections[$fd]['profile_id'] = Profile::$profile_id;
+
+                # Set permissions
+                if ($accountId == 1) {
+                    Router::$currentUserPermissions['*'] = ROUTER_SCOPE_WRITE;
+                } else {
+                    Router::$currentUserPermissions['*'] = ROUTER_SCOPE_PRIVATE;
+                }
+            }
+        } catch (\Exception $e) {
+            Log::logWarning("Profile load failed", ['error' => $e->getMessage()]);
         }
     }
 
