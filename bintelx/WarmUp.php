@@ -27,8 +27,15 @@ class WarmUp
       $class_root  = str_replace('\\', '/', $class_root);
       $class_child = str_replace('\\', '/', $class_child);
       $class = str_replace('\\', '/', $class);
-      ## kernel
-      $file = self::$BINTELX_HOME  . "/kernel/{$class_root}.php";
+
+      ## kernel - Try PSR-4 style first for deep namespaces (bX\Core\Async\ClassName)
+      $psr4Path = str_replace('bX/', '', $class);
+      $file = self::$BINTELX_HOME  . "/kernel/{$psr4Path}.php";
+
+      ## kernel - fallback to legacy logic
+      if (!file_exists($file)) {
+        $file = self::$BINTELX_HOME  . "/kernel/{$class_root}.php";
+      }
       if (!file_exists($file) && !empty($class_child)) {
         $file = self::$BINTELX_HOME  . "/kernel/{$class_root}/{$class_child}.php";
       }

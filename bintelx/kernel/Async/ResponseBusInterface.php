@@ -1,11 +1,9 @@
-<?php
+<?php # bintelx/kernel/Async/ResponseBusInterface.php
 
-namespace bX\Core\Async;
+namespace bX\Async;
 
-/**
- * Contract for sending responses from an asynchronous process (Worker) back to the client.
- * Abstracts the logic of WebSockets, SSE, or Push Notifications.
- */
+# Contract for sending responses from an asynchronous process (Worker) back to the client
+# Abstracts the logic of WebSockets, SSE, or Push Notifications
 interface ResponseBusInterface
 {
     /**

@@ -1,13 +1,11 @@
-<?php
+<?php # bintelx/kernel/Async/SwooleResponseBus.php
 
-namespace bX\Core\Async;
+namespace bX\Async;
 
 use Swoole\WebSocket\Server;
 
-/**
- * Swoole implementation of ResponseBusInterface.
- * Sends responses back to WebSocket clients.
- */
+# Swoole implementation of ResponseBusInterface
+# Sends responses back to WebSocket clients
 class SwooleResponseBus implements ResponseBusInterface
 {
     protected Server $server;

@@ -19,9 +19,9 @@ use bX\Config;
 use bX\JWT;
 use bX\Log;
 use bX\Router;
-use bX\Core\Async\TaskRouter;
-use bX\Core\Async\SwooleResponseBus;
-use bX\Core\Async\SwooleAsyncBusAdapter;
+use bX\Async\TaskRouter;
+use bX\Async\SwooleResponseBus;
+use bX\Async\SwooleAsyncBusAdapter;
 
 class ChannelServer
 {
@@ -35,7 +35,7 @@ class ChannelServer
     private string $host;
     private int $port;
 
-    public function __construct(string $host = '0.0.0.0', int $port = 9501)
+    public function __construct(string $host = '127.0.0.1', int $port = 8000)
     {
         $this->host = $host;
         $this->port = $port;
@@ -47,12 +47,17 @@ class ChannelServer
 
         $this->info("Initializing Bintelx Channel Server...");
         $this->info("Host: {$host}, Port: {$port}");
+        $this->info("SSL/TLS: Disabled (Nginx handles SSL termination)");
 
-        $this->server = new Swoole\WebSocket\Server($host, $port);
+        # Plain WebSocket server (no SSL) - Nginx will handle SSL termination
+        $this->server = new Swoole\WebSocket\Server($host, $port, SWOOLE_PROCESS, SWOOLE_SOCK_TCP);
+
+        $workerNum = Config::getInt('CHANNEL_WORKER_NUM', swoole_cpu_num() * 2);
+        $taskWorkerNum = Config::getInt('CHANNEL_TASK_WORKER_NUM', swoole_cpu_num());
 
         $this->server->set([
-            'worker_num' => swoole_cpu_num() * 2,
-            'task_worker_num' => swoole_cpu_num(),
+            'worker_num' => $workerNum,
+            'task_worker_num' => $taskWorkerNum,
             'daemonize' => false,
             'log_level' => SWOOLE_LOG_INFO,
             'heartbeat_check_interval' => 30,
@@ -77,7 +82,8 @@ class ChannelServer
     {
         $this->success("Channel Server started successfully");
         $this->info("Listening on ws://{$this->host}:{$this->port}");
-        $this->info("Workers: {$server->setting['worker_num']}");
+        $this->info("Workers: {$server->setting['worker_num']}, Task Workers: {$server->setting['task_worker_num']}");
+        $this->info("Connect via: ws://{$this->host}:{$this->port} (local) or wss://your-domain.com/ws (via Nginx)");
     }
 
     public function onWorkerStart(Swoole\WebSocket\Server $server, int $workerId): void
@@ -90,6 +96,12 @@ class ChannelServer
         } else {
             // Regular workers - initialize AsyncBus for controllers
             $this->asyncBus = new SwooleAsyncBusAdapter($server);
+
+            // Load WebSocket routes
+            Router::load([
+                'find_str' => __DIR__ . '/../custom/ws',
+                'pattern' => '*.endpoint.php'
+            ]);
 
             // Load all API routes
             Router::load([
@@ -129,33 +141,52 @@ class ChannelServer
 
             $type = $data['type'] ?? null;
 
-            switch ($type) {
-                case 'auth':
-                    $this->handleAuth($server, $fd, $data);
-                    break;
+            if (!$type) {
+                $this->sendError($server, $fd, 'Missing message type');
+                return;
+            }
 
-                case 'subscribe':
-                    $this->handleSubscribe($server, $fd, $data);
-                    break;
+            # Map WebSocket message type to Router endpoint
+            # type: 'auth' -> WS /ws/auth
+            # type: 'subscribe' -> WS /ws/subscribe
+            $uri = "/ws/{$type}";
 
-                case 'unsubscribe':
-                    $this->handleUnsubscribe($server, $fd, $data);
-                    break;
+            # Setup context for the endpoint
+            $_SERVER['REQUEST_METHOD'] = 'WS';
+            $_SERVER['REQUEST_URI'] = $uri;
+            $_SERVER['CONTENT_TYPE'] = 'application/json';
+            $_POST = $data;
 
-                case 'publish':
-                    $this->handlePublish($server, $fd, $data);
-                    break;
+            # Inject WebSocket-specific context
+            $_SERVER['WS_SERVER'] = $server;
+            $_SERVER['WS_FD'] = $fd;
+            $_SERVER['WS_AUTHENTICATED_CONNECTIONS'] = &$this->authenticatedConnections;
+            $_SERVER['WS_CHANNELS'] = &$this->channels;
 
-                case 'ping':
-                    $server->push($fd, json_encode(['type' => 'pong', 'timestamp' => time()]));
-                    break;
+            # Initialize Args
+            new \bX\Args();
 
-                case 'endpoint':
-                    $this->handleEndpointRequest($server, $fd, $data);
-                    break;
+            # Initialize Router (required before dispatch)
+            $route = new Router($uri, '/ws');
 
-                default:
-                    $this->sendError($server, $fd, "Unknown message type: {$type}");
+            # Capture output
+            ob_start();
+
+            try {
+                # Execute Router
+                Router::dispatch('WS', $uri);
+
+                $output = ob_get_clean();
+
+                # Send response to client
+                if (!empty($output)) {
+                    $server->push($fd, $output);
+                }
+
+            } catch (\Exception $e) {
+                ob_end_clean();
+                $this->sendError($server, $fd, $e->getMessage());
+                Log::logError("ChannelServer Router: " . $e->getMessage(), ['type' => $type, 'fd' => $fd]);
             }
 
         } catch (\Exception $e) {
@@ -163,193 +194,6 @@ class ChannelServer
             $this->sendError($server, $fd, 'Internal server error');
             Log::logError("ChannelServer: " . $e->getMessage());
         }
-    }
-
-    private function handleAuth(Swoole\WebSocket\Server $server, int $fd, array $data): void
-    {
-        $token = $data['token'] ?? null;
-
-        if (!$token) {
-            $this->sendError($server, $fd, 'Missing authentication token');
-            return;
-        }
-
-        try {
-            $payload = JWT::decode($token);
-
-            $this->authenticatedConnections[$fd] = [
-                'user_id' => $payload['user_id'] ?? null,
-                'username' => $payload['username'] ?? null,
-                'roles' => $payload['roles'] ?? [],
-                'authenticated_at' => time()
-            ];
-
-            $server->push($fd, json_encode([
-                'type' => 'auth',
-                'success' => true,
-                'user' => [
-                    'id' => $payload['user_id'] ?? null,
-                    'username' => $payload['username'] ?? null
-                ],
-                'timestamp' => time()
-            ]));
-
-            $this->success("User authenticated: fd={$fd}, user_id={$payload['user_id']}");
-
-        } catch (\Exception $e) {
-            $this->sendError($server, $fd, 'Invalid or expired token');
-            $this->warning("Authentication failed for fd={$fd}: " . $e->getMessage());
-        }
-    }
-
-    private function handleSubscribe(Swoole\WebSocket\Server $server, int $fd, array $data): void
-    {
-        if (!$this->isAuthenticated($fd)) {
-            $this->sendError($server, $fd, 'Authentication required');
-            return;
-        }
-
-        $channel = $data['channel'] ?? null;
-
-        if (!$channel) {
-            $this->sendError($server, $fd, 'Missing channel name');
-            return;
-        }
-
-        if (!isset($this->channels[$channel])) {
-            $this->channels[$channel] = [];
-        }
-
-        if (!in_array($fd, $this->channels[$channel])) {
-            $this->channels[$channel][] = $fd;
-        }
-
-        $server->push($fd, json_encode([
-            'type' => 'subscribe',
-            'success' => true,
-            'channel' => $channel,
-            'subscribers' => count($this->channels[$channel]),
-            'timestamp' => time()
-        ]));
-
-        $this->info("fd={$fd} subscribed to channel: {$channel}");
-    }
-
-    private function handleUnsubscribe(Swoole\WebSocket\Server $server, int $fd, array $data): void
-    {
-        $channel = $data['channel'] ?? null;
-
-        if (!$channel) {
-            $this->sendError($server, $fd, 'Missing channel name');
-            return;
-        }
-
-        if (isset($this->channels[$channel])) {
-            $this->channels[$channel] = array_filter(
-                $this->channels[$channel],
-                fn($connFd) => $connFd !== $fd
-            );
-
-            if (empty($this->channels[$channel])) {
-                unset($this->channels[$channel]);
-            }
-        }
-
-        $server->push($fd, json_encode([
-            'type' => 'unsubscribe',
-            'success' => true,
-            'channel' => $channel,
-            'timestamp' => time()
-        ]));
-
-        $this->info("fd={$fd} unsubscribed from channel: {$channel}");
-    }
-
-    private function handlePublish(Swoole\WebSocket\Server $server, int $fd, array $data): void
-    {
-        if (!$this->isAuthenticated($fd)) {
-            $this->sendError($server, $fd, 'Authentication required');
-            return;
-        }
-
-        $channel = $data['channel'] ?? null;
-        $message = $data['message'] ?? null;
-
-        if (!$channel || !$message) {
-            $this->sendError($server, $fd, 'Missing channel or message');
-            return;
-        }
-
-        if (!isset($this->channels[$channel])) {
-            $this->sendError($server, $fd, "Channel not found: {$channel}");
-            return;
-        }
-
-        $user = $this->authenticatedConnections[$fd];
-        $payload = json_encode([
-            'type' => 'message',
-            'channel' => $channel,
-            'message' => $message,
-            'from' => [
-                'user_id' => $user['user_id'],
-                'username' => $user['username']
-            ],
-            'timestamp' => time()
-        ]);
-
-        $sent = 0;
-        foreach ($this->channels[$channel] as $subscriberFd) {
-            if ($server->exist($subscriberFd)) {
-                $server->push($subscriberFd, $payload);
-                $sent++;
-            }
-        }
-
-        $server->push($fd, json_encode([
-            'type' => 'publish',
-            'success' => true,
-            'channel' => $channel,
-            'sent_to' => $sent,
-            'timestamp' => time()
-        ]));
-
-        $this->info("Message published to channel '{$channel}': {$sent} subscribers");
-    }
-
-    private function handleEndpointRequest(Swoole\WebSocket\Server $server, int $fd, array $data): void
-    {
-        if (!$this->asyncBus) {
-            $this->sendError($server, $fd, 'AsyncBus not available in this worker');
-            return;
-        }
-
-        $method = strtoupper($data['method'] ?? 'GET');
-        $uri = $data['uri'] ?? null;
-        $body = $data['body'] ?? [];
-        $headers = $data['headers'] ?? [];
-
-        if (!$uri) {
-            $this->sendError($server, $fd, 'Missing uri parameter');
-            return;
-        }
-
-        // Add client_fd to meta for response routing
-        $correlationId = $data['correlation_id'] ?? uniqid('req_', true);
-        $headers['X-Trace-ID'] = $correlationId;
-        $headers['X-Client-FD'] = (string)$fd;
-
-        // Dispatch to Task Worker
-        $taskId = $this->asyncBus->executeEndpoint($uri, $method, $body, $headers);
-
-        // Send acknowledgment
-        $server->push($fd, json_encode([
-            'type' => 'endpoint_queued',
-            'correlation_id' => $correlationId,
-            'task_id' => $taskId,
-            'timestamp' => time()
-        ]));
-
-        $this->info("fd={$fd} endpoint queued: {$method} {$uri} (correlation_id: {$correlationId})");
     }
 
     public function onTask(Swoole\WebSocket\Server $server, int $taskId, int $srcWorkerId, mixed $data): void
@@ -379,16 +223,11 @@ class ChannelServer
 
         if (isset($this->authenticatedConnections[$fd])) {
             $user = $this->authenticatedConnections[$fd];
-            $this->info("User disconnected: fd={$fd}, user_id={$user['user_id']}");
+            $this->info("User disconnected: fd={$fd}, account_id={$user['account_id']}, profile_id={$user['profile_id']}");
             unset($this->authenticatedConnections[$fd]);
         } else {
             $this->info("Connection closed: fd={$fd}");
         }
-    }
-
-    private function isAuthenticated(int $fd): bool
-    {
-        return isset($this->authenticatedConnections[$fd]);
     }
 
     private function sendError(Swoole\WebSocket\Server $server, int $fd, string $message): void
@@ -426,8 +265,8 @@ class ChannelServer
     }
 }
 
-$host = Config::get('CHANNEL_HOST', '0.0.0.0');
-$port = Config::getInt('CHANNEL_PORT', 9501);
+$host = Config::get('CHANNEL_HOST', '127.0.0.1');
+$port = Config::getInt('CHANNEL_PORT', 8000);
 
 foreach ($argv as $arg) {
     if (strpos($arg, '--host=') === 0) {

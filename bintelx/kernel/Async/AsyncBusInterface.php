@@ -1,11 +1,9 @@
-<?php
+<?php # bintelx/kernel/Async/AsyncBusInterface.php
 
-namespace bX\Core\Async;
+namespace bX\Async;
 
-/**
- * Agnostic Async Bus Contract.
- * Decouples the application from the transport layer (Swoole Task, NATS, Redis, RabbitMQ).
- */
+# Agnostic Async Bus Contract
+# Decouples the application from the transport layer (Swoole Task, NATS, Redis, RabbitMQ)
 interface AsyncBusInterface
 {
     /**

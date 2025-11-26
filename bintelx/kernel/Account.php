@@ -201,7 +201,7 @@ class Account {
      * @param ?int $expiresIn Seconds until token expiration. Defaults to $this->tokenExpiration.
      * @return string|false The generated JWT token or false on failure.
      */
-    public function generateToken(string $accountId, $metadataElement = null, ?int $expiresIn = null): string|false {
+    public function generateToken(string $accountId, $metadataElement = null, ?int $expiresIn = null, ?int $profileId = null): string|false {
         if (empty(trim($accountId))) {
             Log::logError("Account::generateToken - Account ID cannot be empty.");
             return false;
@@ -209,10 +209,17 @@ class Account {
 
         $actualMetadata = $metadataElement ?? time(); // Default metadata to current timestamp
 
-        // Construct the specific payload structure: array([METADATA], ["id" => ACCOUNT_ID])
+        // Construct the specific payload structure: array([METADATA], ["id" => ACCOUNT_ID, "profile_id" => PROFILE_ID (optional)])
+        $userPayload = ["id" => $accountId];
+
+        # Include profile_id if provided
+        if ($profileId !== null) {
+            $userPayload["profile_id"] = $profileId;
+        }
+
         $payloadStructure = [
-            $actualMetadata, // e.g., date("mdhs") or other scalar/array
-            ["id" => $accountId]
+            $actualMetadata,
+            $userPayload
         ];
 
         // Standard JWT claims like 'exp', 'iat', 'sub' are not part of this custom structure's top level.
@@ -247,7 +254,7 @@ class Account {
     }
 
     /**
-     * Verifies a JWT token that has the payload structure: [METADATA, {"id": ACCOUNT_ID}].
+     * Verifies a JWT token that has the payload structure: [METADATA, {"id": ACCOUNT_ID, "profile_id": PROFILE_ID (optional)}].
      *
      * @param string $token The JWT token string (may include "Bearer " prefix).
      * @return string|false The account_id from payload[1]['id'] if valid, false otherwise.
