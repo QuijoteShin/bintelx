@@ -66,9 +66,9 @@ Guías paso a paso para instalar y configurar Bintelx.
 | **Deployment Guide** | Guía de deployment para producción | [install/DEPLOYMENT_GUIDE.md](../install/DEPLOYMENT_GUIDE.md) |
 | **Server Setup** | Configuración completa del servidor (Nginx, PHP-FPM, SSL) | [SERVER_SETUP.md](./SERVER_SETUP.md) |
 | **Nginx Configuration** | Guía detallada de Nginx (HTTP/3, upstreams, security) | [NGINX_CONFIGURATION.md](./NGINX_CONFIGURATION.md) |
+| **Swoole Installation** | Script automatizado de instalación Swoole 6.x | [install_swoole.sh](../scripts/install/install_swoole.sh) |
 | **Secrets Management** | Sistema de secretos basados en archivos | [SECRETS.md](./SECRETS.md) |
 | **Templates System** | Sistema de templates para multi-instancia | [../bintelx/config/server/TEMPLATES.md](../bintelx/config/server/TEMPLATES.md) |
-| **Migración a .env** | Migración de configuración hardcoded a .env | [MIGRATION_TO_ENV.md](../MIGRATION_TO_ENV.md) |
 
 ---
 
@@ -85,7 +85,7 @@ Documentación de servicios y componentes específicos.
 | **CONN** | Sistema de conexión a base de datos | [bintelx/doc/CONN.md](../bintelx/doc/CONN.md) |
 | **Sequent** | Sistema de secuencias y ordenamiento | [bintelx/doc/SEQUENT_SYSTEM.md](../bintelx/doc/SEQUENT_SYSTEM.md) |
 | **Endpoint** | Creación de endpoints personalizados | [bintelx/doc/endpoint.md](../bintelx/doc/endpoint.md) |
-| **OpenAPI Generator** | Sistema de documentación OpenAPI automática | [SISTEMA_OPENAPI_DOCUMENTACION.md](../SISTEMA_OPENAPI_DOCUMENTACION.md) |
+| **OpenAPI Generator** | Sistema de documentación OpenAPI automática | [SISTEMA_OPENAPI_DOCUMENTACION.md](./sessions/SISTEMA_OPENAPI_DOCUMENTACION.md) |
 
 ---
 
@@ -167,8 +167,7 @@ Documentación de esquemas de base de datos.
 | **ALTER TABLE Guide** | Guía para modificar tablas | [ALTER_TABLE_GUIDE.md](./database/ALTER_TABLE_GUIDE.md) |
 | **EDC Tables v4** | Tablas EDC escalables | [edc_tables_v4_scalable.sql](./database/edc_tables_v4_scalable.sql) |
 | **EDC Tables** | Tablas EDC original | [edc_tables.sql](./database/edc_tables.sql) |
-| **Schema SQL** | Esquema principal de BD | [bintelx/config/server/schema.sql](../bintelx/config/server/schema.sql) |
-| **DataCaptureService SQL** | Esquema del servicio de captura | [bintelx/doc/DataCaptureService.sql](../bintelx/doc/DataCaptureService.sql) |
+| **Schema SQL** | Esquema principal de BD (incluye DataCapture) | [bintelx/config/server/schema.sql](../bintelx/config/server/schema.sql) |
 
 ---
 
@@ -195,20 +194,6 @@ Decisiones arquitectónicas y documentación de diseño.
 
 ---
 
-### 📝 Sesiones y Notas
-
-Resúmenes de sesiones de desarrollo y decisiones.
-
-**📂 [Ver documentación completa Sesiones](./sessions/)**
-
-| Documento | Descripción | Ubicación |
-|-----------|-------------|-----------|
-| **Session Summary EDC v4.0** | Sesión completa EDC v4.0 SCALABLE (2025-11-16) | [SESSION_SUMMARY.md](./sessions/SESSION_SUMMARY.md) |
-| **Sistema OpenAPI** | Sistema de documentación OpenAPI automática (2025-11-14) | [SISTEMA_OPENAPI_DOCUMENTACION.md](./sessions/SISTEMA_OPENAPI_DOCUMENTACION.md) |
-| **Claude MD** | Notas de Claude | [CLAUDE.md](../CLAUDE.md) |
-| **Documentación Completa** | Texto completo de documentación | [DOCUMENTACION_COMPLETA.txt](../DOCUMENTACION_COMPLETA.txt) |
-
----
 
 ## 🎯 Flujos de Lectura Recomendados
 
@@ -306,7 +291,6 @@ graph LR
 | **Versionado de datos** | [03_EAV_and_Versioning.md](../bintelx/doc/03_EAV_and_Versioning.md) |
 | **Sistema de roles** | [02_Roles_and_Permissions.md](../bintelx/doc/02_Roles_and_Permissions.md) |
 | **WebSockets/Chat** | [CHANNEL_SERVER.md](./CHANNEL_SERVER.md) |
-| **Router Híbrido WS+REST** | [CHECKPOINT.md](./CHECKPOINT.md) |
 | **Async Jobs/Workers** | [ASYNC_BUS_ARCHITECTURE.md](./ASYNC_BUS_ARCHITECTURE.md) |
 | **Nginx/SSL/HTTPS** | [SERVER_SETUP.md](./SERVER_SETUP.md) |
 | **Swoole + Nginx** | [swoole-nginx-setup.md](./swoole-nginx-setup.md) |
@@ -334,34 +318,7 @@ graph LR
 
 ---
 
-## 📈 Estado de la Documentación
 
-### ✅ Completamente Documentado
-
-- ✅ Arquitectura Core
-- ✅ Instalación y Setup
-- ✅ Servidor (Nginx, PHP-FPM, SSL)
-- ✅ Channel Server (Swoole/WebSocket)
-- ✅ Router Híbrido (REST vía WebSocket)
-- ✅ Async Bus Architecture (Task Workers)
-- ✅ Sistema de Secretos
-- ✅ Templates Multi-instancia
-- ✅ EDC Module (Electronic Data Capture)
-- ✅ JWT con Profile ID
-
-### 🚧 En Desarrollo
-
-- 🚧 Frontend Framework
-- 🚧 Módulos Custom específicos
-- 🚧 Tests unitarios completos
-
-### 📋 Pendiente
-
-- ⏳ API Reference completa (auto-generada con OpenAPI)
-- ⏳ Video tutoriales
-- ⏳ Cookbook de recetas comunes
-
----
 
 ## 🤝 Contribuir
 
@@ -401,40 +358,8 @@ graph LR
 
 ---
 
-## 📞 Soporte
 
-**¿No encuentras lo que buscas?**
 
-1. **Buscar en archivos:** `grep -r "término" /var/www/bintelx/`
-2. **Revisar tests:** `/var/www/bintelx/app/test/`
-3. **Logs del sistema:** `/var/www/bintelx/log/`
-4. **Issue tracker:** (URL del proyecto)
 
----
-
-## 📊 Estadísticas
-
-- **Total documentos:** 70+
-- **Categorías principales:** 10 (Arquitectura, Instalación, Servicios, EDC, Kernel, Migraciones, Database, Testing, Async/Real-time, Sesiones)
-- **Subdirectorios organizados:** 6 (docs/edc, docs/kernel, docs/migrations, docs/database, docs/architecture, docs/sessions)
-- **Líneas totales:** ~50,000+
-- **Idiomas:** Español / Inglés
-- **Formato:** Markdown
-- **README por categoría:** 7 archivos índice
-
----
-
-**🎉 Bintelx Framework**
-*Enterprise. Agnostic. Auditable. Scalable. Real-time.*
-
-**Características principales:**
-- 🏗️ Framework headless enterprise
-- 🔄 Arquitectura agnóstica (HTTP, WebSocket, CLI)
-- ⚡ Procesamiento asíncrono con Swoole
-- 🔐 Multi-tenant con Account/Profile/Entity
-- 📊 Versionado ALCOA+ compliant
-- 🌐 Router Híbrido (REST + WebSocket unificados)
-- 🚀 Real-time con Pub/Sub channels
-
-**Última actualización:** 2025-11-25
-**Versión docs:** 2.2 - Async Bus y Router Híbrido agregados
+**Bintelx Framework**
+*Enterprise. Agnostic. Auditable. Scalable.*
