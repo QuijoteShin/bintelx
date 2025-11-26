@@ -26,7 +26,10 @@ class Encoder {
     }
 
     public function encode($value) {
-        $lines = iterator_to_array($this->encodeValue($value, 0));
+        $lines = [];
+        foreach ($this->encodeValue($value, 0) as $line) {
+            $lines[] = $line;
+        }
         return implode("\n", $lines);
     }
 
