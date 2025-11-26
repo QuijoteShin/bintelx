@@ -276,10 +276,7 @@ class ChannelServer
         # Initialize Args
         new \bX\Args();
 
-        # Initialize Router
-        $route = new Router($uri, '/ws');
-
-        # Execute
+        # Execute (Router ya fue inicializado en onWorkerStart)
         ob_start();
 
         try {

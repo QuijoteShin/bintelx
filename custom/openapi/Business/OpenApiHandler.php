@@ -38,10 +38,8 @@ class OpenApiHandler
             // Generate OpenAPI spec
             $spec = $generator->generate();
 
-            http_response_code(200);
+            # Retornar datos puros (Router manejará wrapping y códigos)
             return [
-                'success' => true,
-                'message' => 'OpenAPI specification generated successfully',
                 'spec' => $spec,
                 'meta' => [
                     'generated_at' => date('c'),
@@ -52,12 +50,7 @@ class OpenApiHandler
 
         } catch (\Exception $e) {
             \bX\Log::logError("OpenAPI generation error: " . $e->getMessage());
-            http_response_code(500);
-            return [
-                'success' => false,
-                'message' => 'Failed to generate OpenAPI specification',
-                'error' => $e->getMessage()
-            ];
+            throw $e; # Lanzar para que Router maneje el error
         }
     }
 
@@ -83,21 +76,12 @@ class OpenApiHandler
             $generator->scan();
             $spec = $generator->generate();
 
-            http_response_code(200);
+            # Retornar spec puro
             return $spec;
 
         } catch (\Exception $e) {
             \bX\Log::logError("OpenAPI generation error: " . $e->getMessage());
-            http_response_code(500);
-            return [
-                'openapi' => '3.1.0',
-                'info' => [
-                    'title' => 'Error',
-                    'version' => '1.0.0',
-                    'description' => 'Failed to generate spec: ' . $e->getMessage()
-                ],
-                'paths' => []
-            ];
+            throw $e; # Lanzar para que Router maneje el error
         }
     }
 
@@ -157,7 +141,6 @@ class OpenApiHandler
 </html>
 HTML;
 
-        http_response_code(200);
         return [
             'html' => $html
         ];
@@ -196,28 +179,19 @@ HTML;
                 }
             }
 
-            http_response_code(200);
+            # Retornar datos puros
             return [
-                'success' => true,
-                'message' => 'API statistics retrieved successfully',
-                'data' => [
-                    'total_endpoints' => count($endpoints),
-                    'total_paths' => count($spec['paths'] ?? []),
-                    'methods' => $methodCounts,
-                    'scopes' => $scopeCounts,
-                    'tags' => $tagCounts,
-                    'generated_at' => date('c')
-                ]
+                'total_endpoints' => count($endpoints),
+                'total_paths' => count($spec['paths'] ?? []),
+                'methods' => $methodCounts,
+                'scopes' => $scopeCounts,
+                'tags' => $tagCounts,
+                'generated_at' => date('c')
             ];
 
         } catch (\Exception $e) {
             \bX\Log::logError("OpenAPI stats error: " . $e->getMessage());
-            http_response_code(500);
-            return [
-                'success' => false,
-                'message' => 'Failed to retrieve API statistics',
-                'error' => $e->getMessage()
-            ];
+            throw $e; # Lanzar para que Router maneje
         }
     }
 }

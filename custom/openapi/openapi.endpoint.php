@@ -1,6 +1,7 @@
 <?php # custom/openapi/openapi.endpoint.php
 namespace openapi;
 use bX\Router;
+use bX\Response;
 use openapi\OpenApiHandler;
 
 /**
@@ -11,8 +12,9 @@ use openapi\OpenApiHandler;
  * @tag        OpenAPI
  */
 Router::register(['GET'], 'spec.json', function(...$params) {
-  header('Content-Type: application/json');
-  echo json_encode(OpenApiHandler::getRawSpec(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+  # Spec raw sin wrapper (para herramientas externas)
+  $spec = OpenApiHandler::getRawSpec();
+  return Response::json($spec);
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -24,8 +26,9 @@ Router::register(['GET'], 'spec.json', function(...$params) {
  * @tag        OpenAPI
  */
 Router::register(['GET'], 'spec', function(...$params) {
-  header('Content-Type: application/json');
-  echo json_encode(["data" => OpenApiHandler::generateSpec()], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+  # Spec con metadata wrapper
+  $result = OpenApiHandler::generateSpec();
+  return Response::success($result, 'OpenAPI specification generated successfully');
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -37,9 +40,9 @@ Router::register(['GET'], 'spec', function(...$params) {
  * @tag        OpenAPI
  */
 Router::register(['GET'], 'ui', function(...$params) {
-  header('Content-Type: text/html; charset=utf-8');
+  # Swagger UI HTML
   $result = OpenApiHandler::serveSwaggerUI();
-  echo $result['html'];
+  return Response::raw($result['html'], 'text/html; charset=utf-8');
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -51,6 +54,7 @@ Router::register(['GET'], 'ui', function(...$params) {
  * @tag        OpenAPI
  */
 Router::register(['GET'], 'stats', function(...$params) {
-  header('Content-Type: application/json');
-  echo json_encode(["data" => OpenApiHandler::getStats()], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+  # API stats con wrapper
+  $stats = OpenApiHandler::getStats();
+  return Response::success($stats, 'API statistics retrieved successfully');
 }, ROUTER_SCOPE_PUBLIC);

@@ -90,7 +90,7 @@ class Router
    *                                      If provided, this callback is responsible for `require_once`.
    *                                      If null, this method directly `require_once`s the file.
    */
-  public static function load(array $data = [], callable $loaderCallback = null): void {
+  public static function load(array $data = [], ?callable $loaderCallback = null): void {
     if (empty($data["find_str"])) {
       Log::logError('Router::load - "find_str" (directory to search) is required.');
       return;
@@ -225,19 +225,58 @@ class Router
       $finalArgs = array_merge($prefixCapturedParams, \bX\ArrayProcessor::getNamedIndices($routeSpecificMatches));
 
       try {
+        # Start output buffering to capture legacy echo statements
+        ob_start();
+
         $callback = $route['callback'];
+
         if (is_string($callback) && count($parts = explode('::', $callback)) === 2) {
-          call_user_func_array([new $parts[0](), $parts[1]], $finalArgs);
+          $result = call_user_func_array([new $parts[0](), $parts[1]], $finalArgs);
         } elseif (is_callable($callback)) {
-          call_user_func_array($callback, $finalArgs);
+          $result = call_user_func_array($callback, $finalArgs);
         } else {
           throw new \Exception("Route callback is not executable.");
         }
+
+        # Hybrid Dispatch: Handle Response object, raw return, or legacy echo
+        if ($result instanceof \bX\Response) {
+          # New way: Return Response object
+          ob_end_clean(); # Discard captured output, Response will handle its own output
+          $result->send();
+        } elseif (!empty($result)) {
+          # New way: Return data directly, wrap in Response
+          ob_end_clean(); # Discard captured output
+          \bX\Response::success($result)->send();
+        } else {
+          # Legacy way: Endpoint did echo directly
+          $output = ob_get_clean();
+          if (!empty($output)) {
+            echo $output;
+          }
+        }
+
         return; // "First Match Wins" behavior. Stop after executing the first valid route.
-      } catch (\Exception $e) {
+      } catch (\Throwable $e) {
+        # Clean buffer on error (critical for preventing blank pages)
+        while (ob_get_level() > 0) {
+          ob_end_clean();
+        }
+
         Log::logError("Router Callback Error: " . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
-        http_response_code(500);
-        echo json_encode(['status' => 'error', 'message' => 'Server error during request execution.']);
+
+        # Fallback manual (no usar Response aquí por si Response es el problema)
+        if (!headers_sent()) {
+          http_response_code(500);
+          header('Content-Type: application/json; charset=utf-8');
+        }
+
+        echo json_encode([
+          'status' => 'error',
+          'message' => 'Server error during request execution.',
+          'error' => $e->getMessage(),
+          'file' => $e->getFile(),
+          'line' => $e->getLine()
+        ]);
         return;
       }
     }
