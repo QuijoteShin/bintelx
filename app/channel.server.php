@@ -200,10 +200,14 @@ class ChannelServer
         $_SERVER['REMOTE_ADDR'] = $server->getClientInfo($fd)['remote_ip'] ?? '127.0.0.1';
         $_SERVER['HTTP_X_USER_TIMEZONE'] = Config::get('DEFAULT_TIMEZONE', 'America/Santiago');
 
-        # Re-hidratar Args
+        # Hidratación manual de Args (evitar lógica CLI)
         \bX\Args::$OPT = [];
         \bX\Args::$input = [];
-        new \bX\Args();
+
+        # Poblar directamente según el método HTTP
+        $inputData = ($method === 'GET') ? $_GET : $_POST;
+        \bX\Args::$OPT = $inputData;
+        \bX\Args::$input = $inputData;
 
         # Autenticación: Usar token de sesión WS si existe
         if (isset($this->authenticatedConnections[$fd]['token'])) {
