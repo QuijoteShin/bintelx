@@ -1,6 +1,7 @@
 <?php # custom/_demo/auth.endpoint.php
 namespace _demo;
 use bX\Router;
+use bX\Response;
 use _demo\AuthHandler;
 
 /**
@@ -12,9 +13,9 @@ use _demo\AuthHandler;
  * @tag        Authentication
  */
 Router::register(['POST'], 'login', function(...$params) {
-  header('Content-Type: application/json');
-  # The business logic is encapsulated in the AuthHandler class
-  echo json_encode(["data" => AuthHandler::login(\bX\Args::$OPT)]);
+  $result = AuthHandler::login(\bX\Args::$OPT);
+  $code = $result['success'] ? 200 : 401;
+  return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -27,8 +28,9 @@ Router::register(['POST'], 'login', function(...$params) {
  * @tag        Authentication
  */
 Router::register(['POST'], 'register', function(...$params) {
-  header('Content-Type: application/json');
-  echo json_encode(["data" => AuthHandler::register(\bX\Args::$OPT)]);
+  $result = AuthHandler::register(\bX\Args::$OPT);
+  $code = $result['success'] ? 201 : 400;
+  return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -41,8 +43,9 @@ Router::register(['POST'], 'register', function(...$params) {
  * @tag        Profile Management
  */
 Router::register(['POST'], 'profile/create', function(...$params) {
-  header('Content-Type: application/json');
-  echo json_encode(["data" => AuthHandler::createProfile(\bX\Args::$OPT)]);
+  $result = AuthHandler::createProfile(\bX\Args::$OPT);
+  $code = $result['success'] ? 201 : 400;
+  return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -54,9 +57,9 @@ Router::register(['POST'], 'profile/create', function(...$params) {
  * @tag        Authentication
  */
 Router::register(['GET','POST'], 'validate', function(...$params) {
-  header('Content-Type: application/json');
-  # The logic handles validation from header (already loaded by bnx) or POST body
-  echo json_encode(["data" => AuthHandler::validateToken()]);
+  $result = AuthHandler::validateToken();
+  $code = $result['success'] ? 200 : 401;
+  return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
 
 
@@ -68,6 +71,6 @@ Router::register(['GET','POST'], 'validate', function(...$params) {
  * @tag        Development
  */
 Router::register(['GET', 'POST'], 'report', function(...$params) {
-  header('Content-Type: application/json');
-  echo json_encode(["data" => AuthHandler::DevToolsReport()]);
+  $result = AuthHandler::DevToolsReport();
+  return Response::json(['data' => $result]);
 }, ROUTER_SCOPE_PRIVATE);

@@ -30,19 +30,19 @@ class AuthHandler
       $loginResult = $accountService->login($inputData);
 
       if ($loginResult['success']) {
-        http_response_code(200); // OK
+        
         return [
           'success' => true,
           'message' => 'Login successful.',
           'token' => $loginResult['token']
         ];
       } else {
-        http_response_code(401); // Unauthorized
+        
         return ['success' => false, 'message' => $loginResult['message']];
       }
     } catch (\Exception $e) {
       \bX\Log::logError("Login Exception in AuthHandler: " . $e->getMessage());
-      http_response_code(500); // Internal Server Error
+      
       return ['success' => false, 'message' => 'An internal error occurred during login.'];
     }
   }
@@ -59,7 +59,7 @@ class AuthHandler
   {
     // Check if user is already authenticated via header/cookie (handled by api.php)
     if (\bX\Profile::isLoggedIn()) {
-      http_response_code(200); // OK
+      
       return ['success' => true];
     }
 
@@ -77,22 +77,22 @@ class AuthHandler
 
         if ($account_id) {
           // Token is valid
-          http_response_code(200); // OK
+          
           return ['success' => true];
         } else {
           // Token verification failed
-          http_response_code(401); // Unauthorized
+          
           return ['success' => false];
         }
       } catch (\Exception $e) {
         \bX\Log::logError("Token validation exception: " . $e->getMessage());
-        http_response_code(401); // Unauthorized
+        
         return ['success' => false];
       }
     }
 
     // No valid authentication found
-    http_response_code(401); // Unauthorized
+    
     return ['success' => false];
   }
 
@@ -108,7 +108,7 @@ class AuthHandler
     try {
       // Validate input
       if (empty($inputData['username']) || empty($inputData['password'])) {
-        http_response_code(400); // Bad Request
+        
         return [
           'success' => false,
           'message' => 'Username and password are required.'
@@ -125,7 +125,7 @@ class AuthHandler
       );
 
       if ($accountData === false) {
-        http_response_code(400); // Bad Request
+        
         return [
           'success' => false,
           'message' => 'Failed to create account. Username may already exist.'
@@ -134,7 +134,7 @@ class AuthHandler
 
       \bX\Log::logInfo("Account registered successfully: account_id={$accountData['account_id']}, username={$inputData['username']}, profile_id={$accountData['profile_id']}");
 
-      http_response_code(201); // Created
+      
       return [
         'success' => true,
         'message' => 'Account created successfully with profile and entity.',
@@ -148,7 +148,7 @@ class AuthHandler
 
     } catch (\Exception $e) {
       \bX\Log::logError("Registration Exception in AuthHandler: " . $e->getMessage());
-      http_response_code(500); // Internal Server Error
+      
       return [
         'success' => false,
         'message' => 'An internal error occurred during registration.'
@@ -261,7 +261,7 @@ class AuthHandler
 
         \bX\Log::logInfo("Profile updated successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
 
-        http_response_code(200); // OK
+        
         return [
           'success' => true,
           'message' => 'Profile and entity updated successfully.',
@@ -322,7 +322,7 @@ class AuthHandler
 
         \bX\Log::logInfo("Profile created successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
 
-        http_response_code(201); // Created
+        
         return [
           'success' => true,
           'message' => 'Profile and entity created successfully.',
@@ -354,7 +354,7 @@ class AuthHandler
    */
   public static function DevToolsReport(): array
   {
-    http_response_code(200); // OK
+    
     return [
       'success' => true,
       'message' => 'Public report fetched successfully.',
