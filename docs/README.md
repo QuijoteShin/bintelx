@@ -82,6 +82,7 @@ Documentación de servicios y componentes específicos.
 | **⚡ Async Bus** | Sistema de procesamiento asíncrono agnóstico | [ASYNC_BUS_ARCHITECTURE.md](./ASYNC_BUS_ARCHITECTURE.md) |
 | **🌐 Swoole Setup** | Instalación y configuración de Swoole + Nginx | [swoole-nginx-setup.md](./swoole-nginx-setup.md) |
 | **Router** | Sistema de enrutamiento de API | [bintelx/doc/Router.md](../bintelx/doc/Router.md) |
+| **Response** | Wrapper de respuestas HTTP estandarizadas | [bintelx/doc/Response.md](../bintelx/doc/Response.md) |
 | **CONN** | Sistema de conexión a base de datos | [bintelx/doc/CONN.md](../bintelx/doc/CONN.md) |
 | **Sequent** | Sistema de secuencias y ordenamiento | [bintelx/doc/SEQUENT_SYSTEM.md](../bintelx/doc/SEQUENT_SYSTEM.md) |
 | **Endpoint** | Creación de endpoints personalizados | [bintelx/doc/endpoint.md](../bintelx/doc/endpoint.md) |
@@ -285,7 +286,8 @@ graph LR
 |----------|---------|
 | **Conceptos fundamentales** | [00_OVERVIEW.md](../bintelx/doc/00_OVERVIEW.md) |
 | **Instalar Bintelx** | [install/README.md](../install/README.md) |
-| **Crear endpoints** | [endpoint.md](../bintelx/doc/endpoint.md) |
+| **Crear endpoints** | [endpoint.md](../bintelx/doc/endpoint.md) + [Response.md](../bintelx/doc/Response.md) |
+| **Response Wrapper** | [Response.md](../bintelx/doc/Response.md) + [RESPONSE_MIGRATION_PATTERN.md](./RESPONSE_MIGRATION_PATTERN.md) |
 | **Autenticación JWT** | [SECRETS.md](./SECRETS.md) + [Router.md](../bintelx/doc/Router.md) |
 | **Base de datos** | [CONN.md](../bintelx/doc/CONN.md) + [schema.sql](../bintelx/config/server/schema.sql) |
 | **Versionado de datos** | [03_EAV_and_Versioning.md](../bintelx/doc/03_EAV_and_Versioning.md) |

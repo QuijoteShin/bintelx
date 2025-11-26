@@ -10,6 +10,7 @@
 namespace edc;
 
 use bX\Router;
+use bX\Response;
 use bX\EDC;
 use bX\Profile;
 use bX\Args;
@@ -25,15 +26,14 @@ use bX\Args;
  * @tag        Forms
  */
 Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
-    header('Content-Type: application/json');
+    
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
     $actorId = Profile::$account_id;
     $scopeId = Profile::$scope_entity_id ?? null;
 
     if (!$actorId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Not authenticated']);
+        return Response::json(['success' => false, 'message' => 'Not authenticated']);
         return;
     }
 
@@ -44,8 +44,7 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
         $scopeId
     );
 
-    http_response_code($result['success'] ? 200 : 400);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
@@ -56,17 +55,17 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
  * @tag        Forms
  */
 Router::register(['GET'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
-    header('Content-Type: application/json');
+    
 
     $scopeId = Profile::$scope_entity_id ?? null;
     $formDef = EDC::getFormDefinition($formName, $scopeId, true);
 
     if ($formDef) {
-        http_response_code(200);
-        echo json_encode(['success' => true, 'data' => $formDef]);
+        
+        return Response::json(['success' => true, 'data' => $formDef]);
     } else {
-        http_response_code(404);
-        echo json_encode(['success' => false, 'message' => 'Form not found']);
+        
+        return Response::json(['success' => false, 'message' => 'Form not found']);
     }
 }, ROUTER_SCOPE_PRIVATE);
 
@@ -79,15 +78,14 @@ Router::register(['GET'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
  * @tag        Forms
  */
 Router::register(['GET'], 'v1/forms', function() {
-    header('Content-Type: application/json');
+    
 
     $scopeId = Profile::$scope_entity_id ?? null;
     $status = Args::$OPT['status'] ?? null;
 
     $result = EDC::listForms($scopeId, true, $status);
 
-    http_response_code($result['success'] ? 200 : 500);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
@@ -98,19 +96,18 @@ Router::register(['GET'], 'v1/forms', function() {
  * @tag        Forms
  */
 Router::register(['PUT'], 'v1/forms/(?P<formDefId>\d+)/publish', function($formDefId) {
-    header('Content-Type: application/json');
+    
 
     $actorId = Profile::$account_id;
     if (!$actorId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Not authenticated']);
+        
+        return Response::json(['success' => false, 'message' => 'Not authenticated']);
         return;
     }
 
     $result = EDC::publishForm((int)$formDefId, $actorId);
 
-    http_response_code($result['success'] ? 200 : 400);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 // ==================== FORM RESPONSES ====================
@@ -124,21 +121,21 @@ Router::register(['PUT'], 'v1/forms/(?P<formDefId>\d+)/publish', function($formD
  * @tag        Responses
  */
 Router::register(['POST'], 'v1/responses', function() {
-    header('Content-Type: application/json');
+    
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
     $respondentId = Profile::$account_id;
     $scopeId = Profile::$scope_entity_id ?? null;
 
     if (!$respondentId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Not authenticated']);
+        
+        return Response::json(['success' => false, 'message' => 'Not authenticated']);
         return;
     }
 
     if (empty($data['form_name'])) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'form_name is required']);
+        
+        return Response::json(['success' => false, 'message' => 'form_name is required']);
         return;
     }
 
@@ -149,8 +146,7 @@ Router::register(['POST'], 'v1/responses', function() {
         $data['metadata'] ?? []
     );
 
-    http_response_code($result['success'] ? 200 : 400);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
@@ -162,13 +158,13 @@ Router::register(['POST'], 'v1/responses', function() {
  * @tag        Responses
  */
 Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/data', function($responseId) {
-    header('Content-Type: application/json');
+    
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
 
     if (empty($data['fields'])) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'fields is required']);
+        
+        return Response::json(['success' => false, 'message' => 'fields is required']);
         return;
     }
 
@@ -179,8 +175,7 @@ Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/data', function($re
         $data['new_status'] ?? null
     );
 
-    http_response_code($result['success'] ? 200 : 400);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
@@ -192,15 +187,14 @@ Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/data', function($re
  * @tag        Responses
  */
 Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)', function($responseId) {
-    header('Content-Type: application/json');
+    
 
     // Obtener field_ids específicos si se proporcionan
     $fieldIds = !empty(Args::$OPT['fields']) ? explode(',', Args::$OPT['fields']) : null;
 
     $result = EDC::getResponseData((int)$responseId, $fieldIds);
 
-    http_response_code($result['success'] ? 200 : 404);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
@@ -211,19 +205,18 @@ Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)', function($response
  * @tag        Responses
  */
 Router::register(['PUT'], 'v1/responses/(?P<responseId>\d+)/lock', function($responseId) {
-    header('Content-Type: application/json');
+    
 
     $actorId = Profile::$account_id;
     if (!$actorId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Not authenticated']);
+        
+        return Response::json(['success' => false, 'message' => 'Not authenticated']);
         return;
     }
 
     $result = EDC::lockResponse((int)$responseId, $actorId);
 
-    http_response_code($result['success'] ? 200 : 400);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_WRITE);
 
 /**
@@ -236,7 +229,7 @@ Router::register(['PUT'], 'v1/responses/(?P<responseId>\d+)/lock', function($res
  * @tag        Responses
  */
 Router::register(['GET'], 'v1/responses', function() {
-    header('Content-Type: application/json');
+    
 
     $filters = [
         'form_name' => Args::$OPT['form_name'] ?? null,
@@ -250,8 +243,7 @@ Router::register(['GET'], 'v1/responses', function() {
 
     $result = EDC::listResponses($filters);
 
-    http_response_code($result['success'] ? 200 : 500);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
 // ==================== AUDIT TRAIL ====================
@@ -264,10 +256,9 @@ Router::register(['GET'], 'v1/responses', function() {
  * @tag        Audit
  */
 Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)/audit/(?P<fieldId>[^/]+)', function($responseId, $fieldId) {
-    header('Content-Type: application/json');
+    
 
     $result = EDC::getFieldAuditTrail((int)$responseId, $fieldId);
 
-    http_response_code($result['success'] ? 200 : 404);
-    echo json_encode($result);
+    return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
