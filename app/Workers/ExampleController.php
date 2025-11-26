@@ -2,7 +2,7 @@
 
 namespace App\Controllers;
 
-use bX\Core\Async\AsyncBusInterface;
+use bX\Async\AsyncBusInterface;
 use bX\Log;
 
 /**
