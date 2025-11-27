@@ -15,6 +15,8 @@
 
 require_once __DIR__ . '/../bintelx/WarmUp.php';
 
+ \bX\Log::$logLevel = 'DEBUG';
+
 use bX\Config;
 use bX\JWT;
 use bX\Log;
@@ -30,6 +32,7 @@ class ChannelServer
     private $server;
     private array $channels = [];
     private array $authenticatedConnections = [];
+    private array $pendingAcks = []; # Mensajes esperando confirmación
     private ?TaskRouter $taskRouter = null;
     private ?SwooleResponseBus $responseBus = null;
     private ?SwooleAsyncBusAdapter $asyncBus = null;
@@ -99,15 +102,9 @@ class ChannelServer
             // Regular workers - initialize AsyncBus for controllers
             $this->asyncBus = new SwooleAsyncBusAdapter($server);
 
-            // Load WebSocket routes
-            Router::load([
-                'find_str' => __DIR__ . '/../custom/ws',
-                'pattern' => '*.endpoint.php'
-            ]);
-
             // Load all API routes
             Router::load([
-                'find_str' => __DIR__ . '/../custom',
+                'find_str' => \bX\WarmUp::$BINTELX_HOME . '../custom/',
                 'pattern' => '{*/,}*.endpoint.php'
             ]);
 
@@ -132,7 +129,6 @@ class ChannelServer
     public function onMessage(Swoole\WebSocket\Server $server, Swoole\WebSocket\Frame $frame): void
     {
         $fd = $frame->fd;
-
         try {
             $data = json_decode($frame->data, true);
 
@@ -153,19 +149,8 @@ class ChannelServer
                 return;
             }
 
-            # Enrutamiento limpio: WS nativo vs API REST
-            switch ($type) {
-                case 'api':
-                case 'endpoint':
-                    # Ejecutar endpoint REST directamente en Worker (Router Híbrido)
-                    $this->executeApiRoute($server, $fd, $data);
-                    break;
-
-                default:
-                    # Mensajes WS nativos: auth, ping, subscribe, publish, etc.
-                    $this->executeWsRoute($server, $fd, $type, $data);
-                    break;
-            }
+            # Todos los mensajes se ejecutan como endpoints
+            $this->executeApiRoute($server, $fd, $data);
 
         } catch (\Exception $e) {
             $this->error("Error processing message from fd={$fd}: " . $e->getMessage());
@@ -174,10 +159,10 @@ class ChannelServer
         }
     }
 
-    # Ejecuta endpoints REST vía Router Híbrido
+    # Ejecuta CUALQUIER endpoint (WS o API REST) vía Router Unificado
     private function executeApiRoute(Swoole\WebSocket\Server $server, int $fd, array $data): void
     {
-        $uri = $data['route'] ?? $data['uri'] ?? null;
+        $uri = $data['route'];
         $method = strtoupper($data['method'] ?? 'POST');
         $body = $data['body'] ?? [];
         $query = $data['query'] ?? [];
@@ -218,11 +203,12 @@ class ChannelServer
             $this->loadProfile($data['token'], $fd);
         }
 
-        # Ejecutar Router (igual que api.php)
+        # Ejecutar Router sin base path (detecta automáticamente de la URI)
         ob_start();
 
         try {
-            $route = new Router($uri, '/api');
+            # No usar base path - dejar que Router extraiga módulo de la URI completa
+            $route = new Router($uri);
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
@@ -257,42 +243,6 @@ class ChannelServer
     }
 
     # Ejecuta endpoints WS nativos
-    private function executeWsRoute(Swoole\WebSocket\Server $server, int $fd, string $type, array $data): void
-    {
-        $uri = "/ws/{$type}";
-
-        # Setup context
-        $_SERVER['REQUEST_METHOD'] = 'WS';
-        $_SERVER['REQUEST_URI'] = $uri;
-        $_SERVER['CONTENT_TYPE'] = 'application/json';
-        $_POST = $data;
-
-        # Inject WS context
-        $_SERVER['WS_SERVER'] = $server;
-        $_SERVER['WS_FD'] = $fd;
-        $_SERVER['WS_AUTHENTICATED_CONNECTIONS'] = &$this->authenticatedConnections;
-        $_SERVER['WS_CHANNELS'] = &$this->channels;
-
-        # Initialize Args
-        new \bX\Args();
-
-        # Execute (Router ya fue inicializado en onWorkerStart)
-        ob_start();
-
-        try {
-            Router::dispatch('WS', $uri);
-            $output = ob_get_clean();
-
-            if (!empty($output)) {
-                $server->push($fd, $output);
-            }
-
-        } catch (\Exception $e) {
-            ob_end_clean();
-            $this->sendError($server, $fd, $e->getMessage());
-            Log::logError("WS Route failed", ['type' => $type, 'error' => $e->getMessage()]);
-        }
-    }
 
     # Autentica y carga Profile
     private function loadProfile(string $token, int $fd): void
@@ -386,6 +336,35 @@ class ChannelServer
     private function error(string $message): void
     {
         echo "\033[0;31m[ERROR]\033[0m " . date('Y-m-d H:i:s') . " - {$message}\n";
+    }
+
+    # Buffer de notificaciones para usuarios offline
+    protected function bufferNotification(int $userId, string $channel, array $message, string $priority = 'normal'): void
+    {
+        $preview = json_encode([
+            'text' => $message['text'] ?? $message['message'] ?? '',
+            'from' => $message['from'] ?? null,
+            'ts' => time()
+        ]);
+
+        $sql = "INSERT INTO sys_notification_buffer (user_id, channel, count, payload_preview, priority)
+                VALUES (:user, :ch, 1, JSON_ARRAY(:preview), :prio)
+                ON DUPLICATE KEY UPDATE
+                  count = count + 1,
+                  payload_preview = JSON_ARRAY_APPEND(payload_preview, '\$', :preview),
+                  updated_at = NOW(6)";
+
+        CONN::nodml($sql, [
+            ':user' => $userId,
+            ':ch' => $channel,
+            ':preview' => $preview,
+            ':prio' => $priority
+        ]);
+
+        Log::logInfo("Notification buffered for offline user", [
+            'user_id' => $userId,
+            'channel' => $channel
+        ]);
     }
 
     public function start(): void
