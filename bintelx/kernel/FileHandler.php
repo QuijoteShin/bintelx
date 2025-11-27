@@ -4,7 +4,7 @@ class FileHandler {
     private $file;
     private $destination;
 
-    public function __construct($file = null) {
+    public function __construct(mixed $file = null) {
         if (!is_null($file)) {
             $this->file = $file;
         } else {
@@ -143,7 +143,7 @@ class FileManager
     private $destination = './files/';
     private $metadata = [];
 
-    public function __construct($file = null)
+    public function __construct(mixed $file = null)
     {
         if (!empty($file)) {
             if (is_array($file)) {

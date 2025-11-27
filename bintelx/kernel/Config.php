@@ -163,7 +163,7 @@ class Config
      * @param mixed $default Default value if key not found
      * @return mixed
      */
-    public static function get(string $key, $default = null)
+    public static function get(string $key, mixed $default = null)
     {
         // Check internal array first (loaded from .env)
         if (isset(self::$config[$key])) {
@@ -255,7 +255,7 @@ class Config
      * @param bool $assoc Return associative array instead of object
      * @return mixed
      */
-    public static function getJson(string $key, $default = null, bool $assoc = true)
+    public static function getJson(string $key, mixed $default = null, bool $assoc = true)
     {
         $value = self::get($key);
 

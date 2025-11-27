@@ -29,7 +29,7 @@ class JWT {
   private $secretKey;
   public $binSignature;
 
-  public function __construct(string $secretKey, string $jwt = null) {
+  public function __construct(string $secretKey, ?string $jwt = null) {
     $this->secretKey = $secretKey;
     if ($jwt) {
       $jwtParts = explode('.', $jwt);

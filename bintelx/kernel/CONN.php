@@ -226,7 +226,7 @@ class CONN {
      * @return array|null If no callback, returns all rows as an array of associative arrays.
      *                    If callback is used, returns null (or void, implicitly).
      */
-    public static function dml(string $query, array $data = [], callable $callback = null): ?array {
+    public static function dml(string $query, array $data = [], ?callable $callback = null): ?array {
         try {
             $connection = self::getConnection();
             $stmt = $connection->prepare($query);

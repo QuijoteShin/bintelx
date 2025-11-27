@@ -49,7 +49,7 @@ namespace bX;
 class XMLGenerator extends \DOMDocument
 {
 
-  public function arrayToXml($data, \DOMElement $domElement = null)
+  public function arrayToXml($data, ?\DOMElement $domElement = null)
   {
 
     $domElement = is_null($domElement) ? $this : $domElement;
