@@ -33,6 +33,7 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
     $scopeId = Profile::$scope_entity_id ?? null;
 
     if (!$actorId) {
+        
         return Response::json(['success' => false, 'message' => 'Not authenticated']);
         return;
     }
