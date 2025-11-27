@@ -3,6 +3,13 @@
 namespace bX;
 
 class Log {
+  # Propiedades estáticas configurables (inicializadas desde .env)
+  public static bool $logToUser = false;
+  public static bool $logToCli = true;
+  public static string $logLevel = 'ERROR';
+
+  private static bool $initialized = false;
+
   private static array $logLevels = [
       'DEBUG' => 1,
       'INFO' => 2,
@@ -11,22 +18,21 @@ class Log {
       'NONE' => 5
   ];
 
-  # Obtener configuración desde .env vía Config
-  private static function getLogToCli(): bool {
-    return Config::getBool('LOG_TO_CLI');
-  }
+  # Inicializa propiedades desde Config (.env)
+  private static function init(): void {
+    if (self::$initialized) return;
 
-  private static function getLogToUser(): bool {
-    return Config::getBool('LOG_TO_USER');
-  }
+    self::$logToUser = Config::getBool('LOG_TO_USER', false);
+    self::$logToCli = Config::getBool('LOG_TO_CLI', true);
+    self::$logLevel = strtoupper(Config::get('LOG_LEVEL', 'ERROR'));
 
-  private static function getLogLevel(): string {
-    return strtoupper(Config::get('LOG_LEVEL'));
+    self::$initialized = true;
   }
 
   private static function shouldLog(string $level): bool {
-    $configLevel = self::getLogLevel();
-    $configLevelNumeric = self::$logLevels[$configLevel] ?? self::$logLevels['ERROR'];
+    self::init();
+
+    $configLevelNumeric = self::$logLevels[self::$logLevel] ?? self::$logLevels['ERROR'];
     $messageLevelNumeric = self::$logLevels[strtoupper($level)] ?? self::$logLevels['ERROR'];
     return $messageLevelNumeric >= $configLevelNumeric;
   }
@@ -90,8 +96,13 @@ class Log {
       error_log("CRITICAL: Failed to write to BintelX log file: {$logFile}. Log Entry: {$logEntry}");
     }
 
-    # Salida a CLI solo en terminal real, no en contexto web
-    if (self::getLogToCli() && php_sapi_name() === 'cli' && function_exists('posix_isatty') && posix_isatty(STDOUT)) {
+    # Salida a CLI solo en terminal real, NUNCA en contexto HTTP
+    self::init();
+    $isCli = php_sapi_name() === 'cli';
+    $isHttpRequest = isset($_SERVER['REQUEST_METHOD']) || isset($_SERVER['HTTP_HOST']);
+    $isTty = function_exists('posix_isatty') && @posix_isatty(STDOUT);
+
+    if (self::$logToCli && $isCli && !$isHttpRequest && $isTty) {
       $colorCodes = [
         'DEBUG' => "\033[36m",   # Cyan
         'INFO' => "\033[32m",    # Green
@@ -106,7 +117,7 @@ class Log {
 
 
     # Log específico para el usuario si está habilitado y es un error o warning
-    if (self::getLogToUser() && ($level === 'ERROR' || $level === 'WARNING')) {
+    if (self::$logToUser && ($level === 'ERROR' || $level === 'WARNING')) {
       $userLogFile = $logPath . "user_specific_" . $fileDateSuffix . "_user-" . preg_replace('/[^a-zA-Z0-9_-]/', '_', (string)$userId) . ".log";
       file_put_contents($userLogFile, $logEntry, FILE_APPEND | LOCK_EX);
     }

@@ -8,6 +8,7 @@ use bX\Router;
 use bX\CONN;
 use bX\Profile;
 use bX\Log;
+use bX\SuperGlobalHydrator;
 
 # The Brain of the Async Grid
 # Manages task routing and memory isolation (Sandbox) to prevent state pollution in workers
@@ -42,15 +43,8 @@ class TaskRouter
      */
     public function route(Server $server, int $taskId, int $srcWorkerId, mixed $data): void
     {
-        // 1. SNAPSHOT (Backup Superglobals to prevent contamination between tasks)
-        $superGlobalsBackup = [
-            'SERVER' => $_SERVER ?? [],
-            'GET' => $_GET ?? [],
-            'POST' => $_POST ?? [],
-            'COOKIE' => $_COOKIE ?? [],
-            'FILES' => $_FILES ?? [],
-            'REQUEST' => $_REQUEST ?? [],
-        ];
+        # 1. SNAPSHOT (Backup Superglobals to prevent contamination between tasks)
+        $snapshot = SuperGlobalHydrator::snapshot();
 
         $initialObLevel = ob_get_level();
         $correlationId = $data['meta']['correlation_id'] ?? null;
@@ -108,22 +102,17 @@ class TaskRouter
                 $this->updateJobStatus($jobId, 'FAILED', ['error' => $e->getMessage()]);
             }
         } finally {
-            // 2. RESTORE (Forensic Cleanup)
+            # 2. RESTORE (Forensic Cleanup)
 
-            // A. Restore Superglobals
-            $_SERVER = $superGlobalsBackup['SERVER'];
-            $_GET = $superGlobalsBackup['GET'];
-            $_POST = $superGlobalsBackup['POST'];
-            $_COOKIE = $superGlobalsBackup['COOKIE'];
-            $_FILES = $superGlobalsBackup['FILES'];
-            $_REQUEST = $superGlobalsBackup['REQUEST'];
+            # A. Restore Superglobals
+            SuperGlobalHydrator::restore($snapshot);
 
-            // B. Clean residual Output Buffers
+            # B. Clean residual Output Buffers
             while (ob_get_level() > $initialObLevel) {
                 ob_end_clean();
             }
 
-            // C. Reset static Profile data (CRITICAL for security)
+            # C. Reset static Profile data (CRITICAL for security)
             Profile::resetStaticProfileData();
         }
     }
@@ -136,31 +125,18 @@ class TaskRouter
         $data = $request['data'] ?? [];
         $headers = $request['headers'] ?? [];
 
-        // Setup HTTP-like environment
-        $_SERVER['REQUEST_METHOD'] = $method;
-        $_SERVER['REQUEST_URI'] = $uri;
-        $_SERVER['CONTENT_TYPE'] = 'application/json';
-        $_SERVER['HTTP_X_USER_TIMEZONE'] = \bX\Config::get('DEFAULT_TIMEZONE', 'America/Santiago');
-        $_SERVER['REMOTE_ADDR'] = '127.0.0.1'; // Internal call
+        # Hidratación de superglobales
+        SuperGlobalHydrator::hydrate([
+            'method' => $method,
+            'uri' => $uri,
+            'headers' => $headers,
+            'body' => in_array($method, ['POST', 'PUT', 'PATCH']) ? $data : [],
+            'query' => $method === 'GET' ? $data : [],
+            'remote_addr' => '127.0.0.1' # Internal call
+        ]);
 
-        // Inject headers
-        foreach ($headers as $key => $value) {
-            $headerKey = 'HTTP_' . strtoupper(str_replace('-', '_', $key));
-            $_SERVER[$headerKey] = $value;
-        }
-
-        // Inject body for POST/PUT/PATCH
-        if (in_array($method, ['POST', 'PUT', 'PATCH'])) {
-            $_POST = $data;
-        }
-
-        // Inject query params for GET
-        if ($method === 'GET') {
-            $_GET = $data;
-        }
-
-        // Initialize Args (como api.php)
-        new \bX\Args();
+        # Hidratación de Args
+        SuperGlobalHydrator::hydrateArgs($method, $data, $data);
 
         // Set timezone for DB
         CONN::nodml("SET time_zone = '" . $_SERVER["HTTP_X_USER_TIMEZONE"] . "'");

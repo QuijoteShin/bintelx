@@ -23,6 +23,7 @@ use bX\Log;
 use bX\Router;
 use bX\Profile;
 use bX\CONN;
+use bX\SuperGlobalHydrator;
 use bX\Async\TaskRouter;
 use bX\Async\SwooleResponseBus;
 use bX\Async\SwooleAsyncBusAdapter;
@@ -30,9 +31,8 @@ use bX\Async\SwooleAsyncBusAdapter;
 class ChannelServer
 {
     private $server;
-    private array $channels = [];
-    private array $authenticatedConnections = [];
-    private array $pendingAcks = []; # Mensajes esperando confirmación
+    private array $channels = []; # channel => [fd1, fd2, ...]
+    private array $authenticatedConnections = []; # fd => ['account_id', 'profile_id', 'token']
     private ?TaskRouter $taskRouter = null;
     private ?SwooleResponseBus $responseBus = null;
     private ?SwooleAsyncBusAdapter $asyncBus = null;
@@ -173,40 +173,52 @@ class ChannelServer
             return;
         }
 
-        # Context Switching: Simular entorno HTTP
-        Profile::resetStaticProfileData();
-        Router::$currentUserPermissions = [];
-
-        $_POST = ($method === 'POST' || $method === 'PUT' || $method === 'PATCH') ? $body : [];
-        $_GET = ($method === 'GET') ? $query : [];
-        $_SERVER['REQUEST_URI'] = $uri;
-        $_SERVER['REQUEST_METHOD'] = $method;
-        $_SERVER['CONTENT_TYPE'] = 'application/json';
-        $_SERVER['REMOTE_ADDR'] = $server->getClientInfo($fd)['remote_ip'] ?? '127.0.0.1';
-        $_SERVER['HTTP_X_USER_TIMEZONE'] = Config::get('DEFAULT_TIMEZONE', 'America/Santiago');
-
-        # Hidratación manual de Args (evitar lógica CLI)
-        \bX\Args::$OPT = [];
-        \bX\Args::$input = [];
-
-        # Poblar directamente según el método HTTP
-        $inputData = ($method === 'GET') ? $_GET : $_POST;
-        \bX\Args::$OPT = $inputData;
-        \bX\Args::$input = $inputData;
-
-        # Autenticación: Usar token de sesión WS si existe
-        if (isset($this->authenticatedConnections[$fd]['token'])) {
-            $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $this->authenticatedConnections[$fd]['token'];
-            $this->loadProfile($this->authenticatedConnections[$fd]['token'], $fd);
-        } elseif (!empty($data['token'])) {
-            $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $data['token'];
-            $this->loadProfile($data['token'], $fd);
-        }
-
-        # Ejecutar Router sin base path (detecta automáticamente de la URI)
-        ob_start();
+        # 1. SNAPSHOT de superglobales (aislamiento entre requests)
+        $snapshot = SuperGlobalHydrator::snapshot();
 
         try {
+            # 2. RESET de estado
+            Profile::resetStaticProfileData();
+            Router::$currentUserPermissions = [];
+
+            # 3. HIDRATACIÓN de superglobales
+            $clientInfo = $server->getClientInfo($fd);
+            $remoteAddr = $clientInfo['remote_ip'] ?? '127.0.0.1';
+
+            $headers = [];
+            if (isset($this->authenticatedConnections[$fd]['token'])) {
+                $headers['Authorization'] = 'Bearer ' . $this->authenticatedConnections[$fd]['token'];
+            } elseif (!empty($data['token'])) {
+                $headers['Authorization'] = 'Bearer ' . $data['token'];
+            }
+
+            SuperGlobalHydrator::hydrate([
+                'method' => $method,
+                'uri' => $uri,
+                'headers' => $headers,
+                'body' => $body,
+                'query' => $query,
+                'remote_addr' => $remoteAddr
+            ]);
+
+            # 4. HIDRATACIÓN de Args
+            SuperGlobalHydrator::hydrateArgs($method, $body, $query);
+
+            # 5. AUTENTICACIÓN
+            $token = null;
+            if (isset($this->authenticatedConnections[$fd]['token'])) {
+                $token = $this->authenticatedConnections[$fd]['token'];
+            } elseif (!empty($data['token'])) {
+                $token = $data['token'];
+            }
+
+            if ($token) {
+                $this->loadProfile($token, $fd);
+            }
+
+            # 6. EJECUTAR Router
+            ob_start();
+
             # No usar base path - dejar que Router extraiga módulo de la URI completa
             $route = new Router($uri);
             Router::dispatch($method, $uri);
@@ -226,7 +238,9 @@ class ChannelServer
             ]));
 
         } catch (\Exception $e) {
-            ob_end_clean();
+            if (ob_get_level() > 0) {
+                ob_end_clean();
+            }
 
             $server->push($fd, json_encode([
                 'type' => 'api_error',
@@ -236,10 +250,13 @@ class ChannelServer
             ]));
 
             Log::logError("API via WS failed", ['uri' => $uri, 'error' => $e->getMessage()]);
-        }
+        } finally {
+            # 7. RESTORE superglobales
+            SuperGlobalHydrator::restore($snapshot);
 
-        # Cleanup
-        Profile::resetStaticProfileData();
+            # 8. CLEANUP estado
+            Profile::resetStaticProfileData();
+        }
     }
 
     # Ejecuta endpoints WS nativos
@@ -292,6 +309,7 @@ class ChannelServer
 
     public function onClose(Swoole\WebSocket\Server $server, int $fd): void
     {
+        # Limpiar de canales en memoria
         foreach ($this->channels as $channel => $subscribers) {
             $this->channels[$channel] = array_filter($subscribers, fn($connFd) => $connFd !== $fd);
 
@@ -300,6 +318,7 @@ class ChannelServer
             }
         }
 
+        # Limpiar sesión de autenticación
         if (isset($this->authenticatedConnections[$fd])) {
             $user = $this->authenticatedConnections[$fd];
             $this->info("User disconnected: fd={$fd}, account_id={$user['account_id']}, profile_id={$user['profile_id']}");
@@ -338,34 +357,8 @@ class ChannelServer
         echo "\033[0;31m[ERROR]\033[0m " . date('Y-m-d H:i:s') . " - {$message}\n";
     }
 
-    # Buffer de notificaciones para usuarios offline
-    protected function bufferNotification(int $userId, string $channel, array $message, string $priority = 'normal'): void
-    {
-        $preview = json_encode([
-            'text' => $message['text'] ?? $message['message'] ?? '',
-            'from' => $message['from'] ?? null,
-            'ts' => time()
-        ]);
-
-        $sql = "INSERT INTO sys_notification_buffer (user_id, channel, count, payload_preview, priority)
-                VALUES (:user, :ch, 1, JSON_ARRAY(:preview), :prio)
-                ON DUPLICATE KEY UPDATE
-                  count = count + 1,
-                  payload_preview = JSON_ARRAY_APPEND(payload_preview, '\$', :preview),
-                  updated_at = NOW(6)";
-
-        CONN::nodml($sql, [
-            ':user' => $userId,
-            ':ch' => $channel,
-            ':preview' => $preview,
-            ':prio' => $priority
-        ]);
-
-        Log::logInfo("Notification buffered for offline user", [
-            'user_id' => $userId,
-            'channel' => $channel
-        ]);
-    }
+    # Mensajes offline ahora se manejan automáticamente vía MessagePersistence::persistMessage()
+    # Ya no necesitamos buffer separado
 
     public function start(): void
     {
