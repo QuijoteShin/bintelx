@@ -1,20 +1,32 @@
-<?php
+<?php # bintelx/kernel/Log.php
 
 namespace bX;
 
 class Log {
-  public static bool $logToUser = false;
-  public static string $logLevel = 'ERROR'; // Puedes controlar el nivel de log: DEBUG, INFO, WARNING, ERROR
   private static array $logLevels = [
       'DEBUG' => 1,
       'INFO' => 2,
       'WARNING' => 3,
       'ERROR' => 4,
-      'NONE' => 5 // Para desactivar todos los logs
+      'NONE' => 5
   ];
 
+  # Obtener configuración desde .env vía Config
+  private static function getLogToCli(): bool {
+    return Config::getBool('LOG_TO_CLI');
+  }
+
+  private static function getLogToUser(): bool {
+    return Config::getBool('LOG_TO_USER');
+  }
+
+  private static function getLogLevel(): string {
+    return strtoupper(Config::get('LOG_LEVEL'));
+  }
+
   private static function shouldLog(string $level): bool {
-    $configLevelNumeric = self::$logLevels[strtoupper(self::$logLevel)] ?? self::$logLevels['ERROR'];
+    $configLevel = self::getLogLevel();
+    $configLevelNumeric = self::$logLevels[$configLevel] ?? self::$logLevels['ERROR'];
     $messageLevelNumeric = self::$logLevels[strtoupper($level)] ?? self::$logLevels['ERROR'];
     return $messageLevelNumeric >= $configLevelNumeric;
   }
@@ -70,18 +82,31 @@ class Log {
     // Para simplicidad, usaremos un archivo por mes.
     $logFile = $logPath . "bintelx_" . $fileDateSuffix . ".log";
 
-    // Escribir en el archivo
+    # Escribir en el archivo
     $logSuccess = file_put_contents($logFile, $logEntry, FILE_APPEND | LOCK_EX);
 
-    if (!$logSuccess && !headers_sent()) { // Intenta enviar un error al navegador si falla la escritura del log
-      // Esto es un último recurso y podría no ser visible dependiendo de la configuración de PHP
+    if (!$logSuccess && !headers_sent()) { # Intenta enviar un error al navegador si falla la escritura del log
+      # Esto es un último recurso y podría no ser visible dependiendo de la configuración de PHP
       error_log("CRITICAL: Failed to write to BintelX log file: {$logFile}. Log Entry: {$logEntry}");
     }
 
+    # Salida a CLI solo en terminal real, no en contexto web
+    if (self::getLogToCli() && php_sapi_name() === 'cli' && function_exists('posix_isatty') && posix_isatty(STDOUT)) {
+      $colorCodes = [
+        'DEBUG' => "\033[36m",   # Cyan
+        'INFO' => "\033[32m",    # Green
+        'WARNING' => "\033[33m", # Yellow
+        'ERROR' => "\033[31m",   # Red
+        'RESET' => "\033[0m"
+      ];
+      $color = $colorCodes[strtoupper($level)] ?? '';
+      $reset = $colorCodes['RESET'];
+      echo "{$color}{$logEntry}{$reset}";
+    }
 
-    // Log específico para el usuario si está habilitado y es un error o warning (o si $logToUser es true para todos los niveles)
-    if (self::$logToUser && ($level === 'ERROR' || $level === 'WARNING')) {
-      // Podrías añadir lógica para el backtrace aquí si lo necesitas para debug/warning
+
+    # Log específico para el usuario si está habilitado y es un error o warning
+    if (self::getLogToUser() && ($level === 'ERROR' || $level === 'WARNING')) {
       $userLogFile = $logPath . "user_specific_" . $fileDateSuffix . "_user-" . preg_replace('/[^a-zA-Z0-9_-]/', '_', (string)$userId) . ".log";
       file_put_contents($userLogFile, $logEntry, FILE_APPEND | LOCK_EX);
     }
