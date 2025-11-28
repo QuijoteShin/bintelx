@@ -59,8 +59,7 @@ class AuthHandler
   {
     // Check if user is already authenticated via header/cookie (handled by api.php)
     if (\bX\Profile::isLoggedIn()) {
-      
-      return ['success' => true];
+      return self::buildValidationPayload('Token is valid.');
     }
 
     // If not authenticated via header/cookie, check for token in POST body
@@ -76,24 +75,26 @@ class AuthHandler
         $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"] ?? '');
 
         if ($account_id) {
-          // Token is valid
-          
-          return ['success' => true];
+          $profile = new \bX\Profile();
+          if ($profile->load(['account_id' => $account_id])) {
+            return self::buildValidationPayload('Token is valid.');
+          }
+          return ['success' => false, 'message' => 'Profile not found for token.'];
         } else {
           // Token verification failed
           
-          return ['success' => false];
+          return ['success' => false, 'message' => 'Invalid or expired token.'];
         }
       } catch (\Exception $e) {
         \bX\Log::logError("Token validation exception: " . $e->getMessage());
         
-        return ['success' => false];
+        return ['success' => false, 'message' => 'Token validation failed.'];
       }
     }
 
     // No valid authentication found
     
-    return ['success' => false];
+    return ['success' => false, 'message' => 'Authentication required.'];
   }
 
   /**
@@ -361,6 +362,23 @@ class AuthHandler
       'data' => [
         'serviceStatus' => 'OK',
         'serverTime' => date('c')
+      ]
+    ];
+  }
+
+  /**
+   * Builds a standardized response payload for token validation.
+   */
+  private static function buildValidationPayload(string $message): array
+  {
+    return [
+      'success' => true,
+      'message' => $message,
+      'data' => [
+        'accountId' => \bX\Profile::$account_id,
+        'profileId' => \bX\Profile::$profile_id,
+        'primaryEntityId' => \bX\Profile::$entity_id,
+        'permissions' => \bX\Profile::$userPermissions
       ]
     ];
   }

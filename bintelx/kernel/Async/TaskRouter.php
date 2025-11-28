@@ -153,13 +153,8 @@ class TaskRouter
 
                 if ($accountId) {
                     $profile = new \bX\Profile();
-                    $profile->load(['account_id' => $accountId]);
-
-                    // Set permissions
-                    if ($accountId == 1) {
-                        Router::$currentUserPermissions['*'] = ROUTER_SCOPE_WRITE;
-                    } else {
-                        Router::$currentUserPermissions['*'] = ROUTER_SCOPE_PRIVATE;
+                    if ($profile->load(['account_id' => $accountId])) {
+                        Router::$currentUserPermissions = \bX\Profile::getRoutePermissions();
                     }
                 }
             }

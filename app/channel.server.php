@@ -281,11 +281,7 @@ class ChannelServer
                 $this->authenticatedConnections[$fd]['profile_id'] = Profile::$profile_id;
 
                 # Set permissions
-                if ($accountId == 1) {
-                    Router::$currentUserPermissions['*'] = ROUTER_SCOPE_WRITE;
-                } else {
-                    Router::$currentUserPermissions['*'] = ROUTER_SCOPE_PRIVATE;
-                }
+                Router::$currentUserPermissions = Profile::getRoutePermissions();
             }
         } catch (\Exception $e) {
             Log::logWarning("Profile load failed", ['error' => $e->getMessage()]);

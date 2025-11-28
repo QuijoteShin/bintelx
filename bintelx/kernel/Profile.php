@@ -16,6 +16,15 @@ class Profile {
     private array $data = [];
     // Raw data from the database for the loaded profile row
     private array $data_raw = [];
+    private static bool $rolePermissionsColumnChecked = false;
+    private static bool $rolePermissionsColumnExists = false;
+    private const ROUTER_SCOPE_WEIGHTS = [
+        'write' => 4,
+        'read' => 3,
+        'private' => 2,
+        'public-write' => 1,
+        'public' => 0,
+    ];
 
     // Static properties to hold the current user's context for the request
     public static int $profile_id = 0;
@@ -172,28 +181,23 @@ class Profile {
      */
     private static function loadUserPermissions(int $accountId): void
     {
-        // TODO: Implement role/permission loading from roles table
-        // For now, set empty permissions
         self::$roles = [];
-        self::$userPermissions = [];
+        self::$userPermissions = [
+            'routes' => ['*' => 'private'],
+            'roles' => []
+        ];
 
-        // Example: Load from roles table when implemented
-        /*
-        $query = "SELECT r.role_name, r.permissions_json
-                  FROM account_roles ar
-                  JOIN roles r ON ar.role_id = r.role_id
-                  WHERE ar.account_id = :account_id AND ar.is_active = 1";
-
-        $roleRows = CONN::dml($query, [':account_id' => $accountId]);
-
-        foreach ($roleRows as $role) {
-            self::$roles[] = $role['role_name'];
-            $permissions = json_decode($role['permissions_json'], true);
-            self::$userPermissions = array_merge(self::$userPermissions, $permissions ?? []);
+        if (self::$profile_id <= 0) {
+            Log::logWarning("Profile::loadUserPermissions - profile not initialized for account_id={$accountId}");
+            return;
         }
-        */
 
-        Log::logDebug("Permissions loaded for account_id=$accountId: " . count(self::$userPermissions) . " permissions");
+        $assignments = self::fetchProfileRelationships(self::$profile_id);
+        self::hydrateRoleCaches($assignments);
+
+        $roleCount = count(self::$roles['assignments'] ?? []);
+        $routeCount = count(self::$userPermissions['routes'] ?? []);
+        Log::logDebug("Permissions loaded for profile_id=" . self::$profile_id . " (roles={$roleCount}, route_rules={$routeCount})");
     }
 
     /**
@@ -206,7 +210,78 @@ class Profile {
         self::$entity_id = 0;
         self::$isLoggedIn = false;
         self::$roles = [];
-        self::$userPermissions = [];
+        self::$userPermissions = [
+            'routes' => ['*' => 'public'],
+            'roles' => []
+        ];
+    }
+
+    /**
+     * Checks whether a profile has the requested role for a given entity.
+     */
+    public static function hasRole(int $profileId, ?int $entityId, string $roleCode, bool $includePassive = true): bool
+    {
+        $roleCode = trim($roleCode);
+        if ($roleCode === '') {
+            return false;
+        }
+
+        if ($profileId === self::$profile_id && !empty(self::$roles['by_role'])) {
+            return self::hasRoleInCache($entityId, $roleCode, $includePassive);
+        }
+
+        $sql = "SELECT COUNT(*) AS total
+                FROM entity_relationships
+                WHERE profile_id = :profile_id
+                  AND status = 'active'
+                  AND role_code = :role_code";
+        $params = [
+            ':profile_id' => $profileId,
+            ':role_code' => $roleCode
+        ];
+
+        if ($entityId !== null) {
+            $sql .= " AND entity_id = :entity_id";
+            $params[':entity_id'] = $entityId;
+        }
+
+        if (!$includePassive) {
+            $sql .= " AND (grant_mode IS NULL OR grant_mode <> 'passive')";
+        }
+
+        $result = CONN::dml($sql, $params);
+        return !empty($result) && (int)($result[0]['total'] ?? 0) > 0;
+    }
+
+    /**
+     * Checks if the given profile owns an entity.
+     */
+    public static function hasOwnership(int $profileId, int $entityId): bool
+    {
+        if ($profileId === self::$profile_id && !empty(self::$roles['ownership'])) {
+            return isset(self::$roles['ownership'][$entityId]);
+        }
+
+        $sql = "SELECT COUNT(*) AS total
+                FROM entity_relationships
+                WHERE profile_id = :profile_id
+                  AND entity_id = :entity_id
+                  AND relation_kind = 'owner'
+                  AND status = 'active'";
+        $result = CONN::dml($sql, [
+            ':profile_id' => $profileId,
+            ':entity_id' => $entityId
+        ]);
+
+        return !empty($result) && (int)($result[0]['total'] ?? 0) > 0;
+    }
+
+    /**
+     * Returns the aggregated Router permission map for the currently loaded profile.
+     */
+    public static function getRoutePermissions(): array
+    {
+        return self::$userPermissions['routes'] ?? ['*' => 'private'];
     }
 
     /**
@@ -300,5 +375,214 @@ class Profile {
     public static function getEntityId(): int
     {
         return self::$entity_id;
+    }
+
+    /**
+     * Fetches active relationships for a profile from the database.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private static function fetchProfileRelationships(int $profileId): array
+    {
+        $permissionsField = self::rolesTableHasPermissionsColumn()
+            ? ", r.permissions_json"
+            : ", NULL AS permissions_json";
+
+        $sql = "SELECT
+                    er.relationship_id,
+                    er.profile_id,
+                    er.entity_id,
+                    er.relation_kind,
+                    er.role_code,
+                    er.grant_mode,
+                    er.relationship_label,
+                    er.status,
+                    e.primary_name AS entity_name,
+                    e.entity_type,
+                    r.role_label,
+                    r.scope_type,
+                    r.status AS role_status
+                    {$permissionsField}
+                FROM entity_relationships er
+                LEFT JOIN entities e ON e.entity_id = er.entity_id
+                LEFT JOIN roles r ON r.role_code = er.role_code
+                WHERE er.profile_id = :profile_id
+                  AND er.status = 'active'
+                  AND (r.role_code IS NULL OR r.status = 'active')
+                ORDER BY e.primary_name ASC, er.role_code ASC";
+
+        $rows = CONN::dml($sql, [':profile_id' => $profileId]);
+        return $rows ?? [];
+    }
+
+    /**
+     * Builds the cached structures for roles and router permissions.
+     *
+     * @param array<int,array<string,mixed>> $relationships
+     */
+    private static function hydrateRoleCaches(array $relationships): void
+    {
+        $assignments = [];
+        $byRole = [];
+        $byEntity = [];
+        $ownership = [];
+        $routeMap = ['*' => 'private'];
+
+        foreach ($relationships as $row) {
+            $assignment = [
+                'relationshipId' => (int)($row['relationship_id'] ?? 0),
+                'profileId' => (int)($row['profile_id'] ?? 0),
+                'entityId' => isset($row['entity_id']) ? (int)$row['entity_id'] : null,
+                'entityName' => $row['entity_name'] ?? null,
+                'entityType' => $row['entity_type'] ?? null,
+                'relationKind' => $row['relation_kind'] ?? null,
+                'roleCode' => $row['role_code'] ?? null,
+                'roleLabel' => $row['role_label'] ?? null,
+                'scopeType' => $row['scope_type'] ?? null,
+                'grantMode' => $row['grant_mode'] ?? null,
+                'relationshipLabel' => $row['relationship_label'] ?? null,
+                'permissions' => self::decodePermissionsJson($row['permissions_json'] ?? null),
+            ];
+
+            $assignments[] = $assignment;
+
+            $entityKey = $assignment['entityId'] ?? 'global';
+            if (!isset($byEntity[$entityKey])) {
+                $byEntity[$entityKey] = [
+                    'entityId' => $assignment['entityId'],
+                    'entityName' => $assignment['entityName'],
+                    'entityType' => $assignment['entityType'],
+                    'ownership' => false,
+                    'roles' => []
+                ];
+            }
+
+            if ($assignment['relationKind'] === 'owner' && $assignment['entityId'] !== null) {
+                $byEntity[$entityKey]['ownership'] = true;
+                $ownership[$assignment['entityId']] = true;
+                $routeMap['*'] = self::selectHigherScope($routeMap['*'] ?? 'private', 'write');
+            }
+
+            if (!empty($assignment['roleCode'])) {
+                $byEntity[$entityKey]['roles'][$assignment['roleCode']] = $assignment;
+                $byRole[$assignment['roleCode']][] = $assignment;
+                if (!empty($assignment['permissions'])) {
+                    self::mergeRoutePermissions($routeMap, $assignment['permissions']);
+                }
+            }
+        }
+
+        self::$roles = [
+            'assignments' => $assignments,
+            'by_role' => $byRole,
+            'by_entity' => $byEntity,
+            'ownership' => $ownership
+        ];
+
+        self::$userPermissions = [
+            'routes' => $routeMap,
+            'roles' => $assignments
+        ];
+    }
+
+    /**
+     * Determines if the roles table exposes the permissions_json column.
+     */
+    private static function rolesTableHasPermissionsColumn(): bool
+    {
+        if (self::$rolePermissionsColumnChecked) {
+            return self::$rolePermissionsColumnExists;
+        }
+
+        $columns = CONN::dml("SHOW COLUMNS FROM roles LIKE 'permissions_json'");
+        self::$rolePermissionsColumnExists = !empty($columns);
+        self::$rolePermissionsColumnChecked = true;
+        return self::$rolePermissionsColumnExists;
+    }
+
+    /**
+     * Decodes permissions JSON safely.
+     *
+     * @return array<string,mixed>|null
+     */
+    private static function decodePermissionsJson(?string $json): ?array
+    {
+        if ($json === null || $json === '') {
+            return null;
+        }
+
+        $decoded = json_decode($json, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+            Log::logWarning("Profile::decodePermissionsJson - Invalid JSON: " . json_last_error_msg());
+            return null;
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Merges role based route permissions into the aggregated Router map.
+     */
+    private static function mergeRoutePermissions(array &$routeMap, array $permissions): void
+    {
+        $routes = $permissions['routes'] ?? $permissions;
+        if (!is_array($routes)) {
+            return;
+        }
+
+        foreach ($routes as $pattern => $scope) {
+            if (!is_string($pattern)) {
+                continue;
+            }
+            $normalizedScope = self::normalizeScope($scope);
+            if ($normalizedScope === null) {
+                continue;
+            }
+            $current = $routeMap[$pattern] ?? 'public';
+            $routeMap[$pattern] = self::selectHigherScope($current, $normalizedScope);
+        }
+    }
+
+    /**
+     * Normalizes incoming scope strings to known Router scopes.
+     */
+    private static function normalizeScope(mixed $scope): ?string
+    {
+        if (!is_string($scope) || $scope === '') {
+            return null;
+        }
+        $scope = strtolower($scope);
+        return isset(self::ROUTER_SCOPE_WEIGHTS[$scope]) ? $scope : null;
+    }
+
+    /**
+     * Selects the scope with the higher weight according to ROUTER_SCOPE_WEIGHTS.
+     */
+    private static function selectHigherScope(string $current, string $candidate): string
+    {
+        $currentWeight = self::ROUTER_SCOPE_WEIGHTS[$current] ?? 0;
+        $candidateWeight = self::ROUTER_SCOPE_WEIGHTS[$candidate] ?? 0;
+        return ($candidateWeight > $currentWeight) ? $candidate : $current;
+    }
+
+    /**
+     * Checks the cached roles for a match.
+     */
+    private static function hasRoleInCache(?int $entityId, string $roleCode, bool $includePassive): bool
+    {
+        if (empty(self::$roles['by_role'][$roleCode])) {
+            return false;
+        }
+
+        foreach (self::$roles['by_role'][$roleCode] as $assignment) {
+            if (!$includePassive && ($assignment['grantMode'] ?? null) === 'passive') {
+                continue;
+            }
+            if ($entityId === null || (int)($assignment['entityId'] ?? 0) === (int)$entityId) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -53,13 +53,8 @@ try {
         $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
         if($account_id) {
             $profile = new \bX\Profile();
-            $profile->load(['account_id' => $account_id]);
-            if($account_id == 1 ) {
-              \bX\Router::$currentUserPermissions['*'] = ROUTER_SCOPE_WRITE;
-            } else {
-              # $profilePermissions = PermissionBuilder::buildFromRoles(\bX\Profile::$roles);
-              # \bX\Router::$currentUserPermissions = $profilePermissions;
-              \bX\Router::$currentUserPermissions['*'] = ROUTER_SCOPE_PRIVATE;
+            if ($profile->load(['account_id' => $account_id])) {
+                \bX\Router::$currentUserPermissions = \bX\Profile::getRoutePermissions();
             }
         }
     }
