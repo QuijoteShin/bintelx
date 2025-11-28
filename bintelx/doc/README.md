@@ -18,6 +18,44 @@ The architecture is divided into three main pillars, each detailed in its respec
 
 4.  [**DataCaptureService**](./04_DataCaptureService.md): Describes the high-level service that orchestrates the EAV system, providing a simple interface for applications to read and write versioned data.
 
+## Permission Flow Scenarios (Mermaid)
+
+### Scenario 1 – Standard authentication + Router dispatch
+
+```mermaid
+flowchart TD
+    Login[/api/_demo/login/] --> ProfileLoad[\Profile::load/]
+    ProfileLoad --> CacheRoles[Cache roles + routes]
+    CacheRoles --> Request[/api/orders/list]
+    Request --> hasPerm{Router::hasPermission?}
+    hasPerm -->|Yes| Controller[Controller executes]
+    hasPerm -->|No| Deny[403]
+```
+
+### Scenario 2 – Entity-aware role checking
+
+```mermaid
+flowchart LR
+    UISelect[UI selects Project X] --> APICall[/api/project/select]
+    APICall --> CacheLookup[Profile::$roles.by_entity[X]]
+    CacheLookup --> hasRole{hasRole(profile,X,'project.manager')?}
+    hasRole -->|Yes| Enable[Router map escalates scope + UI enables write tools]
+    hasRole -->|No| ReadOnly[Keep UI in read-only / route scope private]
+```
+
+### Scenario 3 – Admin updates + realtime client sync
+
+```mermaid
+flowchart TD
+    Admin[/api/roles/grant] --> DB[(entity_relationships + roles)]
+    DB --> NextLogin[Next login/profile load]
+    NextLogin --> RouterCache[Router::$currentUserPermissions updated]
+    RouterCache --> ChannelServer[ChannelServer.loadProfile cache]
+    ChannelServer --> SysNotif[sys.permissions.update]
+    SysNotif --> Client[BintelxClient.on('system:permissions')]
+    Client --> UIAdjust[UI refreshes privilege matrix]
+```
+
 ## Additional Resources
 
 *   [**ARCHITECTURE_QA.md**](./ARCHITECTURE_QA.md): Comprehensive Q&A document that answers 14 key architectural questions about multi-company support, roles by project, data segregation, ALCOA compliance, and more.
