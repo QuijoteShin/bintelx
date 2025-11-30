@@ -100,7 +100,8 @@ class Log {
     self::init();
     $isCli = php_sapi_name() === 'cli';
     $isHttpRequest = isset($_SERVER['REQUEST_METHOD']) || isset($_SERVER['HTTP_HOST']);
-    $isTty = function_exists('posix_isatty') && @posix_isatty(STDOUT);
+    $stdoutAvailable = defined('STDOUT') && is_resource(\STDOUT);
+    $isTty = $stdoutAvailable && function_exists('posix_isatty') && @posix_isatty(\STDOUT);
 
     if (self::$logToCli && $isCli && !$isHttpRequest && $isTty) {
       $colorCodes = [

@@ -9,6 +9,7 @@ use bX\CONN;
 use bX\Profile;
 use bX\Log;
 use bX\SuperGlobalHydrator;
+use bX\Channel\MessagePersistence;
 
 # The Brain of the Async Grid
 # Manages task routing and memory isolation (Sandbox) to prevent state pollution in workers
@@ -74,6 +75,10 @@ class TaskRouter
 
                 case 'grid.response':
                     $this->handleGridResponse($data['payload'], $data['meta']);
+                    break;
+
+                case 'channel.persist':
+                    $this->handleChannelPersist($data['payload']);
                     break;
 
                 default:
@@ -334,5 +339,45 @@ class TaskRouter
         });
 
         return $job;
+    }
+
+    protected function handleChannelPersist(array $payload): void
+    {
+        $channel = $payload['channel'] ?? null;
+        $message = $payload['message'] ?? null;
+        if (!$channel || $message === null) {
+            Log::logWarning("TaskRouter: channel.persist missing payload", $payload);
+            return;
+        }
+
+        $messageId = $payload['message_id'] ?? null;
+        $profileId = $payload['profile_id'] ?? null;
+        $accountId = $payload['account_id'] ?? null;
+        $type = $payload['message_type'] ?? 'text';
+        $priority = $payload['priority'] ?? 'normal';
+        $ttl = $payload['ttl'] ?? null;
+
+        $resultId = MessagePersistence::persistMessage(
+            $channel,
+            $message,
+            $profileId ? (int)$profileId : null,
+            $accountId ? (int)$accountId : null,
+            $type,
+            $priority,
+            $ttl,
+            $messageId
+        );
+
+        if ($resultId) {
+            Log::logDebug("TaskRouter: channel message persisted", [
+                'channel' => $channel,
+                'message_id' => $resultId
+            ]);
+        } else {
+            Log::logWarning("TaskRouter: failed to persist channel message", [
+                'channel' => $channel,
+                'message_id' => $messageId
+            ]);
+        }
     }
 }

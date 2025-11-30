@@ -21,9 +21,10 @@ class MessagePersistence
         ?int $fromAccountId = null,
         string $messageType = 'text',
         string $priority = 'normal',
-        ?int $ttlSeconds = null
+        ?int $ttlSeconds = null,
+        ?string $messageId = null
     ): string {
-        $messageId = self::generateMessageId();
+        $messageId = $messageId ?: self::generateMessageId();
         $expiresAt = $ttlSeconds ? date('Y-m-d H:i:s', time() + $ttlSeconds) : null;
 
         $sql = "INSERT INTO channel_messages
@@ -273,7 +274,7 @@ class MessagePersistence
     /**
      * Genera message_id único
      */
-    private static function generateMessageId(): string
+    public static function generateMessageId(): string
     {
         return 'msg_' . uniqid('', true) . '_' . bin2hex(random_bytes(8));
     }

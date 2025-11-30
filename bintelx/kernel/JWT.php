@@ -95,4 +95,33 @@ class JWT {
     public function base64url_decode($data) {
         return base64_decode(str_pad(strtr($data, '-_', '+/'), strlen($data) % 4, '=', STR_PAD_RIGHT));
     }
+
+    /**
+     * Convenience helper to decode a JWT into its payload array.
+     * Optionally validates the signature when a secret key is available.
+     *
+     * @param string $token Raw JWT string
+     * @param ?string $secretKey Secret used to validate signature (defaults to Config::get('JWT_SECRET'))
+     * @param bool $validateSignature Whether to enforce signature validation
+     * @return array Payload data or empty array on failure
+     */
+    public static function decode(string $token, ?string $secretKey = null, bool $validateSignature = false): array {
+        if (empty($token)) {
+            return [];
+        }
+
+        $secret = $secretKey ?? Config::get('JWT_SECRET', '');
+        $jwt = new self($secret, $token);
+        $payload = $jwt->getPayload() ?? [];
+
+        if ($validateSignature && !empty($secret)) {
+            $isValid = $jwt->validateSignature();
+            if (!$isValid) {
+                Log::logWarning('JWT::decode signature validation failed');
+                return [];
+            }
+        }
+
+        return is_array($payload) ? $payload : [];
+    }
 }

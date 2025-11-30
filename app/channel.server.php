@@ -31,8 +31,9 @@ use bX\Async\SwooleAsyncBusAdapter;
 class ChannelServer
 {
     private $server;
-    private array $channels = []; # channel => [fd1, fd2, ...]
-    private array $authenticatedConnections = []; # fd => ['account_id', 'profile_id', 'token']
+    private ?\Swoole\Table $channelsTable = null; # Memoria compartida entre workers
+    private ?\Swoole\Table $authTable = null; # Autenticaciones compartidas
+    private array $authenticatedConnections = []; # Compatibilidad para headers/token
     private ?TaskRouter $taskRouter = null;
     private ?SwooleResponseBus $responseBus = null;
     private ?SwooleAsyncBusAdapter $asyncBus = null;
@@ -56,6 +57,19 @@ class ChannelServer
 
         # Plain WebSocket server (no SSL) - Nginx will handle SSL termination
         $this->server = new Swoole\WebSocket\Server($host, $port, SWOOLE_PROCESS, SWOOLE_SOCK_TCP);
+
+        # Crear Swoole\Table para channels compartidos entre workers
+        # Formato: key="channel:fd" value=1 (set-like structure)
+        $this->channelsTable = new \Swoole\Table(10240); # 10k subscripciones
+        $this->channelsTable->column('subscribed', \Swoole\Table::TYPE_INT, 1);
+        $this->channelsTable->create();
+
+        # Tabla para autenticaciones compartidas
+        $this->authTable = new \Swoole\Table(2048); # 2k conexiones
+        $this->authTable->column('account_id', \Swoole\Table::TYPE_INT);
+        $this->authTable->column('profile_id', \Swoole\Table::TYPE_INT);
+        $this->authTable->column('token', \Swoole\Table::TYPE_STRING, 512);
+        $this->authTable->create();
 
         $workerNum = Config::getInt('CHANNEL_WORKER_NUM', swoole_cpu_num() * 2);
         $taskWorkerNum = Config::getInt('CHANNEL_TASK_WORKER_NUM', swoole_cpu_num());
@@ -190,6 +204,11 @@ class ChannelServer
                 $headers['Authorization'] = 'Bearer ' . $this->authenticatedConnections[$fd]['token'];
             } elseif (!empty($data['token'])) {
                 $headers['Authorization'] = 'Bearer ' . $data['token'];
+            } elseif ($this->authTable && $this->authTable->exists((string)$fd)) {
+                $entry = $this->authTable->get((string)$fd);
+                if (!empty($entry['token'])) {
+                    $headers['Authorization'] = 'Bearer ' . $entry['token'];
+                }
             }
 
             SuperGlobalHydrator::hydrate([
@@ -210,6 +229,9 @@ class ChannelServer
                 $token = $this->authenticatedConnections[$fd]['token'];
             } elseif (!empty($data['token'])) {
                 $token = $data['token'];
+            } elseif ($this->authTable && $this->authTable->exists((string)$fd)) {
+                $entry = $this->authTable->get((string)$fd);
+                $token = $entry['token'] ?? null;
             }
 
             if ($token) {
@@ -221,6 +243,13 @@ class ChannelServer
 
             # No usar base path - dejar que Router extraiga módulo de la URI completa
             $route = new Router($uri);
+
+            # Inyectar contexto WS (tablas compartidas entre workers)
+            $_SERVER['WS_SERVER'] = $server;
+            $_SERVER['WS_FD'] = $fd;
+            $_SERVER['WS_CHANNELS_TABLE'] = $this->channelsTable;
+            $_SERVER['WS_AUTH_TABLE'] = $this->authTable;
+
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
@@ -254,6 +283,8 @@ class ChannelServer
             # 7. RESTORE superglobales
             SuperGlobalHydrator::restore($snapshot);
 
+            unset($_SERVER['WS_SERVER'], $_SERVER['WS_FD'], $_SERVER['WS_CHANNELS_TABLE'], $_SERVER['WS_AUTH_TABLE']);
+
             # 8. CLEANUP estado
             Profile::resetStaticProfileData();
         }
@@ -275,10 +306,18 @@ class ChannelServer
                 $profile = new Profile();
                 $profile->load(['account_id' => $accountId]);
 
-                # Guardar token en sesión WS
+                # Guardar token en sesión WS (array + Swoole\Table)
                 $this->authenticatedConnections[$fd]['token'] = $token;
                 $this->authenticatedConnections[$fd]['account_id'] = $accountId;
                 $this->authenticatedConnections[$fd]['profile_id'] = Profile::$profile_id;
+
+                if ($this->authTable) {
+                    $this->authTable->set((string)$fd, [
+                        'token' => $token,
+                        'account_id' => $accountId,
+                        'profile_id' => Profile::$profile_id
+                    ]);
+                }
 
                 # Set permissions
                 Router::$currentUserPermissions = Profile::getRoutePermissions();
@@ -305,23 +344,23 @@ class ChannelServer
 
     public function onClose(Swoole\WebSocket\Server $server, int $fd): void
     {
-        # Limpiar de canales en memoria
-        foreach ($this->channels as $channel => $subscribers) {
-            $this->channels[$channel] = array_filter($subscribers, fn($connFd) => $connFd !== $fd);
-
-            if (empty($this->channels[$channel])) {
-                unset($this->channels[$channel]);
+        # Limpiar de Swoole\Table (compartida entre workers)
+        foreach ($this->channelsTable as $key => $row) {
+            if (str_ends_with($key, ':' . $fd)) {
+                $this->channelsTable->del($key);
             }
         }
 
-        # Limpiar sesión de autenticación
-        if (isset($this->authenticatedConnections[$fd])) {
-            $user = $this->authenticatedConnections[$fd];
+        # Limpiar autenticación
+        if ($this->authTable->exists((string)$fd)) {
+            $user = $this->authTable->get((string)$fd);
             $this->info("User disconnected: fd={$fd}, account_id={$user['account_id']}, profile_id={$user['profile_id']}");
-            unset($this->authenticatedConnections[$fd]);
+            $this->authTable->del((string)$fd);
         } else {
             $this->info("Connection closed: fd={$fd}");
         }
+
+        unset($this->authenticatedConnections[$fd]);
     }
 
     private function sendError(Swoole\WebSocket\Server $server, int $fd, string $message): void

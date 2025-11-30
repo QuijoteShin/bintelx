@@ -56,6 +56,7 @@ class CONN {
      * @return PDO The PDO connection object.
      */
     public static function connect(string $dsn, string $username, string $password): PDO {
+        error_log("[CONN] connect DSN={$dsn} user={$username}");
         self::$link = new PDO($dsn, $username, $password);
         self::$link->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         // Optional: self::$link->setAttribute(PDO::ATTR_EMULATE_PREPARES, false); for better security with some drivers
@@ -90,6 +91,7 @@ class CONN {
      * @return PDO The newly added PDO connection object.
      */
     public static function add(string $dsn, string $username, string $password): PDO {
+        error_log("[CONN] add DSN={$dsn} user={$username}");
         $pdo = new PDO($dsn, $username, $password, [
             // PDO::ATTR_TIMEOUT => 30, // This is driver-specific, not a general PDO attribute
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
@@ -251,7 +253,7 @@ class CONN {
      * Gets the ID of the last inserted row on the current transaction connection or primary link.
      * @return string|false The ID of the last inserted row, or false on failure.
      */
-    public static function getLastInsertId() {
+    public static function getLastInsertId(): false|string {
         // This should ideally use the same connection that performed the last insert.
         // If a transaction is active, it's self::$transactionConnection.
         // Otherwise, it's ambiguous if there's a pool and no transaction.

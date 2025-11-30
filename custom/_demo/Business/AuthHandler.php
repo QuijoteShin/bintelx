@@ -24,25 +24,40 @@ class AuthHandler
   public static function login(array $inputData): array
   {
     try {
-      // Instantiate the Bintelx Account service
       $jwtSecret = \bX\Config::get('JWT_SECRET');
-      $accountService = new \bX\Account($jwtSecret);
+      $jwtXorKey = \bX\Config::get('JWT_XOR_KEY', '');
+      $accountService = new \bX\Account($jwtSecret, $jwtXorKey);
       $loginResult = $accountService->login($inputData);
 
-      if ($loginResult['success']) {
-        
-        return [
-          'success' => true,
-          'message' => 'Login successful.',
-          'token' => $loginResult['token']
-        ];
-      } else {
-        
-        return ['success' => false, 'message' => $loginResult['message']];
+      if (!$loginResult['success']) {
+        return ['success' => false, 'message' => $loginResult['message'] ?? 'Invalid credentials.'];
       }
+
+      $token = $loginResult['token'] ?? null;
+      if (!$token) {
+        return ['success' => false, 'message' => 'Token generation failed.'];
+      }
+
+      $payload = \bX\JWT::decode($token);
+      $accountId = (int)($payload[1]['id'] ?? 0);
+
+      if ($accountId) {
+        $profile = new \bX\Profile();
+        $profile->load(['account_id' => $accountId]);
+      }
+
+      return [
+        'success' => true,
+        'message' => 'Login successful.',
+        'token' => $token,
+        'data' => [
+          'accountId' => $accountId,
+          'profileId' => \bX\Profile::$profile_id ?? null,
+          'entityId' => \bX\Profile::$entity_id ?? null
+        ]
+      ];
     } catch (\Exception $e) {
       \bX\Log::logError("Login Exception in AuthHandler: " . $e->getMessage());
-      
       return ['success' => false, 'message' => 'An internal error occurred during login.'];
     }
   }
@@ -67,6 +82,11 @@ class AuthHandler
       $token = \bX\Args::$OPT['token'];
 
       try {
+        $ping = \bX\CONN::dml('SELECT 1 AS ok');
+        if (empty($ping)) {
+          \bX\Log::logWarning("ValidateToken: DB ping failed in POST branch");
+        }
+        $dbPingOk = !empty($ping[0]['ok']);
         // Get JWT configuration from environment
         $jwtSecret = \bX\Config::get('JWT_SECRET');
         $jwtXorKey = \bX\Config::get('JWT_XOR_KEY');
@@ -77,7 +97,9 @@ class AuthHandler
         if ($account_id) {
           $profile = new \bX\Profile();
           if ($profile->load(['account_id' => $account_id])) {
-            return self::buildValidationPayload('Token is valid.');
+            $response = self::buildValidationPayload('Token is valid.');
+            $response['data']['dbPing'] = $dbPingOk;
+            return $response;
           }
           return ['success' => false, 'message' => 'Profile not found for token.'];
         } else {
