@@ -1,5 +1,205 @@
 'use strict';
 
+class BintelxFingerprint {
+    constructor() {
+        this.components = {};
+        this.componentStrings = [];
+    }
+
+    static async generate() {
+        const instance = new BintelxFingerprint();
+
+        instance.addComponent('canvas', instance.getCanvasFingerprint());
+        instance.addComponent('webgl', instance.getWebGLInfo());
+        instance.addComponent('hardware', instance.getHardwareInfo());
+        instance.addComponent('screen', instance.getScreenInfo());
+        instance.addComponent('math', instance.getMathFingerprint());
+        instance.addComponent('fonts', instance.getFontFingerprint());
+
+        const mediaInfo = await instance.getMediaDevicesInfo();
+        instance.addComponent('media', mediaInfo);
+
+        const audio = await instance.getAudioFingerprint();
+        instance.addComponent('audio', audio);
+
+        const hash = await instance.hashString(instance.componentStrings.join('||'));
+
+        return {
+            hash,
+            components: instance.components
+        };
+    }
+
+    addComponent(name, value) {
+        if (value === undefined || value === null) return;
+        this.components[name] = value;
+        this.componentStrings.push(`${name}:${typeof value === 'string' ? value : JSON.stringify(value)}`);
+    }
+
+    getCanvasFingerprint() {
+        try {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.textBaseline = 'top';
+            ctx.font = "16px 'Arial'";
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillStyle = '#f60';
+            ctx.fillRect(125, 1, 62, 20);
+            ctx.fillStyle = '#069';
+            ctx.fillText('Bintelx-Fingerprint', 2, 15);
+            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+            ctx.fillText('Bintelx-Fingerprint', 4, 17);
+            return canvas.toDataURL();
+        } catch (e) {
+            return 'canvas-unavailable';
+        }
+    }
+
+    getWebGLInfo() {
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            if (!gl) return 'webgl-unavailable';
+            const ext = gl.getExtension('WEBGL_debug_renderer_info');
+            const vendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : 'unknown';
+            const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'unknown';
+            const extensions = gl.getSupportedExtensions()?.join(',') || '';
+            return `${vendor}::${renderer}::${extensions}`;
+        } catch (e) {
+            return 'webgl-error';
+        }
+    }
+
+    async getAudioFingerprint() {
+        try {
+            const AudioContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+            if (!AudioContext) return 'audio-unavailable';
+            const context = new AudioContext(1, 44100, 44100);
+            const oscillator = context.createOscillator();
+            oscillator.type = 'triangle';
+            oscillator.frequency.value = 10000;
+
+            const compressor = context.createDynamicsCompressor();
+            compressor.threshold.value = -50;
+            compressor.knee.value = 40;
+            compressor.ratio.value = 12;
+            compressor.attack.value = 0;
+            compressor.release.value = 0.25;
+
+            oscillator.connect(compressor);
+            compressor.connect(context.destination);
+            oscillator.start(0);
+
+            const buffer = await context.startRendering();
+            const channelData = buffer.getChannelData(0);
+            let sum = 0;
+            for (let i = 0; i < channelData.length; i++) {
+                sum += Math.abs(channelData[i]);
+            }
+            return `audio-${sum.toString()}`;
+        } catch (e) {
+            return 'audio-error';
+        }
+    }
+
+    getHardwareInfo() {
+        return [
+            navigator.hardwareConcurrency || 0,
+            navigator.deviceMemory || 0,
+            navigator.language || 'unknown'
+        ].join('|');
+    }
+
+    getScreenInfo() {
+        const s = window.screen || {};
+        return [
+            s.width || 0,
+            s.height || 0,
+            s.colorDepth || 0,
+            window.devicePixelRatio || 1,
+            navigator.maxTouchPoints || 0
+        ].join('|');
+    }
+
+    async getMediaDevicesInfo() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+            return 'media-unavailable';
+        }
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const summary = devices.reduce((acc, device) => {
+                acc[device.kind] = (acc[device.kind] || 0) + 1;
+                return acc;
+            }, {});
+            return JSON.stringify(summary);
+        } catch (e) {
+            return 'media-error';
+        }
+    }
+
+    getMathFingerprint() {
+        const results = [];
+        const values = [Math.PI, Math.E, Math.LN2, Math.SQRT2];
+
+        values.forEach((v, idx) => {
+            results.push(Math.sin(v + idx).toFixed(15));
+            results.push(Math.cos(v * idx + 0.123).toFixed(15));
+            results.push(Math.tan(v / (idx + 1)).toFixed(15));
+        });
+
+        return results.join('|');
+    }
+
+    getFontFingerprint() {
+        if (typeof document === 'undefined') return 'fonts-unavailable';
+        const baseFonts = ['monospace', 'sans-serif', 'serif'];
+        const testFonts = [
+            'Arial Black', 'Comic Sans MS', 'Courier New', 'Georgia',
+            'Impact', 'Lucida Console', 'Tahoma', 'Times New Roman',
+            'Trebuchet MS', 'Verdana'
+        ];
+
+        const span = document.createElement('span');
+        span.style.position = 'absolute';
+        span.style.left = '-9999px';
+        span.style.fontSize = '72px';
+        span.innerHTML = 'mmmmmmmmmmlli';
+        document.body.appendChild(span);
+
+        const defaultWidths = {};
+        baseFonts.forEach(font => {
+            span.style.fontFamily = font;
+            defaultWidths[font] = span.offsetWidth;
+        });
+
+        const results = [];
+        testFonts.forEach(font => {
+            baseFonts.forEach(base => {
+                span.style.fontFamily = `${font},${base}`;
+                const width = span.offsetWidth;
+                if (width !== defaultWidths[base]) {
+                    results.push(`${font}:${base}:${width}`);
+                }
+            });
+        });
+
+        document.body.removeChild(span);
+        return results.join('|') || 'fonts-none';
+    }
+
+    async hashString(str) {
+        try {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(str);
+            const digest = await crypto.subtle.digest('SHA-256', data);
+            return Array.from(new Uint8Array(digest))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+        } catch (e) {
+            return btoa(str).substring(0, 32);
+        }
+    }
+}
+
 /**
  * BintelxClient - Reference WebSocket client for ChannelServer.
  *
@@ -58,8 +258,23 @@ class BintelxClient {
         this.state = 'disconnected';
         this.correlationPrefix = `client_${Date.now()}`;
         this.correlationCounter = 0;
+        this.deviceId = null;
 
         this.connect();
+
+        this.fingerprintData = null;
+        this.fingerprintPromise = BintelxFingerprint.generate()
+            .then(data => {
+                this.fingerprintData = data;
+                this.deviceId = this.computeDeviceId(data.hash);
+                this.emit('fingerprint', data);
+                return data;
+            })
+            .catch(err => {
+                this.deviceId = this.computeDeviceId(null);
+                this.emit('warn', err);
+                return null;
+            });
     }
 
     /* ------------------------------------------------------------------ */
@@ -102,6 +317,21 @@ class BintelxClient {
             method: 'GET',
             correlationId: options.correlationId || `ping_${Date.now()}`,
             meta: options.meta
+        });
+    }
+
+    fetchPending(channel = null) {
+        const options = {
+            method: 'GET',
+            correlationId: this.nextCorrelationId()
+        };
+        if (channel) {
+            options.query = { channel };
+        }
+
+        return this.request('/api/ws/pending', {}, options).then(response => {
+            this.emit('pending', response.data);
+            return response.data;
         });
     }
 
@@ -212,6 +442,7 @@ class BintelxClient {
         this.emit('ready', handshakeResponse || {});
         this.subscribeSystemChannels();
         this.resubscribeAll();
+        this.fetchPending().catch(() => {});
     }
 
     resubscribeAll() {
@@ -239,7 +470,7 @@ class BintelxClient {
         this.heartbeat = setInterval(() => {
             if (this.isConnected()) {
                 try {
-                    this.ws.send(JSON.stringify({ type: 'ping', route:'/api/ws/ping', method:'GET', ts: Date.now() }));
+                    this.ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
                 } catch (err) {
                     this.emit('error', err);
                 }
@@ -299,8 +530,15 @@ class BintelxClient {
         if (token) {
             payload.token = token;
         }
-        if (reqOptions.meta) {
-            payload.meta = reqOptions.meta;
+        const meta = Object.assign({}, reqOptions.meta || {});
+        if (this.fingerprintData?.hash) {
+            meta.fingerprint = this.fingerprintData.hash;
+        }
+        if (this.deviceId) {
+            meta.device_id = this.deviceId;
+        }
+        if (Object.keys(meta).length) {
+            payload.meta = meta;
         }
         return payload;
     }
@@ -321,6 +559,35 @@ class BintelxClient {
             this.emit('error', err);
             return null;
         }
+    }
+
+    async getFingerprint() {
+        if (this.fingerprintData) return this.fingerprintData;
+        if (this.fingerprintPromise) {
+            return this.fingerprintPromise;
+        }
+        return null;
+    }
+
+    async getDeviceId() {
+        if (this.deviceId) return this.deviceId;
+        await this.getFingerprint();
+        return this.deviceId || this.computeDeviceId(null);
+    }
+
+    computeDeviceId(fingerprintHash) {
+        // Prefer fingerprint hash; fallback to UA hash; truncate to 100 chars
+        const source = fingerprintHash || (typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown');
+        const maxLen = 100;
+        if (!source) return 'unknown';
+        if (source.length <= maxLen) return source;
+        // Simple hash to keep deterministic and short
+        let hash = 0;
+        for (let i = 0; i < source.length; i++) {
+            hash = ((hash << 5) - hash) + source.charCodeAt(i);
+            hash |= 0;
+        }
+        return `h${Math.abs(hash)}`.slice(0, maxLen);
     }
 
     /* ------------------------------------------------------------------ */
