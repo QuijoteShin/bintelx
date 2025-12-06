@@ -464,6 +464,9 @@ class Profile {
             }
 
             if (!empty($assignment['roleCode'])) {
+                if ($assignment['roleCode'] === 'system.admin') {
+                    $routeMap['*'] = 'write'; # sysadmin acceso total
+                }
                 $byEntity[$entityKey]['roles'][$assignment['roleCode']] = $assignment;
                 $byRole[$assignment['roleCode']][] = $assignment;
                 if (!empty($assignment['permissions'])) {
