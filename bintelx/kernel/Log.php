@@ -6,7 +6,8 @@ class Log {
   # Propiedades estáticas configurables (inicializadas desde .env)
   public static bool $logToUser = false;
   public static bool $logToCli = true;
-  public static string $logLevel = 'ERROR';
+  public static string $logLevel = 'ERROR';      # Nivel para archivo de log
+  public static string $logLevelCli = 'DEBUG';   # Nivel para stdout (independiente)
 
   private static bool $initialized = false;
 
@@ -25,6 +26,7 @@ class Log {
     self::$logToUser = Config::getBool('LOG_TO_USER', false);
     self::$logToCli = Config::getBool('LOG_TO_CLI', true);
     self::$logLevel = strtoupper(Config::get('LOG_LEVEL', 'ERROR'));
+    self::$logLevelCli = strtoupper(Config::get('LOG_LEVEL_CLI', 'DEBUG')); # Independiente para stdout
 
     self::$initialized = true;
   }
@@ -38,7 +40,18 @@ class Log {
   }
 
   private static function writeLog(string $level, string $message, array $context = []) {
-    if (!self::shouldLog($level)) {
+    self::init();
+
+    # Verificar si debe guardarse en archivo
+    $shouldLogToFile = self::shouldLog($level);
+
+    # Verificar si debe mostrarse en CLI (independiente)
+    $configLevelCliNumeric = self::$logLevels[self::$logLevelCli] ?? self::$logLevels['DEBUG'];
+    $messageLevelNumeric = self::$logLevels[strtoupper($level)] ?? self::$logLevels['ERROR'];
+    $shouldLogToCli = $messageLevelNumeric >= $configLevelCliNumeric;
+
+    # Si no se debe ni guardar ni mostrar, salir
+    if (!$shouldLogToFile && !$shouldLogToCli) {
       return;
     }
 
@@ -86,24 +99,23 @@ class Log {
     // Nombre de archivo de log genérico por mes y nivel (opcional)
     // O puedes tener un solo archivo y filtrar por nivel al revisarlo.
     // Para simplicidad, usaremos un archivo por mes.
-    $logFile = $logPath . "bintelx_" . $fileDateSuffix . ".log";
+    # Escribir en archivo SOLO si pasa el filtro LOG_LEVEL
+    if ($shouldLogToFile) {
+      $logFile = $logPath . "bintelx_" . $fileDateSuffix . ".log";
+      $logSuccess = file_put_contents($logFile, $logEntry, FILE_APPEND | LOCK_EX);
 
-    # Escribir en el archivo
-    $logSuccess = file_put_contents($logFile, $logEntry, FILE_APPEND | LOCK_EX);
-
-    if (!$logSuccess && !headers_sent()) { # Intenta enviar un error al navegador si falla la escritura del log
-      # Esto es un último recurso y podría no ser visible dependiendo de la configuración de PHP
-      error_log("CRITICAL: Failed to write to BintelX log file: {$logFile}. Log Entry: {$logEntry}");
+      if (!$logSuccess && !headers_sent()) {
+        error_log("CRITICAL: Failed to write to BintelX log file: {$logFile}. Log Entry: {$logEntry}");
+      }
     }
 
-    # Salida a CLI solo en terminal real, NUNCA en contexto HTTP
-    self::init();
+    # Salida a CLI (independiente de LOG_LEVEL para archivo)
     $isCli = php_sapi_name() === 'cli';
     $isHttpRequest = isset($_SERVER['REQUEST_METHOD']) || isset($_SERVER['HTTP_HOST']);
     $stdoutAvailable = defined('STDOUT') && is_resource(\STDOUT);
     $isTty = $stdoutAvailable && function_exists('posix_isatty') && @posix_isatty(\STDOUT);
 
-    if (self::$logToCli && $isCli && !$isHttpRequest && $isTty) {
+    if (self::$logToCli && $shouldLogToCli && $isCli && !$isHttpRequest && $isTty) {
       $colorCodes = [
         'DEBUG' => "\033[36m",   # Cyan
         'INFO' => "\033[32m",    # Green
