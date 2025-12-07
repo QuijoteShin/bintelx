@@ -118,7 +118,10 @@ class DataCaptureService {
      * @param array $valuesData [['variable_name', 'value', 'reason'], ...]
      * @param string $contextType Tipo de evento (ej: 'clinical_study_visit', 'profile_update', 'external_import')
      * @param string|null $sourceSystem Sistema origen (ej: 'CDC_APP', 'external.ehr.clinicaX', 'device.apple_watch')
-     * @param string|null $deviceId ID del dispositivo (ALCOA)
+     * @param string|null $deviceId Identificador del dispositivo (ALCOA: Original)
+     *   Estándar oficial: Browser fingerprint de /public/bintelx.client.js
+     *   Generado con: canvas + webgl + hardware + screen + fonts + audio (hash truncado a 100 chars)
+     *   Ejemplo: BintelxClient.getDeviceId() en cliente web
      * @return array ['success', 'context_group_id', 'saved_fields_info', 'message']
      */
     public static function saveData(
@@ -199,13 +202,13 @@ class DataCaptureService {
                 }
 
                 // PASO ATÓMICO B: Insertar nueva versión activa
-                // IMPORTANTE: Incluir timestamp (ALCOA), source_system, device_id
+                // IMPORTANTE: Incluir timestamp (ALCOA), source_system, device_id, account_id
                 $sqlInsert = "INSERT INTO data_values_history
-                                (entity_id, variable_id, context_group_id, profile_id,
+                                (entity_id, variable_id, context_group_id, profile_id, account_id,
                                  timestamp, version, is_active, reason_for_change,
                                  source_system, device_id, $colName)
                               VALUES
-                                (:eid, :vid, :cgid, :pid,
+                                (:eid, :vid, :cgid, :pid, :aid,
                                  :ts, :ver, TRUE, :reason,
                                  :source, :device, :val)";
 
@@ -214,11 +217,12 @@ class DataCaptureService {
                     ':vid' => $variableId,
                     ':cgid' => $contextGroupId,
                     ':pid' => $actorProfileId,
-                    ':ts' => $currentTimestamp,        // ALCOA: timestamp
+                    ':aid' => \bX\Profile::$account_id,  // ALCOA: Attributable (legal identity)
+                    ':ts' => $currentTimestamp,        // ALCOA: Contemporaneous
                     ':ver' => $nextVersionNum,
-                    ':reason' => $changeReason,        // ALCOA: reason_for_change
-                    ':source' => $sourceSystem,        // ALCOA: source_system
-                    ':device' => $deviceId,            // ALCOA: device_id
+                    ':reason' => $changeReason,        // ALCOA: Accurate + Attributable
+                    ':source' => $sourceSystem,        // ALCOA: Original
+                    ':device' => $deviceId,            // ALCOA: Original
                     ':val' => $colValue
                 ]);
 
@@ -326,7 +330,12 @@ class DataCaptureService {
      * @param string $variableName Nombre único de la variable
      * @return array ['success', 'trail' => [['version', 'value', 'timestamp', 'profile_id', ...]]]
      */
-    public static function getAuditTrailForVariable(int $entityId, string $variableName): array {
+    public static function getAuditTrailForVariable(
+        int $entityId,
+        string $variableName,
+        ?string $macroContext = null,
+        ?string $eventContext = null
+    ): array {
         try {
             $def = self::getVariableDefinition($variableName);
             if (!$def) {
@@ -343,14 +352,25 @@ class DataCaptureService {
                         h.value_boolean, h.value_entity_ref,
                         h.timestamp, h.profile_id, h.reason_for_change,
                         h.source_system, h.device_id, h.context_group_id,
-                        h.inserted_at
+                        h.inserted_at,
+                        cg.macro_context, cg.event_context, cg.sub_context, cg.scope_entity_id
                     FROM data_values_history h
+                    JOIN context_groups cg ON h.context_group_id = cg.context_group_id
                     WHERE
                         h.entity_id = :eid
-                        AND h.variable_id = :vid
-                    ORDER BY h.version DESC";
+                        AND h.variable_id = :vid";
 
             $params = [':eid' => $entityId, ':vid' => (int)$def['variable_id']];
+            if ($macroContext !== null) {
+                $sql .= " AND cg.macro_context = :macro";
+                $params[':macro'] = $macroContext;
+            }
+            if ($eventContext !== null) {
+                $sql .= " AND cg.event_context = :evt";
+                $params[':evt'] = $eventContext;
+            }
+
+            $sql .= " ORDER BY h.version DESC";
             $rows = CONN::dml($sql, $params);
 
             $trail = [];
@@ -366,7 +386,11 @@ class DataCaptureService {
                     'reason_for_change' => $row['reason_for_change'],
                     'source_system' => $row['source_system'],
                     'device_id' => $row['device_id'],
-                    'context_group_id' => (int)$row['context_group_id']
+                    'context_group_id' => (int)$row['context_group_id'],
+                    'macro_context' => $row['macro_context'],
+                    'event_context' => $row['event_context'],
+                    'sub_context' => $row['sub_context'],
+                    'scope_entity_id' => $row['scope_entity_id'] !== null ? (int)$row['scope_entity_id'] : null
                 ];
             }
 
@@ -543,12 +567,12 @@ class DataCaptureService {
                         (subject_entity_id, scope_entity_id, profile_id,
                          timestamp, context_type,
                          macro_context, event_context, sub_context, parent_context_id,
-                         created_by_profile_id)
+                         created_by_profile_id, created_by_account_id)
                       VALUES
                         (:subject_eid, :scope_eid, :pid,
                          :ts, :type,
                          :macro, :event, :sub, :parent,
-                         :cbpid)";
+                         :cbpid, :cbaid)";
 
         $paramsInsert = [
             ':subject_eid' => $subjectEntityId,
@@ -560,7 +584,8 @@ class DataCaptureService {
             ':event' => $event,
             ':sub' => $sub,
             ':parent' => $parentContextId,
-            ':cbpid' => $actorProfileId
+            ':cbpid' => $actorProfileId,
+            ':cbaid' => \bX\Profile::$account_id  // ALCOA: Attributable (legal identity via account → entity)
         ];
 
         $result = CONN::nodml($sqlInsert, $paramsInsert);
@@ -628,5 +653,178 @@ class DataCaptureService {
             default:
                 return $row['value_string'];
         }
+    }
+
+    /**
+     * Obtiene datos EAV en formato horizontal (array PHP)
+     *
+     * Transforma estructura vertical EAV a horizontal tradicional:
+     * EAV: entity_id | variable_name | value
+     * Horizontal: entity_id | blood_pressure | heart_rate | ...
+     *
+     * @param array $filters Filtros opcionales
+     *   - 'scope_entity_id' => int
+     *   - 'subject_entity_ids' => array  # Lista de entity_ids a filtrar
+     *   - 'variable_names' => array      # Lista de variables a incluir
+     *   - 'convert_types' => bool        # Convertir valores según data_type (default: false)
+     *   - 'context_group_id' => int      # Filtrar por contexto específico
+     *   - 'macro_context' => string      # Nivel 1 de contexto
+     *   - 'event_context' => string      # Nivel 2 de contexto
+     *   - 'sub_context' => string        # Nivel 3 de contexto
+     *   - 'parent_context_id' => int     # Nivel 4 jerárquico
+     *
+     * @param callable|null $callback Callback($horizontalRow): mixed
+     *   - Recibe cada fila horizontal: ['entity_id' => X, 'var1' => val1, 'var2' => val2, ...]
+     *   - Puede hacer echo directo para streaming
+     *   - O retornar valor para acumular
+     *   - Si retorna false, detiene procesamiento (early exit)
+     *
+     * @return array|null Array de filas si no hay callback, null si hay callback
+     */
+    public static function getHorizontalData(array $filters = [], ?callable $callback = null): ?array
+    {
+        # 1. Construir WHERE clause
+        $whereConditions = ['h.is_active = 1'];
+        $params = [];
+
+        if (!empty($filters['scope_entity_id'])) {
+            $whereConditions[] = 'cg.scope_entity_id = :scope_entity_id';
+            $params[':scope_entity_id'] = $filters['scope_entity_id'];
+        }
+
+        if (!empty($filters['subject_entity_ids']) && is_array($filters['subject_entity_ids'])) {
+            $placeholders = [];
+            foreach ($filters['subject_entity_ids'] as $idx => $entityId) {
+                $key = ":entity_id_$idx";
+                $placeholders[] = $key;
+                $params[$key] = $entityId;
+            }
+            $whereConditions[] = 'cg.subject_entity_id IN (' . implode(',', $placeholders) . ')';
+        }
+
+        if (!empty($filters['variable_names']) && is_array($filters['variable_names'])) {
+            $placeholders = [];
+            foreach ($filters['variable_names'] as $idx => $varName) {
+                $key = ":var_name_$idx";
+                $placeholders[] = $key;
+                $params[$key] = $varName;
+            }
+            $whereConditions[] = 'd.unique_name IN (' . implode(',', $placeholders) . ')';
+        }
+
+        if (!empty($filters['context_group_id'])) {
+            $whereConditions[] = 'h.context_group_id = :context_group_id';
+            $params[':context_group_id'] = $filters['context_group_id'];
+        }
+
+        # Filtros de los 4 niveles de contexto
+        if (isset($filters['macro_context'])) {
+            $whereConditions[] = 'cg.macro_context = :macro_context';
+            $params[':macro_context'] = $filters['macro_context'];
+        }
+
+        if (isset($filters['event_context'])) {
+            $whereConditions[] = 'cg.event_context = :event_context';
+            $params[':event_context'] = $filters['event_context'];
+        }
+
+        if (isset($filters['sub_context'])) {
+            $whereConditions[] = 'cg.sub_context = :sub_context';
+            $params[':sub_context'] = $filters['sub_context'];
+        }
+
+        if (!empty($filters['parent_context_id'])) {
+            $whereConditions[] = 'cg.parent_context_id = :parent_context_id';
+            $params[':parent_context_id'] = $filters['parent_context_id'];
+        }
+
+        $whereClause = implode(' AND ', $whereConditions);
+
+        # 2. Query datos verticales
+        # SIEMPRE JOIN con context_groups (entity_id está en cg, no en h)
+        $sql = "SELECT
+                    cg.subject_entity_id AS entity_id,
+                    d.unique_name,
+                    d.data_type,
+                    h.value_string,
+                    h.value_decimal,
+                    h.value_boolean,
+                    h.value_datetime,
+                    h.value_entity_ref,
+                    h.timestamp
+                FROM data_values_history h
+                INNER JOIN data_dictionary d ON h.variable_id = d.variable_id
+                INNER JOIN context_groups cg ON h.context_group_id = cg.context_group_id
+                WHERE $whereClause
+                ORDER BY cg.subject_entity_id, d.unique_name";
+
+        $convertTypes = $filters['convert_types'] ?? false;
+        $horizontalData = [];
+        $currentEntityId = null;
+        $currentRow = [];
+
+        # 3. Procesar cada fila vertical y construir horizontal
+        CONN::dml($sql, $params, function($row) use(&$horizontalData, &$currentEntityId, &$currentRow, $convertTypes, $callback) {
+            $entityId = $row['entity_id'];
+            $varName = $row['unique_name'];
+            $dataType = $row['data_type'];
+
+            # Obtener valor según tipo
+            if ($convertTypes) {
+                try {
+                    $value = self::mapValueFromDbColumn($dataType, $row);
+                } catch (\Exception $e) {
+                    Log::logWarning("DataCaptureService::getHorizontalData - Type conversion failed", [
+                        'entity_id' => $entityId,
+                        'variable' => $varName,
+                        'data_type' => $dataType,
+                        'error' => $e->getMessage()
+                    ]);
+                    $value = $row['value_string']; # Fallback a string
+                }
+            } else {
+                # Sin conversión, usar valor raw según tipo
+                $value = match($dataType) {
+                    'DECIMAL', 'NUMERIC' => $row['value_decimal'],
+                    'BOOLEAN' => $row['value_boolean'],
+                    'DATETIME' => $row['value_datetime'],
+                    'ENTITY_REF' => $row['value_entity_ref'],
+                    default => $row['value_string']
+                };
+            }
+
+            # Si cambia entity_id, emitir fila anterior
+            if ($currentEntityId !== null && $currentEntityId !== $entityId) {
+                if ($callback) {
+                    $result = $callback($currentRow);
+                    if ($result === false) {
+                        return false; # Early exit
+                    }
+                } else {
+                    $horizontalData[] = $currentRow;
+                }
+                $currentRow = [];
+            }
+
+            # Inicializar nueva fila si es necesario
+            if (empty($currentRow)) {
+                $currentRow = ['entity_id' => $entityId];
+            }
+
+            # Agregar variable a fila horizontal
+            $currentRow[$varName] = $value;
+            $currentEntityId = $entityId;
+        });
+
+        # 4. Emitir última fila si existe
+        if (!empty($currentRow)) {
+            if ($callback) {
+                $callback($currentRow);
+            } else {
+                $horizontalData[] = $currentRow;
+            }
+        }
+
+        return $callback ? null : $horizontalData;
     }
 }

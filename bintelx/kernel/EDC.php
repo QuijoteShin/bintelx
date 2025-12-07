@@ -397,13 +397,19 @@ class EDC {
      * @param array $fieldsData ['field_id' => 'value', ...]
      * @param string $reason Reason for change (ALCOA: audit trail)
      * @param string|null $newStatus New status (optional): 'submitted', 'locked', etc.
+     * @param array $contextPayload Optional context overrides (macro_context, event_context, sub_context, parent_context_id)
+     * @param string|null $sourceSystem Optional source system override
+     * @param string|null $deviceId Optional device id override
      * @return array ['success' => bool, 'context_group_id' => int, 'fields_saved' => int]
      */
     public static function saveResponseData(
         int $formResponseId,
         array $fieldsData,
         string $reason = 'Data entry',
-        ?string $newStatus = null
+        ?string $newStatus = null,
+        array $contextPayload = [],
+        ?string $sourceSystem = null,
+        ?string $deviceId = null
     ): array {
         CONN::begin();
         try {
@@ -460,21 +466,32 @@ class EDC {
             }
 
             // Guardar con versionado ALCOA+ via DataCaptureService
+            $resolvedDeviceId = $deviceId ?? ($_SERVER['HTTP_USER_AGENT'] ?? 'unknown');
+            if (strlen($resolvedDeviceId) > 100) {
+                $resolvedDeviceId = substr($resolvedDeviceId, 0, 100);
+            }
+
+            $macroCtx = $contextPayload['macro_context'] ?? 'EDC_APP';
+            $eventCtx = $contextPayload['event_context'] ?? ('FORM_' . $formDefId);
+            $subCtx = $contextPayload['sub_context'] ?? ('RESPONSE_' . $formResponseId);
+            $parentCtx = $contextPayload['parent_context_id'] ?? null;
+
             $saveResult = DataCaptureService::saveData(
                 actorProfileId: $actorId,
                 subjectEntityId: $formResponseId,
                 scopeEntityId: $response['scope_entity_id'] ? (int)$response['scope_entity_id'] : null,
                 contextPayload: [
-                    'macro_context' => 'EDC_APP',
-                    'event_context' => 'FORM_' . $formDefId,
-                    'sub_context' => 'RESPONSE_' . $formResponseId
+                    'macro_context' => $macroCtx,
+                    'event_context' => $eventCtx,
+                    'sub_context' => $subCtx,
+                    'parent_context_id' => $parentCtx
                 ],
                 valuesData: $valuesData,
                 contextType: $response['status'] === 'in_progress'
                     ? 'edc_draft_save'
                     : 'edc_submission',
-                sourceSystem: 'EDC_WEB_APP',
-                deviceId: $_SERVER['HTTP_USER_AGENT'] ?? 'unknown'
+                sourceSystem: $sourceSystem ?? 'EDC_WEB_APP',
+                deviceId: $resolvedDeviceId
             );
 
             if (!$saveResult['success']) {
@@ -644,11 +661,15 @@ class EDC {
      *
      * @param int $formResponseId Response ID
      * @param string $fieldId Field identifier
+     * @param string|null $macroContext Optional macro context filter
+     * @param string|null $eventContext Optional event context filter
      * @return array ['success' => bool, 'audit_trail' => array]
      */
     public static function getFieldAuditTrail(
         int $formResponseId,
-        string $fieldId
+        string $fieldId,
+        ?string $macroContext = null,
+        ?string $eventContext = null
     ): array {
         try {
             // Obtener form_definition_id
@@ -661,8 +682,13 @@ class EDC {
             $formDefId = (int)$rows[0]['form_definition_id'];
             $variableName = "edc.{$formDefId}.{$fieldId}";
 
-            // Obtener audit trail desde DataCaptureService
-            $auditResult = DataCaptureService::getAuditTrailForVariable($formResponseId, $variableName);
+            // Obtener audit trail desde DataCaptureService (filtrado opcional por contexto)
+            $auditResult = DataCaptureService::getAuditTrailForVariable(
+                $formResponseId,
+                $variableName,
+                $macroContext,
+                $eventContext
+            );
 
             if (!$auditResult['success']) {
                 return $auditResult;
@@ -672,7 +698,9 @@ class EDC {
                 'success' => true,
                 'form_response_id' => $formResponseId,
                 'field_id' => $fieldId,
-                'audit_trail' => $auditResult['trail'] ?? []
+                'audit_trail' => $auditResult['trail'] ?? [],
+                'macro_context' => $macroContext,
+                'event_context' => $eventContext
             ];
 
         } catch (Exception $e) {

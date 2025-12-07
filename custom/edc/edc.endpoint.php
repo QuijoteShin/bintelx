@@ -173,7 +173,10 @@ Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/data', function($re
         (int)$responseId,
         $data['fields'],
         $data['reason'] ?? 'Data entry',
-        $data['new_status'] ?? null
+        $data['new_status'] ?? null,
+        $data['contextPayload'] ?? [],
+        $data['source_system'] ?? null,
+        $data['device_id'] ?? null
     );
 
     return Response::json($result);
@@ -251,15 +254,21 @@ Router::register(['GET'], 'v1/responses', function() {
 
 /**
  * @endpoint   /api/edc/v1/responses/{responseId}/audit/{fieldId}
- * @method     GET
+ * @method     POST
  * @scope      ROUTER_SCOPE_PRIVATE
  * @purpose    Gets audit trail for a specific field (ALCOA+ compliance)
  * @tag        Audit
  */
-Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)/audit/(?P<fieldId>[^/]+)', function($responseId, $fieldId) {
+Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/audit/(?P<fieldId>[^/]+)', function($responseId, $fieldId) {
     
 
-    $result = EDC::getFieldAuditTrail((int)$responseId, $fieldId);
+    $payload = json_decode(file_get_contents('php://input'), true) ?? [];
+
+    // Contexto opcional
+    $macro = $payload['macro_context'] ?? null;
+    $event = $payload['event_context'] ?? null;
+
+    $result = EDC::getFieldAuditTrail((int)$responseId, $fieldId, $macro, $event);
 
     return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
