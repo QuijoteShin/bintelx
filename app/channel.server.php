@@ -15,7 +15,8 @@
 
 require_once __DIR__ . '/../bintelx/WarmUp.php';
 
- \bX\Log::$logLevel = 'DEBUG';
+# Log level se carga automáticamente desde .env via Log::init()
+# En producción LOG_LEVEL=ERROR, en desarrollo LOG_LEVEL=DEBUG
 
 use bX\Config;
 use bX\JWT;
