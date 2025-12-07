@@ -6,23 +6,23 @@ class Sequent
 
   public static function read($params){
 
-    $compId       = $params['comp_id']          ?? 0;
-    $branchId     = $params['comp_branch_id']   ?? 0;
-    $family       = $params['sequent_family']   ?? 'default';
-    $prefix       = $params['sequent_prefix']   ?? '';
-    $incBy        = $params['sequent_increment_by'] ?? 1;
-    $padLength    = $params['sequent_padding_length'] ?? 0;
-    $padString    = $params['sequent_padding']  ?? '0';
+    $scopeEntityId  = $params['scope_entity_id']    ?? 0;
+    $branchEntityId = $params['branch_entity_id']   ?? 0;
+    $family         = $params['sequent_family']     ?? 'default';
+    $prefix         = $params['sequent_prefix']     ?? '';
+    $incBy          = $params['sequent_increment_by'] ?? 1;
+    $padLength      = $params['sequent_padding_length'] ?? 0;
+    $padString      = $params['sequent_padding']    ?? '0';
 
     $sql = "SELECT * FROM sequent
-                  WHERE comp_id = :comp_id
-                    AND comp_branch_id = :branch_id
+                  WHERE scope_entity_id = :scope_entity_id
+                    AND branch_entity_id = :branch_entity_id
                     AND sequent_family = :family
                     AND sequent_prefix = :prefix
                   LIMIT 1";
     return \bX\CONN::dml($sql, [
-      ':comp_id' => $compId,
-      ':branch_id' => $branchId,
+      ':scope_entity_id' => $scopeEntityId,
+      ':branch_entity_id' => $branchEntityId,
       ':family' => $family,
       ':prefix' => $prefix
     ]);
@@ -30,29 +30,29 @@ class Sequent
   /**
    * Consume el siguiente valor de la secuencia, creando el registro si no existe.
    * @param array $params [
-   *    'comp_id' => int,
-   *    'comp_branch_id' => int,
-   *    'sequent_family' => string,
-   *    'sequent_prefix' => string,
+   *    'scope_entity_id' => int,     # Entity que controla la secuencia (ej: empresa, proyecto)
+   *    'branch_entity_id' => int,    # Sub-entity opcional (ej: sucursal, departamento)
+   *    'sequent_family' => string,   # Familia de secuencia (orders, invoices, etc)
+   *    'sequent_prefix' => string,   # Prefijo (ORD-, INV-, etc)
    *    'sequent_increment_by' => int,
    *    'sequent_padding_length' => int,
    *    'sequent_padding' => string
    * ]
    * @return array [
    *    'sequent_id' => int,
-   *    'sequence'   => string, // p. ej. ORD-00001
-   *    'consume'    => int     // valor numérico consumido
+   *    'sequent_value' => int,       # Valor numérico consumido
+   *    'consume' => string            # Secuencia formateada (ej: ORD-00001)
    * ]
    */
   public static function consume(array $params): array
   {
-    $compId       = $params['comp_id']          ?? 0;
-    $branchId     = $params['comp_branch_id']   ?? 0;
-    $family       = $params['sequent_family']   ?? 'default';
-    $prefix       = $params['sequent_prefix']   ?? '';
-    $incBy        = $params['sequent_increment_by'] ?? 1;
-    $padLength    = $params['sequent_padding_length'] ?? 0;
-    $padString    = $params['sequent_padding']  ?? '0';
+    $scopeEntityId  = $params['scope_entity_id']    ?? 0;
+    $branchEntityId = $params['branch_entity_id']   ?? 0;
+    $family         = $params['sequent_family']     ?? 'default';
+    $prefix         = $params['sequent_prefix']     ?? '';
+    $incBy          = $params['sequent_increment_by'] ?? 1;
+    $padLength      = $params['sequent_padding_length'] ?? 0;
+    $padString      = $params['sequent_padding']    ?? '0';
 
     \bX\CONN::begin();
     try {
@@ -65,18 +65,18 @@ class Sequent
 
       if (empty($found)) {
         $queryInsert = "INSERT INTO sequent (
-                  comp_id, comp_branch_id, sequent_family, sequent_prefix,
+                  scope_entity_id, branch_entity_id, sequent_family, sequent_prefix,
                   sequent_last_number, sequent_value, sequent_increment_by,
                   sequent_padding_length, sequent_padding
                   , sequent_created_by, sequent_updated_by
               ) VALUES (
-                  :comp_id, :branch_id, :family, :prefix,
+                  :scope_entity_id, :branch_entity_id, :family, :prefix,
                   0, 0, :inc_by,
                   :pad_length, :pad_string, :created_by, :updated_by
               )";
         $insertParams = [
-          ':comp_id' => $compId,
-          ':branch_id' => $branchId,
+          ':scope_entity_id' => $scopeEntityId,
+          ':branch_entity_id' => $branchEntityId,
           ':family' => $family,
           ':prefix' => $prefix,
           ':inc_by' => $incBy,
