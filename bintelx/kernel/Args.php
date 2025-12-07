@@ -27,6 +27,11 @@ class Args {
         }
         $this->processJsonInputStream('POST');
       break;
+      case 'PUT':
+      case 'PATCH':
+      case 'DELETE':
+        $this->processJsonInputStream($method);
+      break;
       case 'STDIN':
         $this->processStdinData();
       break;
@@ -42,12 +47,7 @@ class Args {
     if (PHP_SAPI === 'cli') {
       return 'CLI';
     } elseif (!empty($_SERVER['REQUEST_METHOD'])) {
-      if($_SERVER['REQUEST_METHOD'] === 'POST'){
-        return 'POST';
-      }
-      if($_SERVER['REQUEST_METHOD'] === 'GET'){
-        return 'GET';
-      }
+      return strtoupper($_SERVER['REQUEST_METHOD']);
     }
     return 'STDIN'; # JUST IN CASE
   }
@@ -142,7 +142,11 @@ class Args {
    *
    */
   private function processStdinData(): void {
-    $stdin = @stream_get_contents(STDIN, -1, 0);
+    if (!defined('STDIN') || !is_resource(\STDIN)) {
+      return;
+    }
+
+    $stdin = @stream_get_contents(\STDIN, -1, 0);
     if (!empty($stdin)) {
       $data = [];
       // Check if the stream is JSON
