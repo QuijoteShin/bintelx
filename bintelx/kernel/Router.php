@@ -161,15 +161,22 @@ class Router
       return true;
     }
     $effectiveUserScope = ROUTER_SCOPE_PUBLIC; # Default to the lowest permission.
+
+    Log::logInfo("hasPermission check: path='$pathAfterPrefix', requiredScope='$requiredScope', userPerms=" . json_encode(self::$currentUserPermissions));
+
     foreach (self::$currentUserPermissions as $pathRegex => $permissionScope) {
       $isMatch = ($pathRegex === '*') ? true : @preg_match('#^' . $pathRegex . '$#i', $pathAfterPrefix);
       # If the path matches and this permission is higher than what we've found so far, update it.
       if ($isMatch && self::getScopeWeight($permissionScope) > self::getScopeWeight($effectiveUserScope)) {
         $effectiveUserScope = $permissionScope;
+        Log::logDebug("  → Match '$pathRegex' → scope='$permissionScope'");
       }
     }
     # user's best permission against what the route requires
     $return = self::getScopeWeight($effectiveUserScope) >= self::getScopeWeight($requiredScope);
+
+    Log::logDebug("hasPermission result: effectiveScope='$effectiveUserScope' (weight=" . self::getScopeWeight($effectiveUserScope) . "), required='$requiredScope' (weight=" . self::getScopeWeight($requiredScope) . ") → " . ($return ? 'GRANTED' : 'DENIED'));
+
     if(!$return) Log::logError("Router::hasPermission - Denying Access `$effectiveUserScope` checked with requiredScope: '$requiredScope'.");
     return $return;
   }
@@ -201,8 +208,10 @@ class Router
     }
 
     $routesToSearch = self::$routesByModule[$dispatchModuleKey] ?? [];
+
     if (empty($routesToSearch) && $dispatchModuleKey !== 'default') {
       $routesToSearch = array_merge($routesToSearch, self::$routesByModule['default'] ?? []);
+      Log::logDebug("No routes in module '$dispatchModuleKey', merged with default. Total: " . count($routesToSearch));
     }
 
     # 3. Loop through candidate routes to find a match and check permissions.
@@ -213,6 +222,7 @@ class Router
       if (!in_array($requestMethod, $route['methods'])) continue;
 
       $fullRoutePattern = '#^' . $route['regex_pattern'] . '$#i';
+
       if (preg_match($fullRoutePattern, $uriPathForRouteMatching, $routeSpecificMatches) !== 1) continue;
 
       $foundMatchingPattern = true;
