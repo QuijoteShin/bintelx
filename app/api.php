@@ -43,6 +43,12 @@ try {
   \bX\Log::$logToUser = true;
 
     $token = $_SERVER["HTTP_AUTHORIZATION"] ?? '';
+
+    # Extraer token si viene con "Bearer " prefix
+    if (str_starts_with($token, 'Bearer ')) {
+        $token = substr($token, 7);
+    }
+
     if(empty($token) && !empty($_COOKIE["bnxt"])) $token = $_COOKIE["bnxt"];
     if(!empty($token)) {
         // JWT Configuration from environment
@@ -59,12 +65,13 @@ try {
         }
     }
   
-  $module = explode('/', $uri)[2];
+  $module = explode('/', $uri)[2] ?? 'default';
   \bX\Router::load(["find_str"=>\bX\WarmUp::$BINTELX_HOME . '../custom/',
       'pattern'=> '{*/,}*{endpoint,controller}.php']
     , function ($routeFileContext) use($module) {
-      if(is_file($routeFileContext['real'])&& strpos($routeFileContext['real'], "/$module/") > 1) {
+      if(is_file($routeFileContext['real']) && strpos($routeFileContext['real'], "/$module/") !== false) {
         require_once $routeFileContext['real'];
+        \bX\Log::logDebug("Router loaded endpoint: {$routeFileContext['real']}");
       }
     }
   );
