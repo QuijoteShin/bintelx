@@ -172,7 +172,9 @@ class DataCaptureService {
                 list($colName, $colValue) = self::mapValueToDbColumn($dataType, $newValue);
 
                 // 2.3 Obtener versión activa actual (si existe)
-                $sqlFindActive = "SELECT value_id, version
+                $sqlFindActive = "SELECT value_id, version,
+                                         value_string, value_decimal, value_datetime,
+                                         value_boolean, value_entity_ref
                                   FROM data_values_history
                                   WHERE entity_id = :eid
                                     AND variable_id = :vid
@@ -190,6 +192,23 @@ class DataCaptureService {
                 if ($activeRow) {
                     $currentVersionId = (int)$activeRow['value_id'];
                     $nextVersionNum = (int)$activeRow['version'] + 1;
+
+                    // DIFF: Comparar valor actual vs nuevo valor
+                    $currentValue = self::mapValueFromDbColumn($dataType, $activeRow);
+                    $hasChanged = self::valueHasChanged($dataType, $currentValue, $newValue);
+
+                    if (!$hasChanged) {
+                        // Valor no cambió, saltar versionado para este campo
+                        $savedFieldsInfo[] = [
+                            'variable_name' => $variableName,
+                            'value_id' => $currentVersionId,
+                            'version' => (int)$activeRow['version'],
+                            'timestamp' => $currentTimestamp,
+                            'skipped' => true,
+                            'reason' => 'Value unchanged'
+                        ];
+                        continue; // No versionar este campo
+                    }
 
                     // PASO ATÓMICO A: Desactivar versión anterior
                     $sqlDisable = "UPDATE data_values_history
@@ -652,6 +671,63 @@ class DataCaptureService {
             case 'STRING':
             default:
                 return $row['value_string'];
+        }
+    }
+
+    /**
+     * Compara si un valor ha cambiado vs el valor actual
+     *
+     * Maneja comparaciones específicas por tipo de dato:
+     * - STRING: Comparación directa (case-sensitive)
+     * - DECIMAL/NUMERIC: Comparación con tolerancia de precisión
+     * - BOOLEAN: Normalización y comparación
+     * - DATETIME: Comparación de timestamps
+     * - ENTITY_REF: Comparación de IDs
+     *
+     * @param string $dataType Tipo de dato (STRING, DECIMAL, BOOLEAN, etc.)
+     * @param mixed $currentValue Valor actual en BD
+     * @param mixed $newValue Nuevo valor a guardar
+     * @return bool True si el valor cambió, False si es igual
+     */
+    private static function valueHasChanged(string $dataType, $currentValue, $newValue): bool {
+        # Normalizar nulls
+        if ($currentValue === null && ($newValue === null || $newValue === '')) {
+            return false;
+        }
+        if (($currentValue === null || $currentValue === '') && $newValue === null) {
+            return false;
+        }
+
+        switch ($dataType) {
+            case 'DECIMAL':
+            case 'NUMERIC':
+                # Comparar como floats con tolerancia
+                $current = (float)$currentValue;
+                $new = (float)$newValue;
+                return abs($current - $new) > 0.0000001;
+
+            case 'BOOLEAN':
+                # Normalizar booleanos
+                $current = filter_var($currentValue, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+                $new = filter_var($newValue, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+                return $current !== $new;
+
+            case 'DATETIME':
+                # Comparar como strings (timestamps normalizados)
+                $currentTs = is_string($currentValue) ? trim($currentValue) : '';
+                $newTs = is_string($newValue) ? trim($newValue) : '';
+                return $currentTs !== $newTs;
+
+            case 'ENTITY_REF':
+                # Comparar IDs como enteros
+                return (int)$currentValue !== (int)$newValue;
+
+            case 'STRING':
+            default:
+                # Comparación directa de strings
+                $currentStr = (string)$currentValue;
+                $newStr = (string)$newValue;
+                return $currentStr !== $newStr;
         }
     }
 

@@ -589,13 +589,21 @@ class EDC {
             // Obtener datos desde DataCaptureService
             $dataResult = DataCaptureService::getHotData($formResponseId, $variableNames);
 
-            // Transformar a formato {field_id => value}
+            // Transformar a formato {variable_name => full_data} con metadata ALCOA+
             $fields = [];
             foreach ($dataResult['data'] ?? [] as $variableName => $valueData) {
-                // Extraer field_id de "edc.42.full_name" → "full_name"
-                $parts = explode('.', $variableName);
-                $fieldId = end($parts);
-                $fields[$fieldId] = $valueData['value'];
+                // Mantener el nombre completo como clave para compatibilidad con frontend
+                $fields[$variableName] = [
+                    'value' => $valueData['value'],
+                    'version' => $valueData['version'] ?? null,
+                    'timestamp' => $valueData['timestamp'] ?? null,
+                    'last_updated_by_profile_id' => $valueData['last_updated_by_profile_id'] ?? null,
+                    'source_system' => $valueData['source_system'] ?? null,
+                    'device_id' => $valueData['device_id'] ?? null,
+                    'reason_for_change' => $valueData['reason_for_change'] ?? null,
+                    'data_type' => $valueData['data_type'] ?? null,
+                    'label' => $valueData['label'] ?? null
+                ];
             }
 
             return [

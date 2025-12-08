@@ -191,10 +191,32 @@ Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/data', function($re
  * @tag        Responses
  */
 Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)', function($responseId) {
-    
+
 
     // Obtener field_ids específicos si se proporcionan
     $fieldIds = !empty(Args::$OPT['fields']) ? explode(',', Args::$OPT['fields']) : null;
+
+    $result = EDC::getResponseData((int)$responseId, $fieldIds);
+
+    return Response::json($result);
+}, ROUTER_SCOPE_PRIVATE);
+
+/**
+ * @endpoint   /api/edc/v1/responses/{responseId}/snapshot
+ * @method     POST
+ * @scope      ROUTER_SCOPE_PRIVATE
+ * @purpose    Gets current hot data snapshot for specific fields
+ * @body       (JSON) {"field_ids": ["product_name", "product_serial", ...]}
+ * @tag        Responses
+ */
+Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/snapshot', function($responseId) {
+
+    $data = json_decode(file_get_contents('php://input'), true) ?? [];
+
+    $fieldIds = $data['field_ids'] ?? null;
+    if ($fieldIds !== null && !is_array($fieldIds)) {
+        return Response::json(['success' => false, 'message' => 'field_ids must be an array']);
+    }
 
     $result = EDC::getResponseData((int)$responseId, $fieldIds);
 
