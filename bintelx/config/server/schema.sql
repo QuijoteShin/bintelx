@@ -82,23 +82,24 @@ CREATE TABLE `customer` (
 
 CREATE TABLE `sequent` (
                            `sequent_id` INT AUTO_INCREMENT PRIMARY KEY,
-                           `comp_id` int(11) NOT NULL DEFAULT 0,
-                           `comp_branch_id` int(11) NOT NULL DEFAULT 0,
-                           `sequent_family` VARCHAR(20) NOT NULL DEFAULT 'N',
-                           `sequent_prefix` VARCHAR(20) NOT NULL DEFAULT '',
-                           `sequent_last_number` INT NOT NULL DEFAULT 0,
-                           `sequent_value` INT NOT NULL DEFAULT 0 COMMENT 'current value',
-                           `sequent_increment_by` INT NOT NULL DEFAULT 1,
-                           `sequent_padding_length` INT NOT NULL DEFAULT 0,
-                           `sequent_padding` VARCHAR(3) NOT NULL DEFAULT '',
+                           `scope_entity_id` int(11) NOT NULL DEFAULT 0 COMMENT 'Entity that controls sequence (company, project, etc)',
+                           `branch_entity_id` int(11) NOT NULL DEFAULT 0 COMMENT 'Optional sub-entity (branch, department, etc)',
+                           `sequent_family` VARCHAR(20) NOT NULL DEFAULT 'N' COMMENT 'Sequence family (orders, invoices, tickets, etc)',
+                           `sequent_prefix` VARCHAR(20) NOT NULL DEFAULT '' COMMENT 'Prefix for formatted output (ORD-, INV-, etc)',
+                           `sequent_last_number` INT NOT NULL DEFAULT 0 COMMENT 'Previous consumed value',
+                           `sequent_value` INT NOT NULL DEFAULT 0 COMMENT 'Current value',
+                           `sequent_increment_by` INT NOT NULL DEFAULT 1 COMMENT 'Increment step',
+                           `sequent_padding_length` INT NOT NULL DEFAULT 0 COMMENT 'Zero-padding length',
+                           `sequent_padding` VARCHAR(3) NOT NULL DEFAULT '' COMMENT 'Padding character',
                            `sequent_created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
                            `sequent_created_by` int(11) NOT NULL,
                            `sequent_updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
                            `sequent_updated_by` int(11) NOT NULL,
                            KEY `sequent_prefix` (`sequent_prefix`),
                            KEY `sequent_family` (`sequent_family`),
-                           KEY `comp` (`comp_id`, `comp_branch_id`)
-) ENGINE=InnoDB;
+                           KEY `scope_entity` (`scope_entity_id`, `branch_entity_id`),
+                           UNIQUE KEY `unique_sequence` (`scope_entity_id`, `branch_entity_id`, `sequent_family`, `sequent_prefix`)
+) ENGINE=InnoDB COMMENT='Agnostic sequence generator for formatted identifiers';
 
 --
 -- Table structure for table `order`
