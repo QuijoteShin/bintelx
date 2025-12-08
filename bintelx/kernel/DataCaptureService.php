@@ -171,64 +171,62 @@ class DataCaptureService {
                 // 2.2 Mapear valor a columna de BD correcta
                 list($colName, $colValue) = self::mapValueToDbColumn($dataType, $newValue);
 
-                // 2.3 Obtener versión activa actual (si existe)
-                $sqlFindActive = "SELECT value_id, version,
-                                         value_string, value_decimal, value_datetime,
-                                         value_boolean, value_entity_ref
-                                  FROM data_values_history
-                                  WHERE entity_id = :eid
-                                    AND variable_id = :vid
-                                    AND is_active = TRUE
-                                  FOR UPDATE"; // Lock para concurrencia
+                // 2.3 Obtener versión actual desde SNAPSHOT (CQRS read model)
+                $sqlFindCurrent = "SELECT current_value_id, current_version
+                                   FROM data_values_current
+                                   WHERE entity_id = :eid
+                                     AND variable_id = :vid
+                                   FOR UPDATE"; // Lock optimista
 
-                $activeRow = CONN::dml($sqlFindActive, [
+                $currentRow = CONN::dml($sqlFindCurrent, [
                     ':eid' => $subjectEntityId,
                     ':vid' => $variableId
                 ])[0] ?? null;
 
-                $currentVersionId = null;
                 $nextVersionNum = 1;
 
-                if ($activeRow) {
-                    $currentVersionId = (int)$activeRow['value_id'];
-                    $nextVersionNum = (int)$activeRow['version'] + 1;
+                if ($currentRow) {
+                    // Existe snapshot, obtener valor actual desde history para diff
+                    $sqlGetValue = "SELECT value_string, value_decimal, value_datetime,
+                                           value_boolean, value_entity_ref
+                                    FROM data_values_history
+                                    WHERE value_id = :vid";
 
-                    // DIFF: Comparar valor actual vs nuevo valor
-                    $currentValue = self::mapValueFromDbColumn($dataType, $activeRow);
-                    $hasChanged = self::valueHasChanged($dataType, $currentValue, $newValue);
+                    $activeRow = CONN::dml($sqlGetValue, [
+                        ':vid' => (int)$currentRow['current_value_id']
+                    ])[0] ?? null;
 
-                    if (!$hasChanged) {
-                        // Valor no cambió, saltar versionado para este campo
-                        $savedFieldsInfo[] = [
-                            'variable_name' => $variableName,
-                            'value_id' => $currentVersionId,
-                            'version' => (int)$activeRow['version'],
-                            'timestamp' => $currentTimestamp,
-                            'skipped' => true,
-                            'reason' => 'Value unchanged'
-                        ];
-                        continue; // No versionar este campo
-                    }
+                    if ($activeRow) {
+                        // DIFF: Comparar valor actual vs nuevo
+                        $currentValue = self::mapValueFromDbColumn($dataType, $activeRow);
+                        $hasChanged = self::valueHasChanged($dataType, $currentValue, $newValue);
 
-                    // PASO ATÓMICO A: Desactivar versión anterior
-                    $sqlDisable = "UPDATE data_values_history
-                                   SET is_active = FALSE
-                                   WHERE value_id = :vid";
-                    $disableResult = CONN::nodml($sqlDisable, [':vid' => $currentVersionId]);
-                    if (!$disableResult['success']) {
-                        throw new Exception("Failed to disable old version for '$variableName'.");
+                        if (!$hasChanged) {
+                            // Valor no cambió, skip versionado
+                            $savedFieldsInfo[] = [
+                                'variable_name' => $variableName,
+                                'value_id' => (int)$currentRow['current_value_id'],
+                                'version' => (int)$currentRow['current_version'],
+                                'timestamp' => $currentTimestamp,
+                                'skipped' => true,
+                                'reason' => 'Value unchanged'
+                            ];
+                            continue; // No versionar este campo
+                        }
+
+                        $nextVersionNum = (int)$currentRow['current_version'] + 1;
                     }
                 }
 
-                // PASO ATÓMICO B: Insertar nueva versión activa
-                // IMPORTANTE: Incluir timestamp (ALCOA), source_system, device_id, account_id
+                // PASO ATÓMICO B: Insertar nueva versión en history (append-only, sin is_active)
+                // IMPORTANTE: Historial inmutable para ALCOA+ compliance
                 $sqlInsert = "INSERT INTO data_values_history
                                 (entity_id, variable_id, context_group_id, profile_id, account_id,
-                                 timestamp, version, is_active, reason_for_change,
+                                 timestamp, version, reason_for_change,
                                  source_system, device_id, $colName)
                               VALUES
                                 (:eid, :vid, :cgid, :pid, :aid,
-                                 :ts, :ver, TRUE, :reason,
+                                 :ts, :ver, :reason,
                                  :source, :device, :val)";
 
                 $insertResult = CONN::nodml($sqlInsert, [
@@ -250,12 +248,45 @@ class DataCaptureService {
                 }
 
                 $newVersionId = (int)$insertResult['last_id'];
+
+                // PASO ATÓMICO C: Sincronizar SNAPSHOT (CQRS read model) - EXPLÍCITO
+                $sqlUpsertSnapshot = "INSERT INTO data_values_current
+                                        (entity_id, variable_id, current_value_id,
+                                         current_version, current_context_group_id, last_updated_at)
+                                      VALUES
+                                        (:eid, :vid, :value_id, :ver, :cgid, :ts)
+                                      ON DUPLICATE KEY UPDATE
+                                        current_value_id = :value_id,
+                                        current_version = :ver,
+                                        current_context_group_id = :cgid,
+                                        last_updated_at = :ts";
+
+                $snapshotResult = CONN::nodml($sqlUpsertSnapshot, [
+                    ':eid' => $subjectEntityId,
+                    ':vid' => $variableId,
+                    ':value_id' => $newVersionId,
+                    ':ver' => $nextVersionNum,
+                    ':cgid' => $contextGroupId,
+                    ':ts' => $currentTimestamp
+                ]);
+
+                if (!$snapshotResult['success']) {
+                    throw new Exception("Failed to sync snapshot for '$variableName'. DB Error: " . ($snapshotResult['error'] ?? ''));
+                }
+
                 $savedFieldsInfo[] = [
                     'variable_name' => $variableName,
                     'value_id' => $newVersionId,
                     'version' => $nextVersionNum,
-                    'timestamp' => $currentTimestamp
+                    'timestamp' => $currentTimestamp,
+                    'snapshot_synced' => true
                 ];
+
+                Log::logDebug("DataCaptureService: Saved $variableName v$nextVersionNum", [
+                    'entity_id' => $subjectEntityId,
+                    'context_group_id' => $contextGroupId,
+                    'snapshot_synced' => true
+                ]);
             }
 
             if ($ownTransaction) CONN::commit();
@@ -289,17 +320,20 @@ class DataCaptureService {
      */
     public static function getHotData(int $entityId, ?array $variableNames = null): array {
         try {
+            // Query SNAPSHOT table (CQRS read model) con JOIN a history para valores
             $sql = "SELECT
                         dd.unique_name, dd.label, dd.data_type, dd.attributes_json,
-                        h.value_string, h.value_decimal, h.value_datetime,
-                        h.value_boolean, h.value_entity_ref,
-                        h.version, h.timestamp, h.profile_id,
-                        h.source_system, h.device_id, h.reason_for_change
-                    FROM data_values_history h
-                    JOIN data_dictionary dd ON h.variable_id = dd.variable_id
+                        dvh.value_string, dvh.value_decimal, dvh.value_datetime,
+                        dvh.value_boolean, dvh.value_entity_ref,
+                        dvc.current_version as version,
+                        dvh.timestamp, dvh.profile_id,
+                        dvh.source_system, dvh.device_id, dvh.reason_for_change,
+                        dvc.current_context_group_id
+                    FROM data_values_current dvc
+                    JOIN data_values_history dvh ON dvc.current_value_id = dvh.value_id
+                    JOIN data_dictionary dd ON dvc.variable_id = dd.variable_id
                     WHERE
-                        h.entity_id = :eid
-                        AND h.is_active = TRUE
+                        dvc.entity_id = :eid
                         AND dd.status = 'active'";
 
             $params = [':eid' => $entityId];
@@ -328,7 +362,8 @@ class DataCaptureService {
                     'last_updated_by_profile_id' => (int)$row['profile_id'], // ALCOA
                     'source_system' => $row['source_system'],      // ALCOA
                     'device_id' => $row['device_id'],              // ALCOA
-                    'reason_for_change' => $row['reason_for_change'] // ALCOA
+                    'reason_for_change' => $row['reason_for_change'], // ALCOA
+                    'context_group_id' => (int)$row['current_context_group_id'] // CQRS snapshot
                 ];
             }
 
