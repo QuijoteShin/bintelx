@@ -41,9 +41,40 @@ class AuthHandler
       $payload = \bX\JWT::decode($token);
       $accountId = (int)($payload[1]['id'] ?? 0);
 
+      # Load profile and regenerate token with profile_id + scope_entity_id
+      $profileId = null;
+      $entityId = null;
+      $scopeEntityId = null;
+
       if ($accountId) {
         $profile = new \bX\Profile();
-        $profile->load(['account_id' => $accountId]);
+        if ($profile->load(['account_id' => $accountId])) {
+          $profileId = \bX\Profile::$profile_id;
+          $entityId = \bX\Profile::$entity_id;
+
+          # Determine scope_entity_id
+          $allowedScopes = \bX\Profile::getAllowedScopes();
+
+          if ($allowedScopes === ['*']) {
+            # Admin: use entity as scope
+            $scopeEntityId = $entityId;
+          } elseif (!empty($allowedScopes)) {
+            # Use first allowed scope
+            $scopeEntityId = $allowedScopes[0];
+          } else {
+            # No scopes in ACL: use own entity as scope (single-user company)
+            $scopeEntityId = $entityId;
+          }
+
+          # Regenerate token with complete payload
+          $token = $accountService->generateToken(
+            (string)$accountId,
+            null,
+            null,
+            $profileId,
+            $scopeEntityId
+          );
+        }
       }
 
       return [
@@ -52,8 +83,9 @@ class AuthHandler
         'token' => $token,
         'data' => [
           'accountId' => $accountId,
-          'profileId' => \bX\Profile::$profile_id ?? null,
-          'entityId' => \bX\Profile::$entity_id ?? null
+          'profileId' => $profileId,
+          'entityId' => $entityId,
+          'scopeEntityId' => $scopeEntityId
         ]
       ];
     } catch (\Exception $e) {
