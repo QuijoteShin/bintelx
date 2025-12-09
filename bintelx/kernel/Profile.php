@@ -30,9 +30,13 @@ class Profile {
     public static int $profile_id = 0;
     public static int $account_id = 0;
     public static int $entity_id = 0; // The main entity linked to this profile (primary_entity_id in DB)
+    public static int $scope_entity_id = 0; // Current tenant/scope from JWT (multi-tenant)
     public static bool $isLoggedIn = false;
     public static array $roles = [];
     public static array $userPermissions = [];
+
+    // Cache for ACL (allowed scopes per request)
+    private static ?array $cachedAllowedScopes = null;
 
     /**
      * Constructor
@@ -587,5 +591,99 @@ class Profile {
         }
 
         return false;
+    }
+
+    // ========================================================================
+    // MULTI-TENANT ACL METHODS
+    // ========================================================================
+
+    /**
+     * Get all scope_entity_ids this profile can access
+     *
+     * Reads from entity_relationships where relationship_type = 'profile_can_access_scope'.
+     * Cached per request for performance.
+     *
+     * @return array Array of entity_ids (companies/branches) or ['*'] for admin
+     */
+    public static function getAllowedScopes(): array
+    {
+        if (!self::$isLoggedIn || !self::$profile_id) {
+            return [];
+        }
+
+        if (self::$cachedAllowedScopes !== null) {
+            return self::$cachedAllowedScopes;
+        }
+
+        # Super admin wildcard
+        if (self::$account_id === 1) {
+            self::$cachedAllowedScopes = ['*'];
+            return self::$cachedAllowedScopes;
+        }
+
+        $scopes = [];
+
+        # Query ACL from entity_relationships
+        CONN::dml(
+            "SELECT DISTINCT entity_id_a AS scope_entity_id
+             FROM entity_relationships
+             WHERE entity_id_b = :profile_entity_id
+               AND relationship_type = 'profile_can_access_scope'
+               AND is_active = 1",
+            [':profile_entity_id' => self::$entity_id],
+            function(array $row) use (&$scopes) {
+                $scopes[] = (int)$row['scope_entity_id'];
+            }
+        );
+
+        self::$cachedAllowedScopes = array_values(array_unique($scopes));
+        return self::$cachedAllowedScopes;
+    }
+
+    /**
+     * Check if profile can access a specific scope
+     *
+     * @param int $scopeEntityId Scope to check
+     * @return bool True if allowed
+     */
+    public static function canAccessScope(int $scopeEntityId): bool
+    {
+        $allowedScopes = self::getAllowedScopes();
+
+        # Admin wildcard
+        if (in_array('*', $allowedScopes, true)) {
+            return true;
+        }
+
+        return in_array($scopeEntityId, $allowedScopes, true);
+    }
+
+    /**
+     * Assert scope access or throw exception
+     *
+     * Validates scope and logs security violation if invalid.
+     * Use ONLY in login and scope switch endpoints.
+     *
+     * @param int $scopeEntityId Requested scope
+     * @throws \RuntimeException If scope not allowed
+     */
+    public static function assertScope(int $scopeEntityId): void
+    {
+        if (!self::canAccessScope($scopeEntityId)) {
+            # LOG SECURITY VIOLATION
+            Log::logError('SECURITY: SCOPE_VIOLATION', [
+                'account_id' => self::$account_id,
+                'profile_id' => self::$profile_id,
+                'entity_id' => self::$entity_id,
+                'requested_scope' => $scopeEntityId,
+                'allowed_scopes' => self::getAllowedScopes(),
+                'ip_address' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+                'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown',
+                'request_uri' => $_SERVER['REQUEST_URI'] ?? 'unknown',
+                'timestamp' => date('Y-m-d H:i:s')
+            ]);
+
+            throw new \RuntimeException('Forbidden: You do not have access to this scope');
+        }
     }
 }

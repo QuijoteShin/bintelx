@@ -193,15 +193,17 @@ class Account {
 
 
     /**
-     * Generates a JWT token with the specific payload structure: [METADATA, {"id": ACCOUNT_ID}].
+     * Generates a JWT token with the specific payload structure: [METADATA, {"id": ACCOUNT_ID, "profile_id": PROFILE_ID, "scope_entity_id": SCOPE_ENTITY_ID}].
      *
      * @param string $accountId The account ID.
      * @param mixed $metadataElement Optional metadata to include in the first element of the payload array (e.g., date("mdhs")).
      * If not provided, a timestamp will be used.
      * @param ?int $expiresIn Seconds until token expiration. Defaults to $this->tokenExpiration.
+     * @param ?int $profileId Profile ID (optional)
+     * @param ?int $scopeEntityId Scope/tenant ID (optional, for multi-tenant)
      * @return string|false The generated JWT token or false on failure.
      */
-    public function generateToken(string $accountId, $metadataElement = null, ?int $expiresIn = null, ?int $profileId = null): string|false {
+    public function generateToken(string $accountId, $metadataElement = null, ?int $expiresIn = null, ?int $profileId = null, ?int $scopeEntityId = null): string|false {
         if (empty(trim($accountId))) {
             Log::logError("Account::generateToken - Account ID cannot be empty.");
             return false;
@@ -209,12 +211,17 @@ class Account {
 
         $actualMetadata = $metadataElement ?? time(); // Default metadata to current timestamp
 
-        // Construct the specific payload structure: array([METADATA], ["id" => ACCOUNT_ID, "profile_id" => PROFILE_ID (optional)])
+        // Construct the specific payload structure: array([METADATA], ["id" => ACCOUNT_ID, "profile_id" => PROFILE_ID, "scope_entity_id" => SCOPE_ENTITY_ID])
         $userPayload = ["id" => $accountId];
 
         # Include profile_id if provided
         if ($profileId !== null) {
             $userPayload["profile_id"] = $profileId;
+        }
+
+        # Include scope_entity_id if provided (multi-tenant)
+        if ($scopeEntityId !== null) {
+            $userPayload["scope_entity_id"] = $scopeEntityId;
         }
 
         $payloadStructure = [
