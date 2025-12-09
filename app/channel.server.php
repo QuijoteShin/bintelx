@@ -304,19 +304,35 @@ class ChannelServer
             $accountId = $account->verifyToken($token, $_SERVER['REMOTE_ADDR']);
 
             if ($accountId) {
+                # Extract scope_entity_id from JWT payload
+                $scopeEntityId = 0;
+                try {
+                    $jwt = new JWT($jwtSecret, $token);
+                    $payload = $jwt->getPayload(); // [METADATA, {id, profile_id, scope_entity_id}]
+                    $userPayload = $payload[1] ?? [];
+                    $scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
+                } catch (\Exception $e) {
+                    Log::logWarning("Channel: Failed to extract scope from JWT: " . $e->getMessage());
+                }
+
                 $profile = new Profile();
                 $profile->load(['account_id' => $accountId]);
+
+                # Set scope from JWT (signed, trusted)
+                Profile::$scope_entity_id = $scopeEntityId;
 
                 # Guardar token en sesión WS (array + Swoole\Table)
                 $this->authenticatedConnections[$fd]['token'] = $token;
                 $this->authenticatedConnections[$fd]['account_id'] = $accountId;
                 $this->authenticatedConnections[$fd]['profile_id'] = Profile::$profile_id;
+                $this->authenticatedConnections[$fd]['scope_entity_id'] = $scopeEntityId;
 
                 if ($this->authTable) {
                     $this->authTable->set((string)$fd, [
                         'token' => $token,
                         'account_id' => $accountId,
-                        'profile_id' => Profile::$profile_id
+                        'profile_id' => Profile::$profile_id,
+                        'scope_entity_id' => $scopeEntityId
                     ]);
                 }
 

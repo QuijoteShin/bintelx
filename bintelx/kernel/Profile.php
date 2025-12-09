@@ -624,13 +624,14 @@ class Profile {
         $scopes = [];
 
         # Query ACL from entity_relationships
+        # Generic: ANY active relationship where profile → entity (scope)
+        # No hardcoded relation_kind → allows future kinds without code changes
         CONN::dml(
-            "SELECT DISTINCT entity_id_a AS scope_entity_id
+            "SELECT DISTINCT entity_id AS scope_entity_id
              FROM entity_relationships
-             WHERE entity_id_b = :profile_entity_id
-               AND relationship_type = 'profile_can_access_scope'
-               AND is_active = 1",
-            [':profile_entity_id' => self::$entity_id],
+             WHERE profile_id = :profile_id
+               AND status = 'active'",
+            [':profile_id' => self::$profile_id],
             function(array $row) use (&$scopes) {
                 $scopes[] = (int)$row['scope_entity_id'];
             }
@@ -638,6 +639,67 @@ class Profile {
 
         self::$cachedAllowedScopes = array_values(array_unique($scopes));
         return self::$cachedAllowedScopes;
+    }
+
+    /**
+     * Get allowed scopes with metadata (entity_id + name)
+     *
+     * Returns scopes ready for frontend display.
+     * Encapsulates SQL logic (no queries in endpoints).
+     *
+     * @return array [['id' => int, 'name' => string], ...]
+     */
+    public static function getAllowedScopesWithMeta(): array
+    {
+        $scopes = self::getAllowedScopes();
+        $result = [];
+
+        # Admin wildcard: return all companies
+        if ($scopes === ['*']) {
+            CONN::dml(
+                "SELECT entity_id, primary_name
+                 FROM entities
+                 WHERE entity_type IN ('company', 'crm_company')
+                   AND status = 'active'",
+                [],
+                function(array $row) use (&$result) {
+                    $result[] = [
+                        'id' => (int)$row['entity_id'],
+                        'name' => $row['primary_name']
+                    ];
+                }
+            );
+            return $result;
+        }
+
+        # Specific scopes: fetch metadata in single query
+        if (empty($scopes)) {
+            return [];
+        }
+
+        # Build IN clause
+        $placeholders = [];
+        $params = [];
+        foreach ($scopes as $index => $scopeId) {
+            $key = ":scope{$index}";
+            $placeholders[] = $key;
+            $params[$key] = $scopeId;
+        }
+
+        CONN::dml(
+            "SELECT entity_id, primary_name
+             FROM entities
+             WHERE entity_id IN (" . implode(',', $placeholders) . ")",
+            $params,
+            function(array $row) use (&$result) {
+                $result[] = [
+                    'id' => (int)$row['entity_id'],
+                    'name' => $row['primary_name']
+                ];
+            }
+        );
+
+        return $result;
     }
 
     /**

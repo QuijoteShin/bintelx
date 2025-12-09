@@ -58,9 +58,25 @@ try {
         $account = new \bX\Account($jwtSecret, $jwtXorKey);
         $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
         if($account_id) {
+            # Extract scope_entity_id from JWT payload
+            try {
+                $jwt = new \bX\JWT($jwtSecret, $token);
+                $payload = $jwt->getPayload(); // [METADATA, {id, profile_id, scope_entity_id}]
+                $userPayload = $payload[1] ?? [];
+                $scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
+            } catch (\Exception $e) {
+                \bX\Log::logWarning("Failed to extract scope from JWT: " . $e->getMessage());
+                $scopeEntityId = 0;
+            }
+
             $profile = new \bX\Profile();
             if ($profile->load(['account_id' => $account_id])) {
+                # Set scope from JWT (signed, trusted)
+                \bX\Profile::$scope_entity_id = $scopeEntityId;
+
                 \bX\Router::$currentUserPermissions = \bX\Profile::getRoutePermissions();
+
+                \bX\Log::logDebug("Profile loaded with scope_entity_id: $scopeEntityId");
             }
         }
     }
