@@ -83,33 +83,45 @@ class Router
   }
 
   /**
-   * Loads route definition files.
+   * Loads route definition files from single or multiple paths.
+   *
    * Endpoint files found by Cardex are processed. These files should call Router::register().
-   * @param array $data ['find_str' => string (base path), 'pattern' => string (glob pattern)]
+   *
+   * @param array $data Single path: ['find_str' => string, 'pattern' => string]
+   *                    OR multiple paths: ['find_str' => ['package' => path1, 'custom' => path2], 'pattern' => string]
    * @param callable|null $loaderCallback Optional callback that receives $routeFileContext.
-   *                                      If provided, this callback is responsible for `require_once`.
-   *                                      If null, this method directly `require_once`s the file.
    */
   public static function load(array $data = [], ?callable $loaderCallback = null): void {
-    if (empty($data["find_str"])) {
-      Log::logError('Router::load - "find_str" (directory to search) is required.');
+    $findStr = $data["find_str"] ?? null;
+    $pattern = $data['pattern'] ?? '{*/,}*{endpoint,controller}.php';
+
+    if (empty($findStr)) {
+      Log::logError('Router::load - "find_str" is required.');
       return;
     }
-    $routeFiles = self::find($data);
 
-    foreach ($routeFiles as $routeFileContext) {
-      if (empty($routeFileContext["real"]) || !is_file($routeFileContext["real"])) {
-        Log::logWarning("Router::load - Skipping non-existent or invalid file path from Cardex: " . ($routeFileContext["real"] ?? '[path not set]'));
-        continue;
-      }
-      self::$CurrentRouteFileContext = $routeFileContext; # Set for Router::register()
+    # Support multiple paths (CASCADE: package → custom)
+    $paths = is_array($findStr) ? $findStr : ['single' => $findStr];
 
-      if ($loaderCallback) {
-        $loaderCallback($routeFileContext); # e.g., api.php uses this to filter by module
-      } else {
-        require_once $routeFileContext["real"];
+    foreach ($paths as $source => $path) {
+      $routeFiles = self::find(["find_str" => $path, 'pattern' => $pattern]);
+
+      foreach ($routeFiles as $routeFileContext) {
+        if (empty($routeFileContext["real"]) || !is_file($routeFileContext["real"])) {
+          Log::logWarning("Router::load - Skipping invalid file from Cardex: " . ($routeFileContext["real"] ?? '[path not set]'));
+          continue;
+        }
+
+        self::$CurrentRouteFileContext = $routeFileContext;
+
+        if ($loaderCallback) {
+          $loaderCallback($routeFileContext);
+        } else {
+          require_once $routeFileContext["real"];
+        }
+
+        self::$CurrentRouteFileContext = [];
       }
-      self::$CurrentRouteFileContext = []; # Reset after processing
     }
   }
 

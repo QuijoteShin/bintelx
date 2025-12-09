@@ -117,13 +117,16 @@ class ChannelServer
             // Regular workers - initialize AsyncBus for controllers
             $this->asyncBus = new SwooleAsyncBusAdapter($server);
 
-            // Load all API routes
+            // Load all API routes CASCADE: package (system) → custom (override)
             Router::load([
-                'find_str' => \bX\WarmUp::$BINTELX_HOME . '../custom/',
+                'find_str' => [
+                    'package' => \bX\WarmUp::$BINTELX_HOME . '../package/',
+                    'custom' => \bX\WarmUp::$BINTELX_HOME . '../custom/'
+                ],
                 'pattern' => '{*/,}*.endpoint.php'
             ]);
 
-            $this->info("Worker #{$workerId} started with AsyncBus and Routes loaded");
+            $this->info("Worker #{$workerId} started with AsyncBus and Routes loaded (package + custom cascade)");
         }
     }
 

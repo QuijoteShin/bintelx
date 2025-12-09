@@ -5,23 +5,28 @@ namespace bX;
 /**
  * OpenApiGenerator - Generates OpenAPI 3.1 specification by scanning endpoint files
  *
- * Scans all endpoint files in custom/ directory and extracts API documentation
+ * Scans endpoint files in package/ and custom/ directories and extracts API documentation
  * from docblocks to generate a standard OpenAPI JSON specification.
  *
  * @package bX
- * @version 1.0
+ * @version 1.1 - Multi-path support (package + custom)
  */
 class OpenApiGenerator
 {
-    private string $customPath;
+    private array $scanPaths;
     private string $apiVersion = '1.0.0';
     private string $title = 'Bintelx API';
     private string $description = 'Auto-generated API documentation from endpoint annotations';
     private array $endpoints = [];
 
-    public function __construct(string $customPath)
+    public function __construct(string|array $paths)
     {
-        $this->customPath = rtrim($customPath, '/');
+        # Support single path (backward compatible) or multiple paths (package + custom)
+        if (is_string($paths)) {
+            $this->scanPaths = [rtrim($paths, '/')];
+        } else {
+            $this->scanPaths = array_map(fn($p) => rtrim($p, '/'), $paths);
+        }
     }
 
     /**
@@ -36,24 +41,29 @@ class OpenApiGenerator
 
     /**
      * Scan all endpoint files and extract API documentation
-     * Uses Cardex to find all endpoint files in the custom directory
+     * Uses Cardex to find all endpoint files in package/ and custom/ directories
      */
     public function scan(): void
     {
         $this->endpoints = [];
 
-        // Use Cardex to find endpoint files consistently with Router
         $cardex = new Cardex();
         $pattern = '{*/,**/}*.endpoint.php'; // Recursive pattern for all modules
-        $fileContexts = $cardex->search($this->customPath, $pattern);
+        $totalFiles = 0;
 
-        foreach ($fileContexts as $fileContext) {
-            if (isset($fileContext['real']) && is_file($fileContext['real'])) {
-                $this->scanFile($fileContext['real']);
+        # Scan all paths (package + custom)
+        foreach ($this->scanPaths as $path) {
+            $fileContexts = $cardex->search($path, $pattern);
+
+            foreach ($fileContexts as $fileContext) {
+                if (isset($fileContext['real']) && is_file($fileContext['real'])) {
+                    $this->scanFile($fileContext['real']);
+                    $totalFiles++;
+                }
             }
         }
 
-        Log::logInfo("OpenApiGenerator scanned " . count($fileContexts) . " endpoint files, found " . count($this->endpoints) . " endpoints");
+        Log::logInfo("OpenApiGenerator scanned $totalFiles endpoint files from " . count($this->scanPaths) . " paths, found " . count($this->endpoints) . " endpoints");
     }
 
     /**

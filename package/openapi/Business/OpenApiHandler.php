@@ -21,9 +21,13 @@ class OpenApiHandler
     public static function generateSpec(): array
     {
         try {
-            $customPath = \bX\WarmUp::$BINTELX_HOME . '../custom/';
+            # Scan both package/ and custom/ directories (cascade)
+            $paths = [
+                \bX\WarmUp::$BINTELX_HOME . '../package/',
+                \bX\WarmUp::$BINTELX_HOME . '../custom/'
+            ];
 
-            $generator = new \bX\OpenApiGenerator($customPath);
+            $generator = new \bX\OpenApiGenerator($paths);
 
             // Set API metadata from environment
             $generator->setMetadata(
@@ -63,9 +67,13 @@ class OpenApiHandler
     public static function getRawSpec(): array
     {
         try {
-            $customPath = \bX\WarmUp::$BINTELX_HOME . '../custom/';
+            # Scan both package/ and custom/ directories
+            $paths = [
+                \bX\WarmUp::$BINTELX_HOME . '../package/',
+                \bX\WarmUp::$BINTELX_HOME . '../custom/'
+            ];
 
-            $generator = new \bX\OpenApiGenerator($customPath);
+            $generator = new \bX\OpenApiGenerator($paths);
 
             $generator->setMetadata(
                 'Bintelx API',
@@ -154,9 +162,13 @@ HTML;
     public static function getStats(): array
     {
         try {
-            $customPath = \bX\WarmUp::$BINTELX_HOME . '../custom/';
+            # Scan both package/ and custom/ directories
+            $paths = [
+                \bX\WarmUp::$BINTELX_HOME . '../package/',
+                \bX\WarmUp::$BINTELX_HOME . '../custom/'
+            ];
 
-            $generator = new \bX\OpenApiGenerator($customPath);
+            $generator = new \bX\OpenApiGenerator($paths);
             $generator->scan();
             $spec = $generator->generate();
 

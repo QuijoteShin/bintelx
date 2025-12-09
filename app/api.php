@@ -82,15 +82,22 @@ try {
     }
   
   $module = explode('/', $uri)[2] ?? 'default';
-  \bX\Router::load(["find_str"=>\bX\WarmUp::$BINTELX_HOME . '../custom/',
-      'pattern'=> '{*/,}*{endpoint,controller}.php']
-    , function ($routeFileContext) use($module) {
+
+  # Load endpoints CASCADE: package (system) → custom (override)
+  \bX\Router::load([
+    "find_str" => [
+      'package' => \bX\WarmUp::$BINTELX_HOME . '../package/',
+      'custom' => \bX\WarmUp::$BINTELX_HOME . '../custom/'
+    ],
+    'pattern'=> '{*/,}*{endpoint,controller}.php'
+  ], function ($routeFileContext) use($module) {
       if(is_file($routeFileContext['real']) && strpos($routeFileContext['real'], "/$module/") !== false) {
         require_once $routeFileContext['real'];
         \bX\Log::logDebug("Router loaded endpoint: {$routeFileContext['real']}");
       }
     }
   );
+
   \bX\Router::dispatch($method, $uri);
 
 } catch (\ErrorException $e) {
