@@ -223,13 +223,22 @@ final class PricingEngine
             'total_final' => $totalFinal
         ];
 
-        # Margin summary
+        # Margin summary (STANDARD financial definition)
         $marginSummary = null;
-        if (bccomp($totalCost, '0', $precision) > 0) {
+        if (bccomp($totalCost, '0', $precision) > 0 && bccomp($totalNetAfter, '0', $precision) > 0) {
             $totalCost = self::bcRound($totalCost, $precision);
 
             $grossMargin = bcsub($totalNetAfter, $totalCost, $precision);
+
+            # MARGIN RATE (standard): margin / revenue × 100
             $averageMarginRate = bcmul(
+                bcdiv($grossMargin, $totalNetAfter, 6),
+                '100',
+                $precision
+            );
+
+            # MARKUP RATE (optional): margin / cost × 100
+            $averageMarkupRate = bcmul(
                 bcdiv($grossMargin, $totalCost, 6),
                 '100',
                 $precision
@@ -239,7 +248,8 @@ final class PricingEngine
                 'total_cost' => $totalCost,
                 'total_revenue_net' => $totalNetAfter,
                 'total_gross_margin' => $grossMargin,
-                'average_margin_rate' => $averageMarginRate
+                'average_margin_rate' => $averageMarginRate,   // Standard: on revenue
+                'average_markup_rate' => $averageMarkupRate    // Optional: on cost
             ];
         }
 
@@ -291,35 +301,54 @@ final class PricingEngine
     }
 
     /**
-     * Calculate margin
+     * Calculate margin (standard financial definition)
      *
-     * Returns NULL if cost is zero (division by zero edge case).
+     * Returns NULL if sellingPrice is zero (division by zero edge case).
      *
-     * @param string $sellingPrice Selling price (net)
+     * STANDARD FORMULA (IFRS, P&L):
+     *   margin_rate = (Revenue - Cost) / Revenue × 100  (on selling price)
+     *   markup_rate = (Revenue - Cost) / Cost × 100     (on cost)
+     *
+     * This method returns MARGIN (standard), not markup.
+     *
+     * @param string $sellingPrice Selling price (net, base imponible)
      * @param string $cost Cost (net)
      * @param int $precision Decimal precision
-     * @return array|null ['gross_margin' => string, 'margin_rate' => string] or NULL
+     * @return array|null ['gross_margin' => string, 'margin_rate' => string, 'markup_rate' => string] or NULL
      */
     public static function calculateMargin(
         string $sellingPrice,
         string $cost,
         int $precision = 2
     ): ?array {
-        # Edge case: cost = 0 → cannot calculate margin
-        if (bccomp($cost, '0', $precision) === 0) {
+        # Edge case: sellingPrice = 0 → cannot calculate margin
+        if (bccomp($sellingPrice, '0', $precision) === 0) {
             return null;
         }
 
         $margin = bcsub($sellingPrice, $cost, $precision);
-        $rate = bcmul(
-            bcdiv($margin, $cost, 6),
+
+        # MARGIN RATE (standard): margin / selling price × 100
+        $marginRate = bcmul(
+            bcdiv($margin, $sellingPrice, 6),
             '100',
             $precision
         );
 
+        # MARKUP RATE (optional): margin / cost × 100
+        $markupRate = null;
+        if (bccomp($cost, '0', $precision) > 0) {
+            $markupRate = bcmul(
+                bcdiv($margin, $cost, 6),
+                '100',
+                $precision
+            );
+        }
+
         return [
             'gross_margin' => $margin,
-            'margin_rate' => $rate
+            'margin_rate' => $marginRate,    // Standard: on revenue
+            'markup_rate' => $markupRate     // Optional: on cost
         ];
     }
 
