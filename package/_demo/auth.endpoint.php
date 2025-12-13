@@ -48,6 +48,18 @@ Router::register(['POST'], 'profile/create', function(...$params) {
   return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
 
+/**
+ * @endpoint   /api/_demo/profile/relationship
+ * @method     POST
+ * @scope      ROUTER_SCOPE_PUBLIC (solo para bootstrap/testing)
+ * @purpose    Crea una relación profile→entity para scopes
+ */
+Router::register(['POST'], 'profile/relationship', function(...$params) {
+  $result = AuthHandler::createRelationship(\bX\Args::$OPT);
+  $code = $result['success'] ? 201 : 400;
+  return Response::json(['data' => $result], $code);
+}, ROUTER_SCOPE_PUBLIC);
+
 
 /**
  * @endpoint   /api/_demo/validate

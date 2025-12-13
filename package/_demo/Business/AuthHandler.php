@@ -402,6 +402,52 @@ class AuthHandler
   }
 
   /**
+   * Create entity_relationship (profile → entity) to grant scope/role.
+   * Expected:
+   *   - profileId (int)
+   *   - entityId (int)
+   *   - relationKind (string, default 'owner')
+   *   - roleCode (string|null)
+   */
+  public static function createRelationship(array $inputData): array
+  {
+    $profileId = (int)($inputData['profileId'] ?? 0);
+    $entityId = (int)($inputData['entityId'] ?? 0);
+    $kind = $inputData['relationKind'] ?? 'owner';
+    $roleCode = $inputData['roleCode'] ?? null;
+
+    if ($profileId <= 0 || $entityId <= 0) {
+      http_response_code(400);
+      return ['success' => false, 'message' => 'profileId y entityId son requeridos'];
+    }
+
+    $sql = "INSERT INTO entity_relationships
+            (profile_id, entity_id, relation_kind, role_code, status)
+            VALUES (:p, :e, :kind, :role, 'active')";
+
+    $res = \bX\CONN::nodml($sql, [
+      ':p' => $profileId,
+      ':e' => $entityId,
+      ':kind' => $kind,
+      ':role' => $roleCode
+    ]);
+
+    if (!$res['success']) {
+      http_response_code(500);
+      return ['success' => false, 'message' => 'No se pudo crear la relación'];
+    }
+
+    return [
+      'success' => true,
+      'relationship_id' => (int)$res['last_id'],
+      'profile_id' => $profileId,
+      'entity_id' => $entityId,
+      'relation_kind' => $kind,
+      'role_code' => $roleCode
+    ];
+  }
+
+  /**
    * Provides a generic public report or status.
    * This is an example of a public, non-authenticated endpoint.
    *
