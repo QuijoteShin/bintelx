@@ -403,6 +403,8 @@ class AuthHandler
 
   /**
    * Create entity_relationship (profile → entity) to grant scope/role.
+   * Delegates to kernel EntityRelationship class.
+   *
    * Expected:
    *   - profileId (int)
    *   - entityId (int)
@@ -421,25 +423,22 @@ class AuthHandler
       return ['success' => false, 'message' => 'profileId y entityId son requeridos'];
     }
 
-    $sql = "INSERT INTO entity_relationships
-            (profile_id, entity_id, relation_kind, role_code, status)
-            VALUES (:p, :e, :kind, :role, 'active')";
-
-    $res = \bX\CONN::nodml($sql, [
-      ':p' => $profileId,
-      ':e' => $entityId,
-      ':kind' => $kind,
-      ':role' => $roleCode
+    # Delegate to kernel Entity\Relationship
+    $result = \bX\Entity\Relationship::create([
+      'profile_id' => $profileId,
+      'entity_id' => $entityId,
+      'relation_kind' => $kind,
+      'role_code' => $roleCode
     ]);
 
-    if (!$res['success']) {
+    if (!$result['success']) {
       http_response_code(500);
       return ['success' => false, 'message' => 'No se pudo crear la relación'];
     }
 
     return [
       'success' => true,
-      'relationship_id' => (int)$res['last_id'],
+      'relationship_id' => $result['relationship_id'],
       'profile_id' => $profileId,
       'entity_id' => $entityId,
       'relation_kind' => $kind,
