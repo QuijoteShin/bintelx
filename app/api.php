@@ -83,11 +83,11 @@ try {
   
   $module = explode('/', $uri)[2] ?? 'default';
 
-  # Load endpoints CASCADE: package (system) → custom (override)
+  # Load endpoints CASCADE: package (system) → custom (override via CUSTOM_PATH)
   \bX\Router::load([
     "find_str" => [
       'package' => \bX\WarmUp::$BINTELX_HOME . '../package/',
-      'custom' => \bX\WarmUp::$BINTELX_HOME . '../custom/'
+      'custom' => \bX\WarmUp::getCustomPath()
     ],
     'pattern'=> '{*/,}*{endpoint,controller}.php'
   ], function ($routeFileContext) use($module) {

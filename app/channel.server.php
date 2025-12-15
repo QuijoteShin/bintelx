@@ -117,11 +117,11 @@ class ChannelServer
             // Regular workers - initialize AsyncBus for controllers
             $this->asyncBus = new SwooleAsyncBusAdapter($server);
 
-            // Load all API routes CASCADE: package (system) → custom (override)
+            // Load all API routes CASCADE: package (system) → custom (override via CUSTOM_PATH)
             Router::load([
                 'find_str' => [
                     'package' => \bX\WarmUp::$BINTELX_HOME . '../package/',
-                    'custom' => \bX\WarmUp::$BINTELX_HOME . '../custom/'
+                    'custom' => \bX\WarmUp::getCustomPath()
                 ],
                 'pattern' => '{*/,}*.endpoint.php'
             ]);
@@ -180,14 +180,16 @@ class ChannelServer
     # Ejecuta CUALQUIER endpoint (WS o API REST) vía Router Unificado
     private function executeApiRoute(Swoole\WebSocket\Server $server, int $fd, array $data): void
     {
-        $uri = $data['route'];
+        # Support both 'route' and 'uri' keys (backward compatibility)
+        $uri = $data['route'] ?? $data['uri'] ?? null;
         $method = strtoupper($data['method'] ?? 'POST');
         $body = $data['body'] ?? [];
         $query = $data['query'] ?? [];
         $correlationId = $data['correlation_id'] ?? uniqid('api_', true);
 
         if (!$uri) {
-            $this->sendError($server, $fd, 'API calls require a "route" or "uri"');
+            $this->sendError($server, $fd, 'API calls require a "route" or "uri" field in message');
+            Log::logWarning("WebSocket message missing 'route' field", ['data' => $data, 'fd' => $fd]);
             return;
         }
 
@@ -246,7 +248,7 @@ class ChannelServer
             ob_start();
 
             # No usar base path - dejar que Router extraiga módulo de la URI completa
-            $route = new Router($uri);
+            $route = new Router($uri, '/api');  // Set apiBasePath
 
             # Inyectar contexto WS (tablas compartidas entre workers)
             $_SERVER['WS_SERVER'] = $server;
