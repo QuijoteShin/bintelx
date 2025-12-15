@@ -10,6 +10,22 @@ class WarmUp
   private $moduleLibraries = ['./Modules/id*.?/business/*', './Custom/*/business/*'];
   public static $moduleMain;
   public static $BINTELX_HOME = '';
+  public static $CUSTOM_PATH = null; # Configurable via .env CUSTOM_PATH
+
+  /**
+   * Get the custom modules base path
+   * Uses CUSTOM_PATH from .env if set, otherwise defaults to ../custom/
+   * @return string Absolute path ending with /
+   */
+  public static function getCustomPath(): string
+  {
+    if (self::$CUSTOM_PATH !== null) {
+      $path = self::$CUSTOM_PATH;
+      # Ensure trailing slash
+      return rtrim($path, '/') . '/';
+    }
+    return self::$BINTELX_HOME . '../custom/';
+  }
 
   public function __construct() {
     self::$BINTELX_HOME = __DIR__ . '/';
@@ -42,21 +58,22 @@ class WarmUp
       if (!file_exists($file)) {
         $file = self::$BINTELX_HOME  . "kernel/{$class_root}/{$class_root}.php";
       }
-      ## custom
+      ## custom - uses configurable CUSTOM_PATH from .env
+      $customBase = self::getCustomPath();
       if (!file_exists($file) && !empty($class_child)) {
         $child = $class_child;
         $root = strtolower($class_root);
-        $file = self::$BINTELX_HOME  . "../custom/{$root}/Business/{$class_root}{$child}.php";
+        $file = $customBase . "{$root}/Business/{$class_root}{$child}.php";
       }
       if (!file_exists($file)) {
         $child = $class_child;
         $root = strtolower($class_root);
-        $file = self::$BINTELX_HOME  . "../custom/{$root}/Business/{$child}.php";
+        $file = $customBase . "{$root}/Business/{$child}.php";
       }
       if (!file_exists($file)) {
         $child = $class_root;
         $root = strtolower($class_root);
-        $file = self::$BINTELX_HOME  . "../custom/{$root}/Business/{$child}.php";
+        $file = $customBase . "{$root}/Business/{$child}.php";
       }
       ## package
       if (!file_exists($file) && !empty($class_child)) {
@@ -87,6 +104,12 @@ new \bX\Log();
 // Load environment configuration
 $envPath = dirname(__DIR__) . '/.env';
 \bX\Config::load($envPath);
+
+// Set custom path from environment (allows custom modules from external directory)
+$customPath = \bX\Config::get('CUSTOM_PATH');
+if ($customPath) {
+  \bX\WarmUp::$CUSTOM_PATH = $customPath;
+}
 
 // Initialize database connection from environment variables
 try {
