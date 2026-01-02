@@ -526,11 +526,11 @@ final class FeeStorageAdapter
                 :parent_id, :adj_type, :adj_amount, :adj_fee, :refund_mode, :running_total
             )",
             [
-                ':currency' => $entry['currency'] ?? 'CLP',
+                ':currency' => $entry['currency'] ?? $options['currency'] ?? 'CLP',
                 ':channel' => $entry['channel_key'] ?? 'default',
                 ':policy_key' => $entry['original_snapshot']['policy_key'] ?? 'unknown',
-                ':policy_ver' => 1,
-                ':policy_hash' => '',
+                ':policy_ver' => $entry['original_snapshot']['policy_version'] ?? $options['policy_version'] ?? 1,
+                ':policy_hash' => $entry['original_snapshot']['policy_hash'] ?? '',
                 ':signature' => $entry['original_snapshot']['signature'] ?? '',
                 ':precision' => $options['precision'] ?? 0,
                 ':total_fee' => $entry['total_fee'] ?? '0',
@@ -724,7 +724,7 @@ final class FeeStorageAdapter
             )",
             [
                 ':mode' => $options['mode'] ?? 'SETTLE',
-                ':currency' => 'CLP',
+                ':currency' => $options['currency'] ?? $policy['currency'] ?? 'CLP',
                 ':channel' => $source['channel_key'] ?? $policy['channel_key'] ?? 'default',
                 ':policy_key' => $policy['policy_key'] ?? 'unknown',
                 ':policy_ver' => $policy['version'] ?? 1,

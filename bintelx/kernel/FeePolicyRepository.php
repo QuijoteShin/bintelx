@@ -427,8 +427,8 @@ final class FeePolicyRepository
             ]
         ];
 
-        # Generate canonical policy_hash v2 using FeeEngine
-        $result['policy_hash'] = FeeEngine::generatePolicyHash($result, 2);
+        # Generate canonical policy_hash using FeeEngine
+        $result['policy_hash'] = FeeEngine::generatePolicyHash($result);
 
         return $result;
     }

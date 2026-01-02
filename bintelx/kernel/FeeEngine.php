@@ -325,8 +325,7 @@ final class FeeEngine
                 'mode' => $input['mode'] ?? 'SIMULATE',
                 'as_of' => $input['as_of'] ?? date('Y-m-d H:i:s'),
                 'precision' => $precision,
-                'policy_hash' => self::generatePolicyHash($policy, 2),
-                'hash_version' => 2
+                'policy_hash' => self::generatePolicyHash($policy)
             ]
         ];
     }
@@ -2229,20 +2228,14 @@ final class FeeEngine
     /**
      * Generate canonical policy hash
      *
-     * v2: Uses canonicalized policy for deterministic hash
-     * v1: Legacy (order-dependent, deprecated)
+     * Uses canonicalized policy for deterministic hash.
+     * Components sorted by component_id, tags sorted alphabetically.
      */
-    public static function generatePolicyHash(array $policy, int $version = 2): string
+    public static function generatePolicyHash(array $policy): string
     {
-        if ($version === 1) {
-            # Legacy: order-dependent (deprecated)
-            return 'v1:' . substr(md5(json_encode($policy['components'] ?? [])), 0, 16);
-        }
-
-        # v2: Canonical hash
         $canonical = self::canonicalizePolicy($policy);
         $payload = self::canonicalJson($canonical);
-        return 'v2:' . substr(hash('sha256', $payload), 0, 16);
+        return substr(hash('sha256', $payload), 0, 32);
     }
 
     /**
@@ -2252,8 +2245,7 @@ final class FeeEngine
      */
     public static function generateSignature(array $input, array $policy, array $options): string
     {
-        # v2: Canonical policy hash
-        $policyHash = self::generatePolicyHash($policy, 2);
+        $policyHash = self::generatePolicyHash($policy);
 
         $normalized = [
             'version' => self::VERSION,
@@ -2297,11 +2289,11 @@ final class FeeEngine
         array $options = []
     ): array {
         return [
-            'policy_key' => $channelKey . '_rate',
+            'policy_key' => $options['policy_key'] ?? $channelKey . '_rate',
             'channel_key' => $channelKey,
-            'version' => 1,
-            'effective_from' => $options['effective_from'] ?? '1970-01-01',
-            'effective_to' => $options['effective_to'] ?? '9999-12-31',
+            'version' => $options['version'] ?? 1,
+            'effective_from' => $options['effective_from'] ?? date('Y-m-d'),
+            'effective_to' => $options['effective_to'] ?? null,
             'components' => [
                 [
                     'component_id' => 'platform_fee',
@@ -2327,11 +2319,11 @@ final class FeeEngine
         array $options = []
     ): array {
         return [
-            'policy_key' => $channelKey . '_tiered',
+            'policy_key' => $options['policy_key'] ?? $channelKey . '_tiered',
             'channel_key' => $channelKey,
-            'version' => 1,
-            'effective_from' => $options['effective_from'] ?? '1970-01-01',
-            'effective_to' => $options['effective_to'] ?? '9999-12-31',
+            'version' => $options['version'] ?? 1,
+            'effective_from' => $options['effective_from'] ?? date('Y-m-d'),
+            'effective_to' => $options['effective_to'] ?? null,
             'components' => [
                 [
                     'component_id' => 'tiered_fee',
