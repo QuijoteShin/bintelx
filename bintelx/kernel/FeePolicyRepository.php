@@ -411,7 +411,7 @@ final class FeePolicyRepository
             $feeComponents[] = $feeComp;
         }
 
-        return [
+        $result = [
             'policy_key' => $policy['policy_key'],
             'channel_key' => $policy['channel_key'],
             'version' => (int)$policy['version'],
@@ -426,5 +426,100 @@ final class FeePolicyRepository
                 'scope_entity_id' => $policy['scope_entity_id']
             ]
         ];
+
+        # Generate canonical policy_hash v2 using FeeEngine
+        $result['policy_hash'] = FeeEngine::generatePolicyHash($result, 2);
+
+        return $result;
+    }
+
+    /**
+     * Validate no overlapping policies for same channel/scope
+     *
+     * @param string $channelKey
+     * @param int|null $scopeId
+     * @param string $validFrom
+     * @param string|null $validTo
+     * @param int|null $excludePolicyId Exclude this policy (for updates)
+     * @return array ['valid' => bool, 'conflicts' => array]
+     */
+    public static function validateNoOverlap(
+        string $channelKey,
+        ?int $scopeId,
+        string $validFrom,
+        ?string $validTo,
+        ?int $excludePolicyId = null
+    ): array {
+        $conflicts = [];
+
+        $query = "SELECT fee_policy_id, policy_key, valid_from, valid_to
+                  FROM fee_policies
+                  WHERE channel_key = :channel
+                    AND is_active = 1
+                    AND (
+                        (valid_from <= :from AND (valid_to IS NULL OR valid_to >= :from))
+                        OR (valid_from <= :to_check AND (valid_to IS NULL OR valid_to >= :to_check))
+                        OR (valid_from >= :from AND (valid_to IS NULL OR valid_to <= :to_check))
+                    )";
+
+        $params = [
+            ':channel' => $channelKey,
+            ':from' => $validFrom,
+            ':to_check' => $validTo ?? '9999-12-31'
+        ];
+
+        if ($scopeId !== null) {
+            $query .= " AND scope_entity_id = :scope";
+            $params[':scope'] = $scopeId;
+        } else {
+            $query .= " AND scope_entity_id IS NULL";
+        }
+
+        if ($excludePolicyId !== null) {
+            $query .= " AND fee_policy_id != :exclude";
+            $params[':exclude'] = $excludePolicyId;
+        }
+
+        CONN::dml($query, $params, function($row) use (&$conflicts) {
+            $conflicts[] = $row;
+        });
+
+        return [
+            'valid' => empty($conflicts),
+            'conflicts' => $conflicts
+        ];
+    }
+
+    /**
+     * Create or update a policy with validation
+     *
+     * @param array $policyData Policy data
+     * @return array ['success' => bool, 'fee_policy_id' => int|null, 'error' => string|null]
+     */
+    public static function savePolicy(array $policyData): array
+    {
+        $channelKey = $policyData['channel_key'] ?? null;
+        $validFrom = $policyData['valid_from'] ?? date('Y-m-d');
+        $validTo = $policyData['valid_to'] ?? null;
+        $scopeId = $policyData['scope_entity_id'] ?? null;
+        $policyId = $policyData['fee_policy_id'] ?? null;
+
+        if (!$channelKey) {
+            return ['success' => false, 'fee_policy_id' => null, 'error' => 'channel_key required'];
+        }
+
+        # Validate no overlap
+        $validation = self::validateNoOverlap($channelKey, $scopeId, $validFrom, $validTo, $policyId);
+        if (!$validation['valid']) {
+            return [
+                'success' => false,
+                'fee_policy_id' => null,
+                'error' => 'Policy overlaps with existing: ' . json_encode($validation['conflicts'])
+            ];
+        }
+
+        # Insert or update logic would go here
+        # For now, return validation result
+        return ['success' => true, 'fee_policy_id' => $policyId, 'error' => null];
     }
 }
