@@ -137,6 +137,59 @@ final class FeePolicyRepository
     # =========================================================================
 
     /**
+     * Build FeeEngine-compatible base_spec from DB fields
+     *
+     * Converts comma-separated field names to FeeEngine format:
+     *   - Single field: returns string directly ('net', 'gross')
+     *   - Multiple fields: builds recursive add expression tree
+     *
+     * BUSINESS RULE: Multiple fields are summed together.
+     * Example: 'net,shipping' -> fee calculated on (net + shipping)
+     *
+     * @param array $fields Array of field names ['net'], ['net','shipping'], etc.
+     * @return string|array String for single field, expression tree for multiple
+     */
+    private static function buildBaseSpec(array $fields): string|array
+    {
+        $fields = array_filter($fields); # Remove empty
+
+        if (empty($fields)) {
+            return 'net'; # Fallback to net if empty
+        }
+
+        if (count($fields) === 1) {
+            return $fields[0]; # Single field: return string
+        }
+
+        # Multiple fields: build add expression tree
+        # Example: ['net','tax','shipping'] becomes:
+        # add(add(net, tax), shipping)
+        return self::buildAddExpression($fields);
+    }
+
+    /**
+     * Build recursive add expression for multiple fields
+     *
+     * @param array $fields Fields to add together
+     * @return array Expression tree compatible with FeeEngine::evaluateBaseExpressionSafe
+     */
+    private static function buildAddExpression(array $fields): array
+    {
+        if (count($fields) === 1) {
+            return ['op' => 'field', 'field' => $fields[0]];
+        }
+
+        $first = array_shift($fields);
+        return [
+            'op' => 'add',
+            'left' => ['op' => 'field', 'field' => $first],
+            'right' => count($fields) === 1
+                ? ['op' => 'field', 'field' => $fields[0]]
+                : self::buildAddExpression($fields)
+        ];
+    }
+
+    /**
      * Find policy matching criteria
      */
     private static function findPolicy(string $channelKey, string $asOf, ?int $scopeId): ?array
@@ -225,7 +278,8 @@ final class FeePolicyRepository
                         'max' => $row['tier_max']
                     ];
                     if ($row['tier_rate'] !== null) {
-                        $tier['rate'] = $row['tier_rate'];
+                        # Convert decimal to percentage (same as rate)
+                        $tier['rate'] = bcmul($row['tier_rate'], '100', 6);
                     }
                     if ($row['tier_fixed'] !== null) {
                         $tier['fixed'] = $row['tier_fixed'];
@@ -340,18 +394,26 @@ final class FeePolicyRepository
                 'tags' => $comp['tags']
             ];
 
-            # Base spec
-            $baseFields = explode(',', $comp['base_fields']);
-            $feeComp['base_spec'] = ['fields' => $baseFields];
+            # Base spec conversion from DB format to FeeEngine format
+            # DB stores comma-separated fields: 'net', 'gross', 'net,shipping', etc.
+            # FeeEngine expects:
+            #   - Simple string for single field: 'net', 'gross'
+            #   - Expression tree for multiple fields: ['op'=>'add', 'left'=>..., 'right'=>...]
+            # CAVEAT: Multiple fields are summed (add). For subtract use explicit ops in DB.
+            $baseFields = array_map('trim', explode(',', $comp['base_fields'] ?? 'net'));
+            $feeComp['base_spec'] = self::buildBaseSpec($baseFields);
 
             # Type-specific fields
+            # RATE CONVERSION: DB stores decimal (0.13 = 13%), FeeEngine expects percentage (13.00)
+            # FeeEngine does: bcmul($base, bcdiv($rate, '100', 6), ...)
+            # So we multiply by 100 to convert 0.13 → 13.00
             switch ($comp['component_type']) {
                 case 'rate':
-                    $feeComp['rate'] = $comp['rate'];
+                    $feeComp['rate'] = bcmul($comp['rate'] ?? '0', '100', 6);
                     break;
 
                 case 'rate_pp':
-                    $feeComp['pp'] = $comp['pp'];
+                    $feeComp['pp'] = bcmul($comp['pp'] ?? '0', '100', 6);
                     break;
 
                 case 'fixed_unit':

@@ -368,28 +368,31 @@ final class FeeLedger
         $refundLines = $adjustment['lines'] ?? [];
         $originalBase = $original['input_snapshot']['order_totals']['net'] ?? '0';
 
-        # Validate refund doesn't exceed original
-        if ($strict && bccomp($refundAmount, $originalBase, $precision) > 0) {
-            return self::buildError(self::ERR_EXCEEDS_ORIGINAL,
-                "Refund amount $refundAmount exceeds original base $originalBase");
-        }
-
-        # Calculate global refund ratio
-        $refundRatio = '0';
-        if (bccomp($originalBase, '0', $precision) > 0) {
-            $refundRatio = bcdiv($refundAmount, $originalBase, 8);
-        }
-
-        # Build per-line refund map if specified
+        # Build per-line refund map and calculate affected lines
         $lineRefundMap = [];
         $affectedLines = [];
         $unaffectedLines = [];
+        $isPartialRefund = !empty($refundLines);
 
-        if (!empty($refundLines)) {
+        if ($isPartialRefund) {
             foreach ($refundLines as $lr) {
                 $lineId = $lr['line_id'];
-                $lineRefundMap[$lineId] = $lr['amount'];
+                $lineRefundMap[$lineId] = $lr['amount'] ?? '0';
                 $affectedLines[] = $lineId;
+            }
+            # Validate lines exist in allocation
+            foreach ($affectedLines as $lineId) {
+                $found = false;
+                foreach ($allocation as $alloc) {
+                    if ($alloc['line_id'] === $lineId) {
+                        $found = true;
+                        break;
+                    }
+                }
+                if (!$found && $strict) {
+                    return self::buildError(self::ERR_LINE_NOT_FOUND,
+                        "Line '$lineId' not found in original allocation");
+                }
             }
             # Determine unaffected lines
             foreach ($allocation as $alloc) {
@@ -398,10 +401,28 @@ final class FeeLedger
                 }
             }
         } else {
-            # All lines affected
+            # All lines affected - global refund
             foreach ($allocation as $alloc) {
                 $affectedLines[] = $alloc['line_id'];
             }
+        }
+
+        # Validate refund doesn't exceed original
+        if ($strict && bccomp($refundAmount, $originalBase, $precision) > 0) {
+            return self::buildError(self::ERR_EXCEEDS_ORIGINAL,
+                "Refund amount $refundAmount exceeds original base $originalBase");
+        }
+
+        # Calculate global refund ratio (for full refunds)
+        $globalRefundRatio = '0';
+        if (bccomp($originalBase, '0', $precision) > 0) {
+            $globalRefundRatio = bcdiv($refundAmount, $originalBase, 8);
+        }
+
+        # Build allocation lookup by line_id for partial refunds
+        $allocationByLine = [];
+        foreach ($allocation as $alloc) {
+            $allocationByLine[$alloc['line_id']] = $alloc;
         }
 
         # Process each component
@@ -412,6 +433,7 @@ final class FeeLedger
             $compId = $comp['component_id'];
             $originalFee = $comp['amount'];
             $tags = $comp['tags'] ?? [];
+            $scope = $comp['scope'] ?? 'line';
 
             # Determine refundability
             $refundConfig = $comp['refund'] ?? [];
@@ -425,25 +447,70 @@ final class FeeLedger
 
             # Calculate component refund
             $componentRefund = '0';
+            $effectiveRatio = $globalRefundRatio;
 
-            if ($isRefundable) {
-                switch ($behavior) {
-                    case self::REFUND_PROPORTIONAL:
-                        $componentRefund = bcmul($originalFee, $refundRatio, $precision);
-                        break;
-
-                    case self::REFUND_FIXED_ONLY:
-                        # Only refund if component is fixed type
-                        $compType = $comp['component_type'] ?? '';
-                        if (in_array($compType, ['fixed_unit', 'fixed_order'])) {
-                            $componentRefund = bcmul($originalFee, $refundRatio, $precision);
-                        }
-                        break;
-
-                    case self::REFUND_NONE:
-                    default:
+            if ($isRefundable && $behavior !== self::REFUND_NONE) {
+                if ($isPartialRefund) {
+                    # P4 FIX: Calculate per-line refund for affected lines only
+                    if ($scope === 'line') {
+                        # Line-scope: sum refunds from affected lines only
                         $componentRefund = '0';
-                        break;
+                        foreach ($affectedLines as $lineId) {
+                            # Find this component's contribution to this line
+                            $lineAlloc = $allocationByLine[$lineId] ?? null;
+                            if (!$lineAlloc) continue;
+
+                            $lineNet = '0'; # Original net for this line
+                            foreach ($allocation as $a) {
+                                if ($a['line_id'] === $lineId) {
+                                    # Get the line's original net from components or breakdown
+                                    foreach ($a['components'] ?? [] as $c) {
+                                        if ($c['component_id'] === $compId) {
+                                            $lineCompFee = $c['amount'] ?? '0';
+                                            $lineRefundAmt = $lineRefundMap[$lineId] ?? '0';
+                                            # Calculate ratio for this line
+                                            $lineBase = $c['base_used'] ?? '0';
+                                            if (bccomp($lineBase, '0', $precision) > 0) {
+                                                $lineRatio = bcdiv($lineRefundAmt, $lineBase, 8);
+                                            } else {
+                                                $lineRatio = '1'; # Full refund if no base
+                                            }
+                                            $lineComponentRefund = bcmul($lineCompFee, $lineRatio, $precision);
+                                            $componentRefund = bcadd($componentRefund, $lineComponentRefund, $precision);
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        $effectiveRatio = null; # Per-line calculated
+                    } else {
+                        # Order-scope: prorate by sum of affected line refunds / original order base
+                        $totalRefundForAffected = '0';
+                        foreach ($affectedLines as $lineId) {
+                            $totalRefundForAffected = bcadd($totalRefundForAffected, $lineRefundMap[$lineId] ?? '0', $precision);
+                        }
+                        if (bccomp($originalBase, '0', $precision) > 0) {
+                            $effectiveRatio = bcdiv($totalRefundForAffected, $originalBase, 8);
+                        }
+                        $componentRefund = bcmul($originalFee, $effectiveRatio, $precision);
+                    }
+                } else {
+                    # Global refund: use global ratio
+                    switch ($behavior) {
+                        case self::REFUND_PROPORTIONAL:
+                            $componentRefund = bcmul($originalFee, $globalRefundRatio, $precision);
+                            break;
+
+                        case self::REFUND_FIXED_ONLY:
+                            # Only refund if component is fixed type
+                            $compType = $comp['component_type'] ?? '';
+                            if (in_array($compType, ['fixed_unit', 'fixed_order'])) {
+                                $componentRefund = bcmul($originalFee, $globalRefundRatio, $precision);
+                            }
+                            break;
+                    }
                 }
 
                 # Cap refund to original
@@ -460,10 +527,11 @@ final class FeeLedger
             $refundPlan[] = [
                 'component_id' => $compId,
                 'original_fee' => $originalFee,
-                'refunded_ratio' => $refundRatio,
+                'refunded_ratio' => $effectiveRatio ?? 'per_line',
                 'refunded_fee' => $componentRefundNegative,
                 'refundable' => $isRefundable,
-                'behavior' => $isRefundable ? $behavior : self::REFUND_NONE
+                'behavior' => $isRefundable ? $behavior : self::REFUND_NONE,
+                'affected_lines' => $isPartialRefund ? $affectedLines : null
             ];
         }
 
@@ -477,7 +545,8 @@ final class FeeLedger
             ],
             'reconciliation' => [
                 'refund_amount' => $refundAmount,
-                'refund_ratio' => $refundRatio,
+                'refund_ratio' => $globalRefundRatio,
+                'is_partial' => $isPartialRefund,
                 'components_processed' => count($breakdown)
             ]
         ];

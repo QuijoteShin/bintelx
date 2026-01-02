@@ -197,7 +197,9 @@ final class FeeEngine
                     );
                     $lineAllocations[$lineId]['components'][] = [
                         'component_id' => $compResult['component_id'],
-                        'amount' => $lineAmount
+                        'amount' => $lineAmount,
+                        'base_used' => $compResult['base_value'] ?? null,
+                        'rate' => $compResult['rate'] ?? null
                     ];
                 }
             }
@@ -1427,7 +1429,7 @@ final class FeeEngine
     /**
      * Find matching tier for a value
      *
-     * FIX Codex: Sort tiers by min DESC to ensure highest matching tier is selected first.
+     * Tiers sorted by min DESC - highest matching tier selected first.
      * P0: Normalize all values for safe bccomp operations.
      */
     private static function findMatchingTier(array $tiers, string $value): ?array
@@ -1802,7 +1804,6 @@ final class FeeEngine
     /**
      * Evaluate complex base expression
      *
-     * FIX Codex: Added mul, div, min, max, abs operations.
      * Supports: field, add, sub, mul, div, min, max, abs, value
      */
     private static function evaluateBaseExpression(
@@ -1964,12 +1965,16 @@ final class FeeEngine
                 $compAmount = bcmul($fee['amount'], $weight, $internalPrecision);
                 $allocations[$lineId]['components'][] = [
                     'component_id' => $fee['component_id'],
-                    'amount' => $compAmount
+                    'amount' => $compAmount,
+                    'base_used' => $fee['base_value'] ?? null,
+                    'rate' => $fee['rate'] ?? null,
+                    'proration_method' => $strategy,
+                    'proration_weight' => $weight
                 ];
             }
         }
 
-        return ['allocations' => $allocations];
+        return ['allocations' => $allocations, 'strategy' => $strategy];
     }
 
     /**
@@ -2010,6 +2015,15 @@ final class FeeEngine
             foreach ($weights as $lineId => $value) {
                 $weights[$lineId] = bcdiv($value, $total, $internalPrecision);
             }
+        } else {
+            # Fallback: equal distribution when all weights are 0
+            $lineCount = count($weights);
+            if ($lineCount > 0) {
+                $equalWeight = bcdiv('1', (string)$lineCount, $internalPrecision);
+                foreach ($weights as $lineId => $value) {
+                    $weights[$lineId] = $equalWeight;
+                }
+            }
         }
 
         return $weights;
@@ -2018,7 +2032,7 @@ final class FeeEngine
     /**
      * Reconcile allocation rounding differences
      *
-     * FIX Codex: Apply adjustment to line with largest fee (fairer distribution).
+     * Rounding adjustment applied to line with largest fee.
      * If all equal, use first line.
      */
     private static function reconcileAllocations(
