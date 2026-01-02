@@ -8,8 +8,9 @@
 #   - On-the-fly calculation for items/orders
 #   - Integration with PricingEngine
 #   - Adjustment events (refunds, chargebacks)
+#   - P4: Component-aware refunds (refundable/non_refundable)
 #
-# @version 1.0.0
+# @version 1.1.0
 
 namespace bX;
 
@@ -29,7 +30,7 @@ namespace bX;
  */
 final class FeeLedger
 {
-    const VERSION = '1.0.0';
+    const VERSION = '1.1.0';
 
     # Event types
     const EVENT_SETTLE = 'SETTLE';      # Initial fee calculation
@@ -41,6 +42,24 @@ final class FeeLedger
     const STATUS_ACTIVE = 'active';
     const STATUS_ADJUSTED = 'adjusted';
     const STATUS_REVERSED = 'reversed';
+
+    # Refund behaviors (P4)
+    const REFUND_PROPORTIONAL = 'PROPORTIONAL';
+    const REFUND_NONE = 'NONE';
+    const REFUND_FIXED_ONLY = 'FIXED_ONLY';
+
+    # Proration methods
+    const PRORATE_BY_NET = 'BY_NET';
+    const PRORATE_BY_GROSS = 'BY_GROSS';
+    const PRORATE_BY_QUANTITY = 'BY_QUANTITY';
+    const PRORATE_EQUAL = 'EQUAL';
+
+    # Error codes (P4)
+    const ERR_ENTRY_NOT_FOUND = 'ERR_LEDGER_ENTRY_NOT_FOUND';
+    const ERR_NO_BREAKDOWN = 'ERR_REFUND_NO_ORIGINAL_BREAKDOWN';
+    const ERR_EXCEEDS_ORIGINAL = 'ERR_REFUND_EXCEEDS_ORIGINAL';
+    const ERR_LINE_NOT_FOUND = 'ERR_REFUND_LINE_NOT_FOUND';
+    const ERR_CURRENCY_MISMATCH = 'ERR_REFUND_CURRENCY_MISMATCH';
 
     /**
      * Calculate and persist fees for a transaction
@@ -205,16 +224,29 @@ final class FeeLedger
     /**
      * Register an adjustment event (partial refund, etc.)
      *
+     * P4: Component-aware refunds respecting refundable/non_refundable rules.
+     *
      * @param string $originalEntryId Original ledger entry ID
-     * @param array $adjustment Adjustment data
+     * @param array $adjustment Adjustment data:
+     *   - type: REFUND | CHARGEBACK | ADJUST
+     *   - amount: Total amount being refunded
+     *   - lines: (optional) Per-line refund amounts
+     *   - reason: Reason text
+     *   - mode: AUTO (use breakdown) | MANUAL (explicit fee_amount)
+     *   - strict: Strict mode for errors
      * @param array $callbacks Storage callbacks
-     * @return array Adjustment result
+     * @param array $options Options (precision, etc.)
+     * @return array Adjustment result with refund_plan
      */
     public static function adjust(
         string $originalEntryId,
         array $adjustment,
-        array $callbacks
+        array $callbacks,
+        array $options = []
     ): array {
+        $strict = $options['strict'] ?? false;
+        $precision = $options['precision'] ?? 2;
+
         # Load original entry
         $loadEntry = $callbacks['load_entry'] ?? null;
         if (!$loadEntry) {
@@ -223,29 +255,43 @@ final class FeeLedger
 
         $original = $loadEntry($originalEntryId);
         if (!$original) {
-            return self::buildError('ENTRY_NOT_FOUND', "Entry '$originalEntryId' not found");
+            return self::buildError(self::ERR_ENTRY_NOT_FOUND, "Entry '$originalEntryId' not found");
         }
 
-        # Calculate adjustment amount
         $adjustmentAmount = $adjustment['amount'] ?? '0';
         $adjustmentType = $adjustment['type'] ?? self::EVENT_ADJUST;
         $reason = $adjustment['reason'] ?? null;
+        $mode = $adjustment['mode'] ?? 'AUTO';
+        $currency = $adjustment['currency'] ?? $original['currency'];
 
-        # For refunds, calculate proportional fee adjustment
-        if ($adjustmentType === self::EVENT_REFUND) {
-            $originalTotal = $original['total_fee'] ?? '0';
-            $originalBase = $original['input_snapshot']['order_totals']['net'] ?? '0';
-
-            if (bccomp($originalBase, '0', 2) > 0) {
-                # Proportional: (refund_amount / original_base) * original_fee
-                $proportion = bcdiv($adjustmentAmount, $originalBase, 8);
-                $feeAdjustment = bcmul($proportion, $originalTotal, 2);
-                $feeAdjustment = bcmul($feeAdjustment, '-1', 2); # Negative for reversal
-            } else {
-                $feeAdjustment = '0';
+        # P4: Currency validation
+        if ($currency !== $original['currency']) {
+            if ($strict) {
+                return self::buildError(self::ERR_CURRENCY_MISMATCH,
+                    "Currency mismatch: adjustment=$currency, original={$original['currency']}");
             }
-        } else {
+        }
+
+        # Mode MANUAL: use explicit fee_amount
+        if ($mode === 'MANUAL') {
             $feeAdjustment = $adjustment['fee_amount'] ?? '0';
+            $refundPlan = [['mode' => 'MANUAL', 'fee_amount' => $feeAdjustment]];
+        }
+        # Mode AUTO: component-aware calculation
+        else {
+            $result = self::calculateComponentAwareRefund(
+                $original,
+                $adjustment,
+                $precision,
+                $strict
+            );
+
+            if (!$result['success']) {
+                return $result;
+            }
+
+            $feeAdjustment = $result['total_fee_refund'];
+            $refundPlan = $result['refund_plan'];
         }
 
         # Build adjustment entry
@@ -256,15 +302,18 @@ final class FeeLedger
             'channel_key' => $original['channel_key'],
             'event_type' => $adjustmentType,
             'status' => self::STATUS_ACTIVE,
-            'as_of' => date('Y-m-d H:i:s'),
+            'as_of' => $adjustment['as_of'] ?? date('Y-m-d H:i:s'),
             'currency' => $original['currency'],
             'total_fee' => $feeAdjustment,
             'adjustment_base' => $adjustmentAmount,
             'reason' => $reason,
+            'refund_plan' => $refundPlan,
+            'coverage' => $result['coverage'] ?? null,
+            'reconciliation' => $result['reconciliation'] ?? null,
             'original_snapshot' => [
                 'entry_id' => $originalEntryId,
                 'total_fee' => $original['total_fee'],
-                'signature' => $original['signature']
+                'signature' => $original['signature'] ?? null
             ],
             'created_at' => date('Y-m-d H:i:s')
         ];
@@ -286,7 +335,191 @@ final class FeeLedger
             'success' => true,
             'adjustment_entry' => $adjustmentEntry,
             'fee_adjustment' => $feeAdjustment,
-            'running_total' => bcadd($original['total_fee'], $feeAdjustment, 2)
+            'running_total' => bcadd($original['total_fee'], $feeAdjustment, $precision),
+            'refund_plan' => $refundPlan
+        ];
+    }
+
+    /**
+     * P4: Calculate component-aware refund
+     *
+     * Iterates through original breakdown, respecting per-component refundability.
+     */
+    private static function calculateComponentAwareRefund(
+        array $original,
+        array $adjustment,
+        int $precision,
+        bool $strict
+    ): array {
+        $breakdown = $original['breakdown'] ?? [];
+        $allocation = $original['allocation'] ?? [];
+
+        if (empty($breakdown)) {
+            if ($strict) {
+                return self::buildError(self::ERR_NO_BREAKDOWN,
+                    'No breakdown in original entry for component-aware refund');
+            }
+            # Fallback to simple proportional
+            return self::calculateSimpleProportionalRefund($original, $adjustment, $precision);
+        }
+
+        $refundAmount = $adjustment['amount'] ?? '0';
+        $refundLines = $adjustment['lines'] ?? [];
+        $originalBase = $original['input_snapshot']['order_totals']['net'] ?? '0';
+
+        # Validate refund doesn't exceed original
+        if ($strict && bccomp($refundAmount, $originalBase, $precision) > 0) {
+            return self::buildError(self::ERR_EXCEEDS_ORIGINAL,
+                "Refund amount $refundAmount exceeds original base $originalBase");
+        }
+
+        # Calculate global refund ratio
+        $refundRatio = '0';
+        if (bccomp($originalBase, '0', $precision) > 0) {
+            $refundRatio = bcdiv($refundAmount, $originalBase, 8);
+        }
+
+        # Build per-line refund map if specified
+        $lineRefundMap = [];
+        $affectedLines = [];
+        $unaffectedLines = [];
+
+        if (!empty($refundLines)) {
+            foreach ($refundLines as $lr) {
+                $lineId = $lr['line_id'];
+                $lineRefundMap[$lineId] = $lr['amount'];
+                $affectedLines[] = $lineId;
+            }
+            # Determine unaffected lines
+            foreach ($allocation as $alloc) {
+                if (!in_array($alloc['line_id'], $affectedLines)) {
+                    $unaffectedLines[] = $alloc['line_id'];
+                }
+            }
+        } else {
+            # All lines affected
+            foreach ($allocation as $alloc) {
+                $affectedLines[] = $alloc['line_id'];
+            }
+        }
+
+        # Process each component
+        $refundPlan = [];
+        $totalFeeRefund = '0';
+
+        foreach ($breakdown as $comp) {
+            $compId = $comp['component_id'];
+            $originalFee = $comp['amount'];
+            $tags = $comp['tags'] ?? [];
+
+            # Determine refundability
+            $refundConfig = $comp['refund'] ?? [];
+            $isRefundable = $refundConfig['refundable'] ?? true;
+            $behavior = $refundConfig['behavior'] ?? self::REFUND_PROPORTIONAL;
+
+            # Tag shortcuts
+            if (in_array('non_refundable', $tags)) {
+                $isRefundable = false;
+            }
+
+            # Calculate component refund
+            $componentRefund = '0';
+
+            if ($isRefundable) {
+                switch ($behavior) {
+                    case self::REFUND_PROPORTIONAL:
+                        $componentRefund = bcmul($originalFee, $refundRatio, $precision);
+                        break;
+
+                    case self::REFUND_FIXED_ONLY:
+                        # Only refund if component is fixed type
+                        $compType = $comp['component_type'] ?? '';
+                        if (in_array($compType, ['fixed_unit', 'fixed_order'])) {
+                            $componentRefund = bcmul($originalFee, $refundRatio, $precision);
+                        }
+                        break;
+
+                    case self::REFUND_NONE:
+                    default:
+                        $componentRefund = '0';
+                        break;
+                }
+
+                # Cap refund to original
+                $capToOriginal = $refundConfig['cap_refund_to_original'] ?? true;
+                if ($capToOriginal && bccomp($componentRefund, $originalFee, $precision) > 0) {
+                    $componentRefund = $originalFee;
+                }
+            }
+
+            # Make negative for reversal
+            $componentRefundNegative = bcmul($componentRefund, '-1', $precision);
+            $totalFeeRefund = bcadd($totalFeeRefund, $componentRefundNegative, $precision);
+
+            $refundPlan[] = [
+                'component_id' => $compId,
+                'original_fee' => $originalFee,
+                'refunded_ratio' => $refundRatio,
+                'refunded_fee' => $componentRefundNegative,
+                'refundable' => $isRefundable,
+                'behavior' => $isRefundable ? $behavior : self::REFUND_NONE
+            ];
+        }
+
+        return [
+            'success' => true,
+            'total_fee_refund' => $totalFeeRefund,
+            'refund_plan' => $refundPlan,
+            'coverage' => [
+                'affected_lines' => $affectedLines,
+                'unaffected_lines' => $unaffectedLines
+            ],
+            'reconciliation' => [
+                'refund_amount' => $refundAmount,
+                'refund_ratio' => $refundRatio,
+                'components_processed' => count($breakdown)
+            ]
+        ];
+    }
+
+    /**
+     * Simple proportional refund (fallback when no breakdown)
+     */
+    private static function calculateSimpleProportionalRefund(
+        array $original,
+        array $adjustment,
+        int $precision
+    ): array {
+        $refundAmount = $adjustment['amount'] ?? '0';
+        $originalTotal = $original['total_fee'] ?? '0';
+        $originalBase = $original['input_snapshot']['order_totals']['net'] ?? '0';
+
+        $feeRefund = '0';
+        if (bccomp($originalBase, '0', $precision) > 0) {
+            $proportion = bcdiv($refundAmount, $originalBase, 8);
+            $feeRefund = bcmul($proportion, $originalTotal, $precision);
+            $feeRefund = bcmul($feeRefund, '-1', $precision);
+        }
+
+        return [
+            'success' => true,
+            'total_fee_refund' => $feeRefund,
+            'refund_plan' => [
+                [
+                    'component_id' => '_global',
+                    'original_fee' => $originalTotal,
+                    'refunded_ratio' => $proportion ?? '0',
+                    'refunded_fee' => $feeRefund,
+                    'refundable' => true,
+                    'behavior' => self::REFUND_PROPORTIONAL
+                ]
+            ],
+            'coverage' => null,
+            'reconciliation' => [
+                'refund_amount' => $refundAmount,
+                'refund_ratio' => $proportion ?? '0',
+                'fallback' => true
+            ]
         ];
     }
 
