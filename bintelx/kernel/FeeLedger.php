@@ -9,8 +9,9 @@
 #   - Integration with PricingEngine
 #   - Adjustment events (refunds, chargebacks)
 #   - P4: Component-aware refunds (refundable/non_refundable)
+#   - P5: FeeStorageAdapter integration (optional)
 #
-# @version 1.1.0
+# @version 1.2.0
 
 namespace bX;
 
@@ -30,7 +31,7 @@ namespace bX;
  */
 final class FeeLedger
 {
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
 
     # Event types
     const EVENT_SETTLE = 'SETTLE';      # Initial fee calculation
@@ -694,6 +695,348 @@ final class FeeLedger
             'success' => false,
             'error_code' => $code,
             'error_message' => $message
+        ];
+    }
+
+    # =========================================================================
+    # P5: FeeStorageAdapter Integration
+    # =========================================================================
+
+    /**
+     * Calculate and persist fees using FeeStorageAdapter
+     *
+     * Alternative to settle() that uses kernel tables directly.
+     *
+     * @param array $input CommissionInput
+     * @param array $policy Fee policy
+     * @param array $source Source identification:
+     *   - 'module': string (e.g., 'crm_labtronic')
+     *   - 'object_type': string (e.g., 'order')
+     *   - 'object_id': string (e.g., 'ORD-123')
+     *   - 'scope_id': int|null (tenant scope)
+     *   - 'channel_key': string (optional, defaults from policy)
+     * @param array $options Calculation options + storage options
+     * @return array Result with fee_entry_id
+     */
+    public static function settleWithStorage(
+        array $input,
+        array $policy,
+        array $source,
+        array $options = []
+    ): array {
+        # Calculate fees
+        $feeResult = FeeEngine::calculate($input, $policy, $options);
+
+        if (!$feeResult['success']) {
+            # Persist error for audit if requested
+            if ($options['persist_errors'] ?? false) {
+                FeeStorageAdapter::persist($feeResult, $source, $policy, [
+                    'mode' => $options['mode'] ?? 'SETTLE'
+                ]);
+            }
+            return $feeResult;
+        }
+
+        # Persist via adapter
+        $persistResult = FeeStorageAdapter::persist(
+            $feeResult,
+            $source,
+            $policy,
+            [
+                'mode' => $options['mode'] ?? 'SETTLE',
+                'request_id' => $options['request_id'] ?? null,
+                'use_transaction' => $options['use_transaction'] ?? true
+            ]
+        );
+
+        if (!$persistResult['success']) {
+            return self::buildError('STORAGE_ERROR', $persistResult['error']);
+        }
+
+        return [
+            'success' => true,
+            'fee_entry_id' => $persistResult['fee_entry_id'],
+            'total_fee' => $feeResult['total_fee'],
+            'currency' => $feeResult['currency'],
+            'fees' => self::buildFeesSummary($feeResult),
+            'breakdown' => $feeResult['breakdown'],
+            'allocation' => $feeResult['allocation'],
+            'warnings' => $feeResult['warnings'],
+            'meta' => $feeResult['meta']
+        ];
+    }
+
+    /**
+     * Register adjustment using FeeStorageAdapter
+     *
+     * Alternative to adjust() that uses kernel tables directly.
+     *
+     * @param int $parentEntryId Original fee_entry_id (from storage)
+     * @param array $adjustment Adjustment data
+     * @param array $source Source identification
+     * @param array $options Options
+     * @return array Adjustment result
+     */
+    public static function adjustWithStorage(
+        int $parentEntryId,
+        array $adjustment,
+        array $source,
+        array $options = []
+    ): array {
+        $strict = $options['strict'] ?? false;
+        $precision = $options['precision'] ?? 2;
+
+        # Load original from storage
+        $original = FeeStorageAdapter::loadEntry($parentEntryId, [
+            'include_breakdown' => true,
+            'include_allocation' => true
+        ]);
+
+        if (!$original) {
+            return self::buildError(self::ERR_ENTRY_NOT_FOUND, "Entry $parentEntryId not found");
+        }
+
+        # Map storage format to internal format
+        $originalMapped = self::mapStorageToInternal($original);
+
+        # Use existing adjust logic with mapped callbacks
+        $callbacks = [
+            'load_entry' => function($id) use ($originalMapped) {
+                return $originalMapped;
+            },
+            'save_entry' => function($entry) {
+                return null; # We'll persist separately
+            },
+            'update_entry' => function($id, $data) {
+                # No-op for now
+            }
+        ];
+
+        $adjustResult = self::adjust(
+            (string)$parentEntryId,
+            $adjustment,
+            $callbacks,
+            $options
+        );
+
+        if (!$adjustResult['success']) {
+            return $adjustResult;
+        }
+
+        # Calculate running total
+        $runningTotals = FeeStorageAdapter::getRunningTotals(
+            $source['module'],
+            $source['object_type'],
+            $source['object_id']
+        );
+        $newRunningTotal = bcadd(
+            $runningTotals['net_fees'],
+            $adjustResult['fee_adjustment'],
+            6
+        );
+
+        # Persist adjustment
+        $persistResult = FeeStorageAdapter::persistAdjustment(
+            $parentEntryId,
+            $adjustResult,
+            $source,
+            [
+                'precision' => $precision,
+                'refund_mode' => $adjustment['mode'] ?? 'AUTO',
+                'running_total' => $newRunningTotal,
+                'use_transaction' => $options['use_transaction'] ?? true
+            ]
+        );
+
+        if (!$persistResult['success']) {
+            return self::buildError('STORAGE_ERROR', $persistResult['error']);
+        }
+
+        return [
+            'success' => true,
+            'fee_entry_id' => $persistResult['fee_entry_id'],
+            'parent_entry_id' => $parentEntryId,
+            'fee_adjustment' => $adjustResult['fee_adjustment'],
+            'running_total' => $newRunningTotal,
+            'refund_plan' => $adjustResult['refund_plan']
+        ];
+    }
+
+    /**
+     * Load entry from storage with full details
+     *
+     * @param int $entryId
+     * @param array $options
+     * @return array|null
+     */
+    public static function loadFromStorage(int $entryId, array $options = []): ?array
+    {
+        $entry = FeeStorageAdapter::loadEntry($entryId, $options);
+        if (!$entry) {
+            return null;
+        }
+        return self::mapStorageToInternal($entry);
+    }
+
+    /**
+     * Load latest entry for a source object
+     *
+     * @param string $module
+     * @param string $objectType
+     * @param string $objectId
+     * @param array $options
+     * @return array|null
+     */
+    public static function loadLatestFromStorage(
+        string $module,
+        string $objectType,
+        string $objectId,
+        array $options = []
+    ): ?array {
+        $entry = FeeStorageAdapter::loadLatest($module, $objectType, $objectId, $options);
+        if (!$entry) {
+            return null;
+        }
+        return self::mapStorageToInternal($entry);
+    }
+
+    /**
+     * Get running totals from storage
+     *
+     * @param string $module
+     * @param string $objectType
+     * @param string $objectId
+     * @return array
+     */
+    public static function getRunningTotalsFromStorage(
+        string $module,
+        string $objectType,
+        string $objectId
+    ): array {
+        return FeeStorageAdapter::getRunningTotals($module, $objectType, $objectId);
+    }
+
+    /**
+     * Iterate entries from storage (memory efficient)
+     *
+     * @param string $module
+     * @param string $objectType
+     * @param string $objectId
+     * @param callable $callback
+     * @param array $options
+     */
+    public static function iterateFromStorage(
+        string $module,
+        string $objectType,
+        string $objectId,
+        callable $callback,
+        array $options = []
+    ): void {
+        FeeStorageAdapter::iterateForSource(
+            $module,
+            $objectType,
+            $objectId,
+            function($row) use ($callback) {
+                $callback(self::mapStorageToInternal($row));
+            },
+            $options
+        );
+    }
+
+    /**
+     * Get fee totals by tag from storage
+     *
+     * @param string $module
+     * @param string $objectType
+     * @param string $objectId
+     * @return array ['tag' => 'total_amount']
+     */
+    public static function getTotalsByTagFromStorage(
+        string $module,
+        string $objectType,
+        string $objectId
+    ): array {
+        return FeeStorageAdapter::getTotalsByTag($module, $objectType, $objectId);
+    }
+
+    /**
+     * Map storage row format to internal FeeLedger format
+     */
+    private static function mapStorageToInternal(array $row): array
+    {
+        # Handle breakdown mapping (DB columns → internal format)
+        $breakdown = [];
+        foreach ($row['breakdown'] ?? [] as $comp) {
+            $breakdown[] = [
+                'component_id' => $comp['component_id'],
+                'component_name' => $comp['component_label'] ?? $comp['component_id'],
+                'component_type' => $comp['component_type'],
+                'scope' => $comp['scope'],
+                'amount' => $comp['amount'],
+                'base_used' => $comp['base_used'],
+                'rate' => $comp['rate_or_pp'],
+                'fixed' => $comp['fixed_value'],
+                'tags' => $comp['tags'] ?? [],
+                'applied' => (bool)($comp['applied'] ?? true),
+                'discard_reason' => $comp['discard_reason'] ?? null,
+                'tier_by' => $comp['tier_by'] ?? null,
+                'tier_selected' => $comp['tier_selected_value'] ? [
+                    'min' => $comp['tier_selected_min'],
+                    'max' => $comp['tier_selected_max'],
+                    'value' => $comp['tier_selected_value']
+                ] : null,
+                'refund' => [
+                    'refundable' => !in_array('non_refundable', $comp['tags'] ?? []),
+                    'behavior' => self::REFUND_PROPORTIONAL
+                ]
+            ];
+        }
+
+        # Handle allocation mapping
+        $allocation = [];
+        foreach ($row['allocation'] ?? [] as $line) {
+            $allocation[] = [
+                'line_id' => $line['line_id'],
+                'fee_amount' => $line['line_fee_total'],
+                'reconcile_delta' => $line['reconcile_delta'] ?? null,
+                'components' => array_map(function($c) {
+                    return [
+                        'component_id' => $c['component_id'],
+                        'amount' => $c['amount'],
+                        'base_used' => $c['base_used'],
+                        'rate' => $c['rate_applied']
+                    ];
+                }, $line['components'] ?? [])
+            ];
+        }
+
+        return [
+            'entry_id' => $row['fee_entry_id'],
+            'transaction_id' => $row['source_object_id'],
+            'channel_key' => $row['channel_key'],
+            'event_type' => $row['mode'],
+            'status' => $row['success'] ? self::STATUS_ACTIVE : 'failed',
+            'currency' => $row['currency'],
+            'total_fee' => $row['total_fee'],
+            'breakdown' => $breakdown,
+            'allocation' => $allocation,
+            'warnings' => $row['warnings'] ?? [],
+            'policy_snapshot' => [
+                'policy_key' => $row['policy_key'],
+                'version' => $row['policy_version']
+            ],
+            'input_snapshot' => [
+                'order_totals' => ['net' => $row['adjustment_amount'] ?? '0']
+            ],
+            'signature' => $row['signature'],
+            'created_at' => $row['created_at'],
+            # Adjustment-specific
+            'parent_entry_id' => $row['parent_fee_entry_id'] ?? null,
+            'adjustment_type' => $row['adjustment_type'] ?? null,
+            'adjustment_amount' => $row['adjustment_amount'] ?? null,
+            'adjustment_fee' => $row['adjustment_fee'] ?? null,
+            'running_total' => $row['running_total'] ?? null,
+            'refund_plan' => $row['refund_plan'] ?? []
         ];
     }
 }
