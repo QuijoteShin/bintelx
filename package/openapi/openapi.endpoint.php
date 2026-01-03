@@ -1,4 +1,4 @@
-<?php # custom/openapi/openapi.endpoint.php
+<?php # package/openapi/openapi.endpoint.php
 namespace openapi;
 use bX\Router;
 use bX\Response;
@@ -8,13 +8,12 @@ use openapi\OpenApiHandler;
  * @endpoint   /api/openapi/spec.json
  * @method     GET
  * @scope      ROUTER_SCOPE_PUBLIC
- * @purpose    Returns OpenAPI 3.1 specification in JSON format (raw, for tools)
+ * @purpose    Returns OpenAPI 3.1 specification (JSON default, TOON optional)
  * @tag        OpenAPI
  */
-Router::register(['GET'], 'spec.json', function(...$params) {
-  # Spec raw sin wrapper (para herramientas externas)
+Router::register(['GET'], 'spec\.(?P<format>json|toon)', function($format = 'json') {
   $spec = OpenApiHandler::getRawSpec();
-  return Response::json($spec);
+  return $format === 'toon' ? Response::toon($spec) : Response::json($spec);
 }, ROUTER_SCOPE_PUBLIC);
 
 
