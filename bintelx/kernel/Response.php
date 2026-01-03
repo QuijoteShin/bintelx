@@ -55,6 +55,17 @@ class Response
         return $response;
     }
 
+    # Para TOON format (human-readable, compact)
+    public static function toon(mixed $data, int $code = 200): self
+    {
+        $response = new self();
+        $response->rawContent = \bX\Toon\Toon::encode($data);
+        $response->statusCode = $code;
+        $response->type = 'raw';
+        $response->headers['Content-Type'] = 'text/toon; charset=utf-8';
+        return $response;
+    }
+
     # Para contenido RAW (HTML, texto plano, etc)
     public static function raw(string $content, string $contentType = 'text/plain'): self
     {
