@@ -12,6 +12,9 @@
 #   - Deterministic (same input → same output)
 #   - Country pack agnostic (formulas/params in DB)
 #
+# @version 1.0.6 - CL todo HALF_UP (Previred 2026 confirmado)
+# @version 1.0.4 - Rounding policy: constantes explícitas por tipo de concepto
+# @version 1.0.3 - Input validation: employee_id, dates, condition warnings
 # @version 1.0.2 - Fixed M2: Rounding bucket now rounds to payroll precision
 # @version 1.0.1 - Fixed C3: Formula errors now tracked; strict_mode makes them fatal
 # @version 1.0.0
@@ -24,7 +27,41 @@ require_once __DIR__ . '/ParamStore.php';
 
 class PayrollEngine
 {
-    public const VERSION = '1.0.3';
+    public const VERSION = '1.0.6';
+
+    # =========================================================================
+    # ROUNDING POLICY (por país)
+    # =========================================================================
+    # Documentado en: .claude/PAYROLL_ENGINE_STATUS.md (Sección 10)
+    #
+    # Principio: Redondear por línea/concepto en cada etapa "informable"
+    # Invariante auditoría: totals == sum(lines.amount_clp)
+    #
+    # Configuración por país (precision, mode):
+    #   - CL: (0, HALF_UP todo) → Previred 2026 usa HALF_UP
+    #   - BR: (2, HALF_UP) → centavos
+    #   - US: (2, HALF_UP) → cents
+    # =========================================================================
+    public const ROUNDING_POLICY = [
+        'CL' => [
+            'precision' => 0,
+            'line' => Math::ROUND_HALF_UP,        # Haberes/deducciones
+            'contribution' => Math::ROUND_HALF_UP, # AFP, Salud, AFC (Previred HALF_UP)
+            'tax' => Math::ROUND_HALF_UP,          # Impuesto único
+        ],
+        'BR' => [
+            'precision' => 2,
+            'line' => Math::ROUND_HALF_UP,
+            'contribution' => Math::ROUND_HALF_UP,
+            'tax' => Math::ROUND_HALF_UP,
+        ],
+        'DEFAULT' => [
+            'precision' => 2,
+            'line' => Math::ROUND_HALF_UP,
+            'contribution' => Math::ROUND_HALF_UP,
+            'tax' => Math::ROUND_HALF_UP,
+        ],
+    ];
 
     # Error codes
     public const ERR_NO_FORMULAS = 'NO_FORMULAS_LOADED';
