@@ -75,12 +75,13 @@ class WarmUp
         $root = strtolower($class_root);
         $file = $customBase . "{$root}/Business/{$child}.php";
       }
-      ## package
+      ## package - uses lowercase module directory (bX\Payroll\Handler → package/payroll/Business/Handler.php)
+      $packageModule = strtolower($class_root);
       if (!file_exists($file) && !empty($class_child)) {
-        $file = self::$BINTELX_HOME  . "../package/{$class_root}/Business{$class_child}.php";
+        $file = self::$BINTELX_HOME  . "../package/{$packageModule}/Business{$class_child}.php";
       }
       if (!file_exists($file)) {
-        $file = self::$BINTELX_HOME  . "../package/{$class_root}/Business/{$class_root}.php";
+        $file = self::$BINTELX_HOME  . "../package/{$packageModule}/Business/{$class_root}.php";
       }
 
       if (!file_exists($file)) {
