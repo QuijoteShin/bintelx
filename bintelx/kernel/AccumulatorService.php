@@ -11,7 +11,7 @@
 #   - Period boundary calculations
 #   - Multi-concept accumulation
 #
-# @version 1.0.0
+# @version 1.1.0 - Added avgLastMonths() for finiquito calculations
 
 namespace bX;
 
@@ -46,7 +46,7 @@ interface AccumulationProvider
 
 class AccumulatorService
 {
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.1.0';
 
     # Period types
     public const PERIOD_MTD = 'MTD';     # Month-to-Date
@@ -171,6 +171,93 @@ class AccumulatorService
     public function r12m(string $concept, string $type = self::TYPE_SUM, array $scope = []): array
     {
         return $this->accumulate($concept, self::PERIOD_R12M, $type, $scope);
+    }
+
+    /**
+     * Get average of last N months (for finiquito calculations)
+     * Chile: Indemnización = promedio últimos 3 meses con tope 90 UF
+     *
+     * @param string $concept Concept key (e.g., 'total_imponible')
+     * @param int $months Number of months to average (default 3)
+     * @param array $scope Override scope
+     * @param string|null $capUF Optional UF cap (e.g., '90' for Chile indemnización)
+     * @param string|null $ufValue UF value for cap calculation
+     * @return array ['value' => avg, 'months' => [...], 'capped' => bool, ...]
+     */
+    public function avgLastMonths(
+        string $concept,
+        int $months = 3,
+        array $scope = [],
+        ?string $capUF = null,
+        ?string $ufValue = null
+    ): array {
+        # Calculate date range (last N complete months before reference date)
+        $refDate = new \DateTime($this->referenceDate);
+        $refDate->modify('first day of this month');
+        $toDate = (clone $refDate)->modify('-1 day'); # End of previous month
+        $fromDate = (clone $refDate)->modify("-{$months} months"); # Start of N months ago
+
+        $period = [
+            'type' => 'LAST_N_MONTHS',
+            'from' => $fromDate->format('Y-m-d'),
+            'to' => $toDate->format('Y-m-d'),
+            'months' => $months,
+        ];
+
+        # Get values per month
+        $mergedScope = array_merge($this->defaultScope, $scope);
+        $monthlyValues = [];
+        $allValues = [];
+
+        foreach ($this->providers as $provider) {
+            $values = $provider->getValues(
+                $concept,
+                $period['from'],
+                $period['to'],
+                $mergedScope
+            );
+            foreach ($values as $v) {
+                $allValues[] = $v;
+                $monthKey = substr($v['period'] ?? $v['date'], 0, 7); # YYYY-MM
+                if (!isset($monthlyValues[$monthKey])) {
+                    $monthlyValues[$monthKey] = '0';
+                }
+                $monthlyValues[$monthKey] = Math::add($monthlyValues[$monthKey], $v['value']);
+            }
+        }
+
+        # Calculate average
+        $monthCount = count($monthlyValues);
+        $total = Math::sum(array_values($monthlyValues));
+        $average = $monthCount > 0
+            ? Math::div($total, (string)$monthCount, $this->precision)
+            : '0';
+
+        # Apply UF cap if specified
+        $capped = false;
+        $capValue = null;
+        if ($capUF !== null && $ufValue !== null) {
+            $capValue = Math::mul($capUF, $ufValue);
+            if (Math::gt($average, $capValue)) {
+                $average = $capValue;
+                $capped = true;
+            }
+        }
+
+        return [
+            'success' => true,
+            'concept' => $concept,
+            'value' => Math::round($average, 0),
+            'total' => $total,
+            'months_found' => $monthCount,
+            'months_requested' => $months,
+            'monthly_values' => $monthlyValues,
+            'period' => $period,
+            'capped' => $capped,
+            'cap_uf' => $capUF,
+            'cap_value' => $capValue,
+            'reference_date' => $this->referenceDate,
+        ];
     }
 
     /**
