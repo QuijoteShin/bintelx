@@ -2,10 +2,19 @@
 # bintelx/kernel/TierCalculator.php
 # Universal Tier/Bracket Calculator for Progressive Taxes and Fees
 # Supports: MARGINAL (progressive), FLAT (volume), INTERPOLATED
+#
+# @version 1.0.1 - Fixed C1/C2 bugs (Codex review 2026-01-02)
+#   - C1: Deduction now applies from applicable tier, not last table tier
+#   - C2: All calculations use high precision internally, HALF_UP rounding at output
 
 namespace bX;
 
 class TierCalculator {
+
+    public const VERSION = '1.0.1';
+
+    # Internal calculation scale (high precision)
+    private const INTERNAL_SCALE = 10;
 
     # Calculation modes
     public const MODE_MARGINAL = 'MARGINAL';       # Each tier applies to its range only (tax brackets)
@@ -60,53 +69,59 @@ class TierCalculator {
      *
      * Example: Base = 3000, Tiers: [0-1000 @ 7.5%, 1000-2000 @ 9%, 2000+ @ 12%]
      * Result: (1000 * 0.075) + (1000 * 0.09) + (1000 * 0.12) = 75 + 90 + 120 = 285
+     *
+     * FIX C1: Deduction from APPLICABLE tier, not last table tier
+     * FIX C2: High precision internally, HALF_UP at output
      */
     private static function calculateMarginal(string $base, array $tiers, int $precision): array {
         $total = '0';
         $breakdown = [];
-        $remaining = $base;
+        $lastAppliedTierIndex = null;
 
-        foreach ($tiers as $tier) {
+        foreach ($tiers as $index => $tier) {
             $from = $tier['from'];
             $to = $tier['to'];
             $rate = $tier['rate'];
-            $deduction = $tier['deduction'] ?? '0';
 
             # Skip if base hasn't reached this tier
             if (Math::comp($base, $from) <= 0) {
                 continue;
             }
 
-            # Calculate taxable amount in this tier
-            $tierBase = Math::sub(Math::min($base, $to), $from, $precision);
+            # Calculate taxable amount in this tier (high precision internally)
+            $tierBase = Math::sub(Math::min($base, $to), $from, self::INTERNAL_SCALE);
 
             if (Math::comp($tierBase, '0') <= 0) {
                 continue;
             }
 
-            # Apply rate to tier portion
-            $tierAmount = Math::mul($tierBase, $rate, $precision);
+            # Apply rate to tier portion (high precision)
+            $tierAmount = Math::mul($tierBase, $rate, self::INTERNAL_SCALE);
 
             $breakdown[] = [
                 'tier_from' => $from,
                 'tier_to' => $to,
                 'rate' => $rate,
-                'base_in_tier' => $tierBase,
-                'amount' => $tierAmount
+                'base_in_tier' => Math::round($tierBase, $precision, Math::ROUND_HALF_UP),
+                'amount' => Math::round($tierAmount, $precision, Math::ROUND_HALF_UP)
             ];
 
-            $total = Math::add($total, $tierAmount, $precision);
+            $total = Math::add($total, $tierAmount, self::INTERNAL_SCALE);
+            $lastAppliedTierIndex = $index;
         }
 
-        # Apply final deduction if last tier has one (Chilean/Brazilian style)
-        $lastAppliedTier = end($breakdown);
-        if ($lastAppliedTier && isset($tiers[array_key_last($tiers)]['deduction'])) {
-            $finalDeduction = $tiers[array_key_last($tiers)]['deduction'] ?? '0';
-            if (Math::comp($finalDeduction, '0') > 0) {
-                $total = Math::sub($total, $finalDeduction, $precision);
-                $total = Math::max($total, '0'); # Never negative
+        # FIX C1: Apply deduction from the LAST APPLIED tier (not last table tier)
+        if ($lastAppliedTierIndex !== null) {
+            $applicableTier = $tiers[$lastAppliedTierIndex];
+            $deduction = $applicableTier['deduction'] ?? '0';
+            if (Math::comp($deduction, '0') > 0) {
+                $total = Math::sub($total, $deduction, self::INTERNAL_SCALE);
+                $total = Math::max($total, '0');
             }
         }
+
+        # FIX C2: Round final amount with HALF_UP
+        $total = Math::round($total, $precision, Math::ROUND_HALF_UP);
 
         $effectiveRate = Math::comp($base, '0') > 0
             ? Math::div($total, $base, 6)
@@ -125,6 +140,8 @@ class TierCalculator {
      *
      * Example: Base = 3000, Tiers: [0-1000 @ 5%, 1000-5000 @ 3%, 5000+ @ 2%]
      * Result: 3000 * 0.03 = 90 (uses 3% because 3000 is in 1000-5000 range)
+     *
+     * FIX C2: High precision internally, HALF_UP at output
      */
     private static function calculateFlat(string $base, array $tiers, int $precision): array {
         $matchedTier = null;
@@ -157,7 +174,9 @@ class TierCalculator {
         }
 
         $rate = $matchedTier['rate'];
-        $amount = Math::mul($base, $rate, $precision);
+        # FIX C2: High precision internally, HALF_UP at output
+        $amountRaw = Math::mul($base, $rate, self::INTERNAL_SCALE);
+        $amount = Math::round($amountRaw, $precision, Math::ROUND_HALF_UP);
 
         return [
             'amount' => $amount,
@@ -257,8 +276,21 @@ class TierCalculator {
      * @return array Calculation result
      */
     public static function chileImpuestoUnico(string $baseTributable, string $utm): array {
-        # Convert base to UTM
-        $baseUtm = Math::div($baseTributable, $utm, 4);
+        # FIX I2: Validate UTM is not zero
+        if (Math::isZero($utm)) {
+            return [
+                'amount' => '0',
+                'amount_utm' => '0',
+                'effective_rate' => '0',
+                'base_utm' => '0',
+                'utm_value' => $utm,
+                'breakdown' => [],
+                'error' => 'UTM_VALUE_ZERO'
+            ];
+        }
+
+        # Convert base to UTM (high precision)
+        $baseUtm = Math::div($baseTributable, $utm, self::INTERNAL_SCALE);
 
         # Chile 2025 tax brackets (in UTM)
         $tiers = [
@@ -275,14 +307,15 @@ class TierCalculator {
         # Calculate in UTM
         $resultUtm = self::calculateChileanProgressive($baseUtm, $tiers);
 
-        # Convert back to CLP
-        $amountClp = Math::mul($resultUtm['amount'], $utm, 0);
+        # FIX C2: Convert back to CLP with HALF_UP rounding (not truncate)
+        $amountClpRaw = Math::mul($resultUtm['amount'], $utm, self::INTERNAL_SCALE);
+        $amountClp = Math::round($amountClpRaw, 0, Math::ROUND_HALF_UP);
 
         return [
             'amount' => $amountClp,
             'amount_utm' => $resultUtm['amount'],
             'effective_rate' => $resultUtm['effective_rate'],
-            'base_utm' => $baseUtm,
+            'base_utm' => Math::round($baseUtm, 4, Math::ROUND_HALF_UP),
             'utm_value' => $utm,
             'breakdown' => $resultUtm['breakdown']
         ];
@@ -291,6 +324,8 @@ class TierCalculator {
     /**
      * Chilean progressive calculation with deduction
      * Formula: (Base × Rate) - Deduction
+     *
+     * FIX C2: High precision internally, HALF_UP at output (4 decimals for UTM)
      */
     private static function calculateChileanProgressive(string $baseUtm, array $tiers): array {
         # Find applicable tier
@@ -311,10 +346,14 @@ class TierCalculator {
             return ['amount' => '0', 'effective_rate' => '0', 'breakdown' => ['exempt' => true]];
         }
 
-        # Chilean formula: (Base × Rate) - Deduction
-        $grossTax = Math::mul($baseUtm, $applicableTier['rate'], 4);
-        $netTax = Math::sub($grossTax, $applicableTier['deduction'], 4);
+        # FIX C2: High precision internally
+        $grossTax = Math::mul($baseUtm, $applicableTier['rate'], self::INTERNAL_SCALE);
+        $netTax = Math::sub($grossTax, $applicableTier['deduction'], self::INTERNAL_SCALE);
         $netTax = Math::max($netTax, '0');
+
+        # FIX C2: HALF_UP rounding for UTM precision (4 decimals)
+        $netTax = Math::round($netTax, 4, Math::ROUND_HALF_UP);
+        $grossTax = Math::round($grossTax, 4, Math::ROUND_HALF_UP);
 
         $effectiveRate = Math::comp($baseUtm, '0') > 0
             ? Math::div($netTax, $baseUtm, 6)
@@ -378,6 +417,8 @@ class TierCalculator {
     /**
      * Brazilian progressive calculation with deduction
      * Formula: (Base × Rate) - Deduction (same as Chilean mathematically)
+     *
+     * FIX C2: High precision internally, HALF_UP at output (2 decimals for BRL)
      */
     private static function calculateBrazilianProgressive(string $base, array $tiers): array {
         # Find applicable tier
@@ -398,10 +439,14 @@ class TierCalculator {
             return ['amount' => '0', 'effective_rate' => '0', 'breakdown' => ['exempt' => true]];
         }
 
-        # Brazilian formula: (Base × Rate) - Deduction
-        $grossTax = Math::mul($base, $applicableTier['rate'], 2);
-        $netTax = Math::sub($grossTax, $applicableTier['deduction'], 2);
+        # FIX C2: High precision internally
+        $grossTax = Math::mul($base, $applicableTier['rate'], self::INTERNAL_SCALE);
+        $netTax = Math::sub($grossTax, $applicableTier['deduction'], self::INTERNAL_SCALE);
         $netTax = Math::max($netTax, '0');
+
+        # FIX C2: HALF_UP rounding for BRL precision (2 decimals)
+        $netTax = Math::round($netTax, 2, Math::ROUND_HALF_UP);
+        $grossTax = Math::round($grossTax, 2, Math::ROUND_HALF_UP);
 
         $effectiveRate = Math::comp($base, '0') > 0
             ? Math::div($netTax, $base, 6)

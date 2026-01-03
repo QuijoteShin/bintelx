@@ -11,7 +11,9 @@
 #   - Period boundary calculations
 #   - Multi-concept accumulation
 #
-# @version 1.1.0 - Added avgLastMonths() for finiquito calculations
+# @version 1.2.1 - Fixed C4: avgLastMonths divides by requested months, not found months
+# @version 1.2.0 - Added avgLastMonths() for finiquito calculations
+#                - Added avgLastMonthsSeveranceBase() for is_severance_base filtering
 
 namespace bX;
 
@@ -46,7 +48,7 @@ interface AccumulationProvider
 
 class AccumulatorService
 {
-    public const VERSION = '1.1.0';
+    public const VERSION = '1.2.1';
 
     # Period types
     public const PERIOD_MTD = 'MTD';     # Month-to-Date
@@ -226,11 +228,13 @@ class AccumulatorService
             }
         }
 
-        # Calculate average
+        # FIX C4: Calculate average using REQUESTED months, not found months
+        # Months without data count as 0 in the average (critical for finiquito)
         $monthCount = count($monthlyValues);
         $total = Math::sum(array_values($monthlyValues));
-        $average = $monthCount > 0
-            ? Math::div($total, (string)$monthCount, $this->precision)
+        # Divide by requested months, not found months (empty months = 0)
+        $average = $months > 0
+            ? Math::div($total, (string)$months, $this->precision)
             : '0';
 
         # Apply UF cap if specified
@@ -256,6 +260,137 @@ class AccumulatorService
             'capped' => $capped,
             'cap_uf' => $capUF,
             'cap_value' => $capValue,
+            'reference_date' => $this->referenceDate,
+        ];
+    }
+
+    /**
+     * Get average of last N months for SEVERANCE BASE concepts only
+     * Chile: Indemnización = promedio últimos 3 meses de remuneración (is_severance_base=1)
+     *
+     * This method filters concepts by is_severance_base flag to ensure only
+     * legally computable concepts are included in the average (H4 fix).
+     *
+     * @param int $months Number of months to average (default 3)
+     * @param array $scope Override scope
+     * @param string|null $capUF Optional UF cap (e.g., '90' for Chile)
+     * @param string|null $ufValue UF value for cap calculation
+     * @param array|null $conceptFilter Explicit list of concept_codes to include
+     * @return array ['value' => avg, 'months' => [...], 'capped' => bool, 'concepts_included' => [...]]
+     */
+    public function avgLastMonthsSeveranceBase(
+        int $months = 3,
+        array $scope = [],
+        ?string $capUF = null,
+        ?string $ufValue = null,
+        ?array $conceptFilter = null
+    ): array {
+        # If explicit filter provided, use it; otherwise query DB for is_severance_base=1
+        $severanceConcepts = $conceptFilter;
+
+        if ($severanceConcepts === null) {
+            # Query concepts marked as severance base
+            try {
+                $sql = "SELECT concept_code FROM pay_concept WHERE is_severance_base = 1";
+                $rows = CONN::dml($sql);
+                $severanceConcepts = array_column($rows, 'concept_code');
+            } catch (\Exception $e) {
+                # Fallback to common Chile concepts if DB fails
+                $severanceConcepts = [
+                    'CL_E_SUELDO_BASE',
+                    'CL_E_GRATIFICACION',
+                    'CL_E_BONO_PRODUCCION',
+                    'CL_E_COMISION',
+                    'CL_E_HORA_EXTRA_50',
+                    'CL_E_HORA_EXTRA_100',
+                    'CL_E_SEMANA_CORRIDA'
+                ];
+            }
+        }
+
+        if (empty($severanceConcepts)) {
+            return [
+                'success' => false,
+                'error' => 'NO_SEVERANCE_CONCEPTS_DEFINED',
+                'value' => '0',
+                'concepts_included' => []
+            ];
+        }
+
+        # Calculate date range (last N complete months before reference date)
+        $refDate = new \DateTime($this->referenceDate);
+        $refDate->modify('first day of this month');
+        $toDate = (clone $refDate)->modify('-1 day');
+        $fromDate = (clone $refDate)->modify("-{$months} months");
+
+        $period = [
+            'type' => 'LAST_N_MONTHS_SEVERANCE',
+            'from' => $fromDate->format('Y-m-d'),
+            'to' => $toDate->format('Y-m-d'),
+            'months' => $months,
+        ];
+
+        # Get values per month for severance concepts only
+        $mergedScope = array_merge($this->defaultScope, $scope);
+        $monthlyTotals = [];
+        $conceptsFound = [];
+
+        foreach ($this->providers as $provider) {
+            foreach ($severanceConcepts as $concept) {
+                $values = $provider->getValues(
+                    $concept,
+                    $period['from'],
+                    $period['to'],
+                    $mergedScope
+                );
+
+                foreach ($values as $v) {
+                    $monthKey = substr($v['period'] ?? $v['date'], 0, 7);
+                    if (!isset($monthlyTotals[$monthKey])) {
+                        $monthlyTotals[$monthKey] = '0';
+                    }
+                    $monthlyTotals[$monthKey] = Math::add($monthlyTotals[$monthKey], $v['value']);
+
+                    if (!in_array($concept, $conceptsFound)) {
+                        $conceptsFound[] = $concept;
+                    }
+                }
+            }
+        }
+
+        # FIX C4: Calculate average using REQUESTED months, not found months
+        # Months without data count as 0 in the average (critical for finiquito)
+        $monthCount = count($monthlyTotals);
+        $total = Math::sum(array_values($monthlyTotals));
+        # Divide by requested months, not found months (empty months = 0)
+        $average = $months > 0
+            ? Math::div($total, (string)$months, $this->precision)
+            : '0';
+
+        # Apply UF cap if specified (Chile 90 UF for indemnización)
+        $capped = false;
+        $capValue = null;
+        if ($capUF !== null && $ufValue !== null) {
+            $capValue = Math::mul($capUF, $ufValue);
+            if (Math::gt($average, $capValue)) {
+                $average = $capValue;
+                $capped = true;
+            }
+        }
+
+        return [
+            'success' => true,
+            'value' => Math::round($average, 0),
+            'total' => $total,
+            'months_found' => $monthCount,
+            'months_requested' => $months,
+            'monthly_values' => $monthlyTotals,
+            'period' => $period,
+            'capped' => $capped,
+            'cap_uf' => $capUF,
+            'cap_value' => $capValue,
+            'concepts_included' => $conceptsFound,
+            'concepts_requested' => $severanceConcepts,
             'reference_date' => $this->referenceDate,
         ];
     }

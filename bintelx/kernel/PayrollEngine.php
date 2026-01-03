@@ -12,6 +12,7 @@
 #   - Deterministic (same input → same output)
 #   - Country pack agnostic (formulas/params in DB)
 #
+# @version 1.0.1 - Fixed C3: Formula errors now tracked; strict_mode makes them fatal
 # @version 1.0.0
 
 namespace bX;
@@ -22,7 +23,7 @@ require_once __DIR__ . '/ParamStore.php';
 
 class PayrollEngine
 {
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.0.1';
 
     # Error codes
     public const ERR_NO_FORMULAS = 'NO_FORMULAS_LOADED';
@@ -59,6 +60,8 @@ class PayrollEngine
     private array $warnings = [];
     private int $defaultPrecision = 2;
     private string $defaultRoundingMode = Math::ROUND_HALF_UP;
+    private bool $strictMode = false;
+    private int $formulaErrorCount = 0;
 
     /**
      * Calculate payroll for an employee
@@ -122,6 +125,9 @@ class PayrollEngine
             $this->employeeId = (int)($input['employee_id'] ?? 0);
             $this->defaultPrecision = $config['precision'] ?? 2;
             $this->defaultRoundingMode = $config['rounding_mode'] ?? Math::ROUND_HALF_UP;
+            # FIX C3: strict_mode makes formula errors fatal
+            $this->strictMode = (bool)($config['strict_mode'] ?? false);
+            $this->formulaErrorCount = 0;
 
             # Initialize param store
             $this->paramStore = new ParamStore(
@@ -162,8 +168,13 @@ class PayrollEngine
             # Build result
             $endTime = microtime(true);
 
+            # FIX C3: Report formula errors in result
+            $hasFormulaErrors = $this->formulaErrorCount > 0;
+
             return [
                 'success' => true,
+                'has_formula_errors' => $hasFormulaErrors,
+                'formula_error_count' => $this->formulaErrorCount,
                 'employee_id' => $this->employeeId,
                 'period' => [
                     'start' => $this->periodStart,
@@ -180,7 +191,9 @@ class PayrollEngine
                     'country_code' => $this->countryCode,
                     'precision' => $this->defaultPrecision,
                     'rounding_mode' => $this->defaultRoundingMode,
+                    'strict_mode' => $this->strictMode,
                     'formula_count' => count($this->formulas),
+                    'formulas_executed' => count($this->formulas) - $this->formulaErrorCount,
                     'calculation_ms' => round(($endTime - $startTime) * 1000, 2)
                 ]
             ];
@@ -495,12 +508,22 @@ class PayrollEngine
         $result = RulesEngine::evaluate($formula['dsl_expression'], $context, $options);
 
         if (!$result['success']) {
+            $this->formulaErrorCount++;
             $this->warnings[] = [
                 'formula' => $formula['formula_code'],
                 'concept' => $targetConcept,
-                'error' => $result['error']
+                'error' => $result['error'],
+                'is_formula_error' => true
             ];
             $this->trace[] = "ERROR {$targetConcept}: {$result['error']}";
+
+            # FIX C3: In strict_mode, throw exception on formula error
+            if ($this->strictMode) {
+                throw new \Exception(
+                    "Formula error in {$targetConcept}: {$result['error']}",
+                    (int)self::ERR_FORMULA_ERROR
+                );
+            }
             return;
         }
 

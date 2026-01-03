@@ -6,22 +6,25 @@
 #   - Secure tokenizer + parser (no eval)
 #   - Uses Math:: wrapper for all arithmetic (configurable scale)
 #   - Functions: MIN, MAX, ABS, ROUND, FLOOR, CEIL, IF
-#   - Country functions: CL_IMPUESTO_UNICO, BR_INSS_PROGRESSIVO, BR_IRRF_PROGRESSIVO
+#   - Country functions: CL_IMPUESTO_UNICO, BR_INSS_PROGRESSIVO, BR_IRRF_PROGRESSIVO, BR_DSR
 #   - Params: PARAM(), EMP_PARAM(), SUM_GROUP()
 #   - Operators: + - * / < > <= >= == != AND OR NOT
 #   - Variables prebind with dot notation (earnings.base_salary)
 #   - Deterministic evaluation with explain trace
+#   - H2: PRORATE() for partial month calculations (licencias médicas)
+#   - H6: BR_DSR() for Brazil DSR calculation
 #
-# @version 1.1.0
+# @version 1.2.0
 
 namespace bX;
 
 require_once __DIR__ . '/Math.php';
 require_once __DIR__ . '/TierCalculator.php';
+require_once __DIR__ . '/HolidayProvider.php';
 
 class RulesEngine
 {
-    public const VERSION = '1.1.0';
+    public const VERSION = '1.2.0';
 
     # Token types
     private const T_NUMBER = 'NUMBER';
@@ -624,6 +627,118 @@ class RulesEngine
                 $result = TierCalculator::calculate($base, $tiers, $mode);
                 $this->trace[] = "TIER_CALC($base, mode=$mode) = {$result['amount']}";
                 return $result['amount'];
+
+            # =========================================================================
+            # H6: BRAZIL DSR (Descanso Semanal Remunerado)
+            # =========================================================================
+
+            case 'BR_DSR':
+                # Brazil: DSR = (Comisiones + HE) / días útiles × (domingos + feriados)
+                # Args: variable_earnings, year_month [, region_code]
+                $this->assertArgCount($name, $args, 2, 3);
+                $variableEarnings = $this->evalNode($args[0]);
+                $yearMonth = $this->evalNode($args[1]);
+                $region = isset($args[2]) ? $this->evalNode($args[2]) : null;
+
+                $year = (int)substr($yearMonth, 0, 4);
+                $month = (int)substr($yearMonth, 5, 2);
+                $info = HolidayProvider::getMonthWorkingDays($year, $month, $region);
+                $result = HolidayProvider::calculateDsr($variableEarnings, $info['working_days'], $info['rest_days']);
+
+                $this->trace[] = "BR_DSR($variableEarnings, $yearMonth) = {$result['amount']} (working={$info['working_days']}, rest={$info['rest_days']})";
+                return $result['amount'];
+
+            case 'WORKING_DAYS':
+                # Get working days for a month
+                # Args: country_code, year_month
+                $this->assertArgCount($name, $args, 2);
+                $country = $this->evalNode($args[0]);
+                $yearMonth = $this->evalNode($args[1]);
+
+                if ($country === 'BR') {
+                    $year = (int)substr($yearMonth, 0, 4);
+                    $month = (int)substr($yearMonth, 5, 2);
+                    $info = HolidayProvider::getMonthWorkingDays($year, $month);
+                    return (string)$info['working_days'];
+                }
+                return '30'; # Default commercial base
+
+            case 'REST_DAYS':
+                # Get rest days (Sundays + holidays) for a month
+                # Args: country_code, year_month
+                $this->assertArgCount($name, $args, 2);
+                $country = $this->evalNode($args[0]);
+                $yearMonth = $this->evalNode($args[1]);
+
+                if ($country === 'BR') {
+                    $year = (int)substr($yearMonth, 0, 4);
+                    $month = (int)substr($yearMonth, 5, 2);
+                    $info = HolidayProvider::getMonthWorkingDays($year, $month);
+                    return (string)$info['rest_days'];
+                }
+                return '4'; # Default ~4 Sundays
+
+            case 'HOLIDAYS_COUNT':
+                # Count holidays in a period
+                # Args: country_code, from_date, to_date
+                $this->assertArgCount($name, $args, 3);
+                $country = $this->evalNode($args[0]);
+                $fromDate = $this->evalNode($args[1]);
+                $toDate = $this->evalNode($args[2]);
+                return (string)HolidayProvider::countHolidays($country, $fromDate, $toDate);
+
+            # =========================================================================
+            # H2: PRORATE - Prorrateo para licencias médicas parciales
+            # =========================================================================
+
+            case 'PRORATE':
+                # Prorate an amount based on days worked
+                # Args: amount, days_worked, base_days (default 30)
+                $this->assertArgCount($name, $args, 2, 3);
+                $amount = $this->evalNode($args[0]);
+                $daysWorked = $this->evalNode($args[1]);
+                $baseDays = isset($args[2]) ? $this->evalNode($args[2]) : '30';
+
+                if (Math::comp($baseDays, '0') <= 0) {
+                    return '0';
+                }
+
+                $factor = Math::div($daysWorked, $baseDays, 6);
+                $prorated = Math::mul($amount, $factor, 2);
+                $this->trace[] = "PRORATE($amount, $daysWorked/$baseDays) = $prorated";
+                return $prorated;
+
+            case 'PRORATE_GRATIF':
+                # Chile: Prorate gratificación tope based on days worked
+                # La gratificación legal (Art. 50 CT) se prorratea por días trabajados
+                # Args: base_salary, gratif_rate, gratif_tope_imm, sueldo_minimo, days_worked, base_days
+                $this->assertArgCount($name, $args, 6);
+                $baseSalary = $this->evalNode($args[0]);
+                $gratifRate = $this->evalNode($args[1]);
+                $topeImm = $this->evalNode($args[2]);
+                $sueldoMinimo = $this->evalNode($args[3]);
+                $daysWorked = $this->evalNode($args[4]);
+                $baseDays = $this->evalNode($args[5]);
+
+                # Gratificación calculada = 25% del sueldo
+                $gratifCalc = Math::mul($baseSalary, $gratifRate, 2);
+
+                # Tope mensual = 4.75 IMM / 12
+                $topeMensual = Math::div(Math::mul($sueldoMinimo, $topeImm), '12', 2);
+
+                # Gratificación base (sin prorrateo)
+                $gratifBase = Math::min($gratifCalc, $topeMensual);
+
+                # Prorrateo por días trabajados
+                if (Math::comp($baseDays, '0') > 0) {
+                    $factor = Math::div($daysWorked, $baseDays, 6);
+                    $gratifProrated = Math::mul($gratifBase, $factor, 0);
+                } else {
+                    $gratifProrated = $gratifBase;
+                }
+
+                $this->trace[] = "PRORATE_GRATIF($baseSalary, days=$daysWorked/$baseDays) = $gratifProrated";
+                return $gratifProrated;
 
             default:
                 throw new \Exception("Unknown function: $name", self::ERR_UNDEFINED_FUNC);
