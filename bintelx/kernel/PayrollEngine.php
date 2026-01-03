@@ -24,7 +24,7 @@ require_once __DIR__ . '/ParamStore.php';
 
 class PayrollEngine
 {
-    public const VERSION = '1.0.2';
+    public const VERSION = '1.0.3';
 
     # Error codes
     public const ERR_NO_FORMULAS = 'NO_FORMULAS_LOADED';
@@ -119,12 +119,28 @@ class PayrollEngine
                 return $this->errorResult(self::ERR_MISSING_COUNTRY, 'country_code is required in config');
             }
 
-            # Initialize context
+            # G6 FIX: Validate employee_id
+            $employeeId = (int)($input['employee_id'] ?? 0);
+            if ($employeeId <= 0) {
+                return $this->errorResult(self::ERR_MISSING_INPUT, 'employee_id must be a positive integer');
+            }
+
+            # G6 FIX: Validate date formats and range
+            $periodStart = $config['period_start'] ?? date('Y-m-01');
+            $periodEnd = $config['period_end'] ?? date('Y-m-t');
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodStart) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodEnd)) {
+                return $this->errorResult(self::ERR_MISSING_INPUT, 'period_start and period_end must be YYYY-MM-DD format');
+            }
+            if ($periodStart > $periodEnd) {
+                return $this->errorResult(self::ERR_MISSING_INPUT, 'period_start must be <= period_end');
+            }
+
+            # Initialize context (using validated values)
             $this->countryCode = strtoupper($config['country_code']);
             $this->scopeEntityId = $config['scope_entity_id'] ?? null;
-            $this->periodStart = $config['period_start'] ?? date('Y-m-01');
-            $this->periodEnd = $config['period_end'] ?? date('Y-m-t');
-            $this->employeeId = (int)($input['employee_id'] ?? 0);
+            $this->periodStart = $periodStart;
+            $this->periodEnd = $periodEnd;
+            $this->employeeId = $employeeId;
             $this->defaultPrecision = $config['precision'] ?? 2;
             $this->defaultRoundingMode = $config['rounding_mode'] ?? Math::ROUND_HALF_UP;
             # FIX C3: strict_mode makes formula errors fatal
@@ -578,6 +594,13 @@ class PayrollEngine
                 ?? null;
 
             if ($fieldValue === null) {
+                # G4 FIX: Warn when condition field is missing (potential typo)
+                $this->warnings[] = [
+                    'type' => 'CONDITION_FIELD_MISSING',
+                    'field' => $field,
+                    'message' => "Condition field '{$field}' not found in calculated values or context"
+                ];
+                $this->trace[] = "CONDITION_SKIP: Field '{$field}' not found";
                 return false;
             }
 

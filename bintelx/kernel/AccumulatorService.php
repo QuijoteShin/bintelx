@@ -11,6 +11,7 @@
 #   - Period boundary calculations
 #   - Multi-concept accumulation
 #
+# @version 1.2.3 - G5 FIX: avgLastMonths warns when months_found=0
 # @version 1.2.2 - Fixed M4: R12M uses complete months aligned with payroll periods
 # @version 1.2.1 - Fixed C4: avgLastMonths divides by requested months, not found months
 # @version 1.2.0 - Added avgLastMonths() for finiquito calculations
@@ -249,6 +250,12 @@ class AccumulatorService
             }
         }
 
+        # G5 FIX: Warn when no months found (potential data issue)
+        $warning = null;
+        if ($monthCount === 0) {
+            $warning = "No data found for concept '{$concept}' in last {$months} months before {$this->referenceDate}";
+        }
+
         return [
             'success' => true,
             'concept' => $concept,
@@ -262,6 +269,7 @@ class AccumulatorService
             'cap_uf' => $capUF,
             'cap_value' => $capValue,
             'reference_date' => $this->referenceDate,
+            'warning' => $warning,
         ];
     }
 
@@ -379,6 +387,12 @@ class AccumulatorService
             }
         }
 
+        # G5 FIX: Warn when no months found (potential data issue)
+        $warning = null;
+        if ($monthCount === 0) {
+            $warning = "No severance data found in last {$months} months before {$this->referenceDate}";
+        }
+
         return [
             'success' => true,
             'value' => Math::round($average, 0),
@@ -393,6 +407,7 @@ class AccumulatorService
             'concepts_included' => $conceptsFound,
             'concepts_requested' => $severanceConcepts,
             'reference_date' => $this->referenceDate,
+            'warning' => $warning,
         ];
     }
 
