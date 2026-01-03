@@ -3,6 +3,7 @@
 # Universal Tier/Bracket Calculator for Progressive Taxes and Fees
 # Supports: MARGINAL (progressive), FLAT (volume), INTERPOLATED
 #
+# @version 1.0.2 - Fixed I1: Load tax brackets from DB with effective dating
 # @version 1.0.1 - Fixed C1/C2 bugs (Codex review 2026-01-02)
 #   - C1: Deduction now applies from applicable tier, not last table tier
 #   - C2: All calculations use high precision internally, HALF_UP rounding at output
@@ -11,7 +12,15 @@ namespace bX;
 
 class TierCalculator {
 
-    public const VERSION = '1.0.1';
+    public const VERSION = '1.0.2';
+
+    # Tax types for DB loading
+    public const TAX_CL_IMPUESTO_UNICO = 'CL_IMPUESTO_UNICO';
+    public const TAX_BR_INSS = 'BR_INSS';
+    public const TAX_BR_IRRF = 'BR_IRRF';
+
+    # Cache for loaded brackets
+    private static array $bracketCache = [];
 
     # Internal calculation scale (high precision)
     private const INTERNAL_SCALE = 10;
@@ -263,6 +272,80 @@ class TierCalculator {
         return $normalized;
     }
 
+    /**
+     * FIX I1: Load tax brackets from database with effective dating
+     *
+     * @param string $countryCode Country code (CL, BR)
+     * @param string $taxType Tax type constant
+     * @param string $date Effective date (Y-m-d)
+     * @param array $fallback Fallback brackets if DB fails
+     * @return array Loaded tiers
+     */
+    public static function loadBracketsFromDb(
+        string $countryCode,
+        string $taxType,
+        string $date,
+        array $fallback = []
+    ): array {
+        $cacheKey = "{$countryCode}_{$taxType}_{$date}";
+
+        if (isset(self::$bracketCache[$cacheKey])) {
+            return self::$bracketCache[$cacheKey];
+        }
+
+        try {
+            # Skip DB if CONN not available (unit tests without WarmUp)
+            if (!class_exists('bX\\CONN')) {
+                throw new \Exception('CONN not loaded');
+            }
+
+            $sql = "SELECT tier_from, tier_to, rate, deduction
+                    FROM pay_tax_bracket
+                    WHERE country_code = :country
+                      AND tax_type = :tax_type
+                      AND :date BETWEEN effective_from AND effective_to
+                    ORDER BY tier_order ASC";
+
+            $rows = CONN::dml($sql, [
+                ':country' => $countryCode,
+                ':tax_type' => $taxType,
+                ':date' => $date
+            ]);
+
+            if (!empty($rows)) {
+                $tiers = [];
+                foreach ($rows as $row) {
+                    $tiers[] = [
+                        'from' => (string)$row['tier_from'],
+                        'to' => (string)$row['tier_to'],
+                        'rate' => (string)$row['rate'],
+                        'deduction' => (string)$row['deduction']
+                    ];
+                }
+                self::$bracketCache[$cacheKey] = $tiers;
+                return $tiers;
+            }
+        } catch (\Exception $e) {
+            # DB unavailable, use fallback
+        }
+
+        # Use fallback (hardcoded values)
+        if (!empty($fallback)) {
+            self::$bracketCache[$cacheKey] = $fallback;
+            return $fallback;
+        }
+
+        return [];
+    }
+
+    /**
+     * Clear bracket cache (for testing or when params change)
+     */
+    public static function clearBracketCache(): void
+    {
+        self::$bracketCache = [];
+    }
+
     # =========================================================================
     # COUNTRY-SPECIFIC PRESETS
     # =========================================================================
@@ -271,11 +354,14 @@ class TierCalculator {
      * Chile: Impuesto Único 2ª Categoría
      * Progressive tax with UTM-based brackets
      *
+     * FIX I1: Now loads brackets from DB with effective dating
+     *
      * @param string $baseTributable Base tributable (after deductions)
      * @param string $utm UTM value for the period
+     * @param string|null $date Effective date for bracket lookup (default: today)
      * @return array Calculation result
      */
-    public static function chileImpuestoUnico(string $baseTributable, string $utm): array {
+    public static function chileImpuestoUnico(string $baseTributable, string $utm, ?string $date = null): array {
         # FIX I2: Validate UTM is not zero
         if (Math::isZero($utm)) {
             return [
@@ -292,17 +378,21 @@ class TierCalculator {
         # Convert base to UTM (high precision)
         $baseUtm = Math::div($baseTributable, $utm, self::INTERNAL_SCALE);
 
-        # Chile 2025 tax brackets (in UTM)
-        $tiers = [
+        # FIX I1: Fallback Chile 2025 tax brackets (in UTM)
+        $fallbackTiers = [
             ['from' => '0',     'to' => '13.5',  'rate' => '0',      'deduction' => '0'],
-            ['from' => '13.5',  'to' => '30',    'rate' => '0.04',   'deduction' => '0.54'],      # 0.54 UTM
-            ['from' => '30',    'to' => '50',    'rate' => '0.08',   'deduction' => '1.74'],      # 1.74 UTM
-            ['from' => '50',    'to' => '70',    'rate' => '0.135',  'deduction' => '4.49'],      # 4.49 UTM
-            ['from' => '70',    'to' => '90',    'rate' => '0.23',   'deduction' => '11.14'],     # 11.14 UTM
-            ['from' => '90',    'to' => '120',   'rate' => '0.304',  'deduction' => '17.80'],     # 17.80 UTM
-            ['from' => '120',   'to' => '310',   'rate' => '0.35',   'deduction' => '23.32'],     # 23.32 UTM
-            ['from' => '310',   'to' => '999999','rate' => '0.40',   'deduction' => '38.82'],     # 38.82 UTM
+            ['from' => '13.5',  'to' => '30',    'rate' => '0.04',   'deduction' => '0.54'],
+            ['from' => '30',    'to' => '50',    'rate' => '0.08',   'deduction' => '1.74'],
+            ['from' => '50',    'to' => '70',    'rate' => '0.135',  'deduction' => '4.49'],
+            ['from' => '70',    'to' => '90',    'rate' => '0.23',   'deduction' => '11.14'],
+            ['from' => '90',    'to' => '120',   'rate' => '0.304',  'deduction' => '17.80'],
+            ['from' => '120',   'to' => '310',   'rate' => '0.35',   'deduction' => '23.32'],
+            ['from' => '310',   'to' => '999999','rate' => '0.40',   'deduction' => '38.82'],
         ];
+
+        # FIX I1: Load from DB with effective dating
+        $effectiveDate = $date ?? date('Y-m-d');
+        $tiers = self::loadBracketsFromDb('CL', self::TAX_CL_IMPUESTO_UNICO, $effectiveDate, $fallbackTiers);
 
         # Calculate in UTM
         $resultUtm = self::calculateChileanProgressive($baseUtm, $tiers);
@@ -375,20 +465,27 @@ class TierCalculator {
      * Brazil: INSS Progressivo (desde 2020)
      * True marginal/progressive calculation
      *
+     * FIX I1: Now loads brackets from DB with effective dating
+     *
      * @param string $baseInss Base de cálculo INSS
+     * @param string|null $date Effective date for bracket lookup (default: today)
      * @return array Calculation result
      */
-    public static function brazilInssProgressivo(string $baseInss): array {
-        # Brazil 2025 INSS brackets (progressive/marginal)
-        $tiers = [
-            ['from' => '0',       'to' => '1518.00',   'rate' => '0.075'],  # 7.5%
-            ['from' => '1518.00', 'to' => '2793.88',   'rate' => '0.09'],   # 9%
-            ['from' => '2793.88', 'to' => '4190.83',   'rate' => '0.12'],   # 12%
-            ['from' => '4190.83', 'to' => '8157.41',   'rate' => '0.14'],   # 14%
+    public static function brazilInssProgressivo(string $baseInss, ?string $date = null): array {
+        # FIX I1: Fallback Brazil 2025 INSS brackets (progressive/marginal)
+        $fallbackTiers = [
+            ['from' => '0',       'to' => '1518.00',   'rate' => '0.075', 'deduction' => '0'],
+            ['from' => '1518.00', 'to' => '2793.88',   'rate' => '0.09',  'deduction' => '0'],
+            ['from' => '2793.88', 'to' => '4190.83',   'rate' => '0.12',  'deduction' => '0'],
+            ['from' => '4190.83', 'to' => '8157.41',   'rate' => '0.14',  'deduction' => '0'],
         ];
 
-        # Cap at teto
-        $tetoInss = '8157.41';
+        # FIX I1: Load from DB with effective dating
+        $effectiveDate = $date ?? date('Y-m-d');
+        $tiers = self::loadBracketsFromDb('BR', self::TAX_BR_INSS, $effectiveDate, $fallbackTiers);
+
+        # Cap at teto (último tier_to)
+        $tetoInss = !empty($tiers) ? end($tiers)['to'] : '8157.41';
         $baseCalculo = Math::min($baseInss, $tetoInss);
 
         return self::calculate($baseCalculo, $tiers, self::MODE_MARGINAL, 2);
@@ -398,18 +495,25 @@ class TierCalculator {
      * Brazil: IRRF Progressivo
      * Uses deduction method (similar to Chile but different brackets)
      *
+     * FIX I1: Now loads brackets from DB with effective dating
+     *
      * @param string $baseIrrf Base de cálculo IRRF (já deduzido INSS e dependentes)
+     * @param string|null $date Effective date for bracket lookup (default: today)
      * @return array Calculation result
      */
-    public static function brazilIrrfProgressivo(string $baseIrrf): array {
-        # Brazil 2025 IRRF brackets with deduction
-        $tiers = [
+    public static function brazilIrrfProgressivo(string $baseIrrf, ?string $date = null): array {
+        # FIX I1: Fallback Brazil 2025 IRRF brackets with deduction
+        $fallbackTiers = [
             ['from' => '0',       'to' => '2259.20',  'rate' => '0',      'deduction' => '0'],
             ['from' => '2259.20', 'to' => '2826.65',  'rate' => '0.075',  'deduction' => '169.44'],
             ['from' => '2826.65', 'to' => '3751.05',  'rate' => '0.15',   'deduction' => '381.44'],
             ['from' => '3751.05', 'to' => '4664.68',  'rate' => '0.225',  'deduction' => '662.77'],
             ['from' => '4664.68', 'to' => '999999',   'rate' => '0.275',  'deduction' => '896.00'],
         ];
+
+        # FIX I1: Load from DB with effective dating
+        $effectiveDate = $date ?? date('Y-m-d');
+        $tiers = self::loadBracketsFromDb('BR', self::TAX_BR_IRRF, $effectiveDate, $fallbackTiers);
 
         return self::calculateBrazilianProgressive($baseIrrf, $tiers);
     }

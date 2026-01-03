@@ -11,6 +11,7 @@
 #   - Period boundary calculations
 #   - Multi-concept accumulation
 #
+# @version 1.2.2 - Fixed M4: R12M uses complete months aligned with payroll periods
 # @version 1.2.1 - Fixed C4: avgLastMonths divides by requested months, not found months
 # @version 1.2.0 - Added avgLastMonths() for finiquito calculations
 #                - Added avgLastMonthsSeveranceBase() for is_severance_base filtering
@@ -48,7 +49,7 @@ interface AccumulationProvider
 
 class AccumulatorService
 {
-    public const VERSION = '1.2.1';
+    public const VERSION = '1.2.2';
 
     # Period types
     public const PERIOD_MTD = 'MTD';     # Month-to-Date
@@ -617,11 +618,16 @@ class AccumulatorService
                 ];
 
             case self::PERIOD_R12M:
-                $fromDate = (clone $refDate)->modify('-12 months')->modify('+1 day');
+                # FIX M4: Use complete months for R12M (aligned with payroll periods)
+                # Previous: day-to-day (-12 months +1 day) could misalign with monthly periods
+                # Now: 12 complete months (e.g., if in March 2025, from April 2024 to March 2025)
+                $firstOfThisMonth = (clone $refDate)->modify('first day of this month');
+                $fromDate = (clone $firstOfThisMonth)->modify('-11 months');
+                $endOfThisMonth = (clone $refDate)->modify('last day of this month');
                 return [
                     'type' => self::PERIOD_R12M,
                     'from' => $fromDate->format('Y-m-d'),
-                    'to' => $this->referenceDate,
+                    'to' => $endOfThisMonth->format('Y-m-d'),
                 ];
 
             default:

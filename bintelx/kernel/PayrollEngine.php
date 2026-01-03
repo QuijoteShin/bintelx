@@ -12,6 +12,7 @@
 #   - Deterministic (same input → same output)
 #   - Country pack agnostic (formulas/params in DB)
 #
+# @version 1.0.2 - Fixed M2: Rounding bucket now rounds to payroll precision
 # @version 1.0.1 - Fixed C3: Formula errors now tracked; strict_mode makes them fatal
 # @version 1.0.0
 
@@ -23,7 +24,7 @@ require_once __DIR__ . '/ParamStore.php';
 
 class PayrollEngine
 {
-    public const VERSION = '1.0.1';
+    public const VERSION = '1.0.2';
 
     # Error codes
     public const ERR_NO_FORMULAS = 'NO_FORMULAS_LOADED';
@@ -62,6 +63,7 @@ class PayrollEngine
     private string $defaultRoundingMode = Math::ROUND_HALF_UP;
     private bool $strictMode = false;
     private int $formulaErrorCount = 0;
+    private array $inputEmployeeParams = []; # Employee params from input (override DB)
 
     /**
      * Calculate payroll for an employee
@@ -128,8 +130,11 @@ class PayrollEngine
             # FIX C3: strict_mode makes formula errors fatal
             $this->strictMode = (bool)($config['strict_mode'] ?? false);
             $this->formulaErrorCount = 0;
+            $this->inputEmployeeParams = $input['employee_params'] ?? [];
 
             # Initialize param store
+            # DEBUG
+            if (!empty($config['debug'])) echo "[PE] ParamStore init...\n";
             $this->paramStore = new ParamStore(
                 $this->countryCode,
                 $this->scopeEntityId,
@@ -137,8 +142,11 @@ class PayrollEngine
             );
 
             # Load formulas and concepts
+            if (!empty($config['debug'])) echo "[PE] Loading formulas...\n";
             $this->loadFormulas($this->periodEnd);
+            if (!empty($config['debug'])) echo "[PE] Loading concepts...\n";
             $this->loadConcepts($this->periodEnd);
+            if (!empty($config['debug'])) echo "[PE] Loading groups...\n";
             $this->loadGroups($this->periodEnd);
 
             if (empty($this->formulas)) {
@@ -146,19 +154,24 @@ class PayrollEngine
             }
 
             # Validate required inputs
+            if (!empty($config['debug'])) echo "[PE] Validating inputs...\n";
             $inputValidation = $this->validateInputs($input);
             if (!$inputValidation['valid']) {
                 return $this->errorResult(self::ERR_MISSING_INPUT, $inputValidation['message'], $inputValidation);
             }
 
             # Sort formulas by dependency order
+            if (!empty($config['debug'])) echo "[PE] Sorting dependencies...\n";
             $sortedFormulas = $this->sortByDependencies();
 
             # Initialize calculated values with inputs
+            if (!empty($config['debug'])) echo "[PE] Init from input...\n";
             $this->initializeFromInput($input);
 
             # Execute formulas in order
-            foreach ($sortedFormulas as $formula) {
+            if (!empty($config['debug'])) echo "[PE] Executing " . count($sortedFormulas) . " formulas...\n";
+            foreach ($sortedFormulas as $i => $formula) {
+                if (!empty($config['debug'])) echo "[PE] F" . ($i+1) . ": {$formula['formula_code']}\n";
                 $this->executeFormula($formula, $input);
             }
 
@@ -500,7 +513,7 @@ class PayrollEngine
         $options = [
             'scale' => 10,
             'param_resolver' => $this->paramStore->createParamResolver(),
-            'emp_param_resolver' => $this->paramStore->createEmpParamResolver(),
+            'emp_param_resolver' => $this->createCombinedEmpParamResolver(),
             'group_resolver' => fn($code, $concepts) => $this->resolveGroup($code, $concepts)
         ];
 
@@ -597,6 +610,24 @@ class PayrollEngine
         return true;
     }
 
+    /**
+     * Create employee param resolver that checks input first, then DB
+     */
+    private function createCombinedEmpParamResolver(): callable
+    {
+        $dbResolver = $this->paramStore->createEmpParamResolver();
+        $inputParams = $this->inputEmployeeParams;
+
+        return function(string $key, int $employeeId, string $date) use ($dbResolver, $inputParams): ?string {
+            # First check input params
+            if (isset($inputParams[$key])) {
+                return (string)$inputParams[$key];
+            }
+            # Then check DB
+            return $dbResolver($key, $employeeId, $date);
+        };
+    }
+
     private function prepareGroupsForEngine(): array
     {
         $prepared = [];
@@ -676,14 +707,17 @@ class PayrollEngine
         }
 
         # Calculate rounding adjustment
-        $adjustment = Math::sub($calculatedNet, $totalFromLines);
+        $adjustmentRaw = Math::sub($calculatedNet, $totalFromLines);
+
+        # FIX M2: Round adjustment to payroll precision
+        $adjustment = Math::round($adjustmentRaw, $this->defaultPrecision, $this->defaultRoundingMode);
 
         if (!Math::isZero($adjustment)) {
             $this->calculatedValues['rounding_adjustment'] = $adjustment;
             $this->lineDetails[] = [
                 'concept_code' => 'ROUNDING_ADJUSTMENT',
                 'type_code' => 'INFO',
-                'amount_raw' => $adjustment,
+                'amount_raw' => $adjustmentRaw,
                 'amount' => $adjustment,
                 'precision_used' => $this->defaultPrecision,
                 'rounding_mode_used' => $this->defaultRoundingMode,

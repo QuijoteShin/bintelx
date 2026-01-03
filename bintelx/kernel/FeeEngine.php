@@ -32,7 +32,7 @@ namespace bX;
  */
 final class FeeEngine
 {
-    const VERSION = '1.5.0'; # P3: line_selector, P2: Canonical policy hash, P1: Cap targets
+    const VERSION = '1.5.1'; # I4: Fix null field handling in lt/lte conditions
 
     # =========================================================================
     # ERROR TYPES & CODES
@@ -670,10 +670,17 @@ final class FeeEngine
     /**
      * Compare values with operator
      *
-     * P0: Normalize values for safe bccomp operations (null/empty → '0')
+     * FIX I4: Null/missing fields FAIL numeric conditions (gt/gte/lt/lte)
+     *         Don't treat missing fields as 0, which could cause false positives
      */
     private static function compareValues($fieldValue, string $operator, $compareValue): bool
     {
+        # FIX I4: Null fields should FAIL numeric comparisons, not be treated as 0
+        $isNumericOperator = in_array($operator, ['gt', 'gte', 'lt', 'lte']);
+        if ($isNumericOperator && ($fieldValue === null || $fieldValue === '')) {
+            return false;
+        }
+
         switch ($operator) {
             case 'eq':
                 return $fieldValue == $compareValue;

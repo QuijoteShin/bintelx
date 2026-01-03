@@ -3,13 +3,13 @@
 # Holiday Calendar Provider for Payroll Calculations
 # Supports: Brazil DSR, Chile irrenunciables, multi-country
 #
-# @version 1.0.0
+# @version 1.0.1 - Fixed I3: isMandatoryHoliday now supports region parameter
 
 namespace bX;
 
 class HolidayProvider
 {
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.0.1';
 
     # Holiday types
     public const TYPE_NATIONAL = 'NATIONAL';
@@ -292,13 +292,19 @@ class HolidayProvider
     /**
      * Check if a date is a mandatory/irrenunciable holiday
      *
+     * FIX I3: Now supports region parameter for regional mandatory holidays
+     *
      * @param string $date Y-m-d
      * @param string $countryCode ISO country code
+     * @param string|null $regionCode State/province code
      * @return bool
      */
-    public static function isMandatoryHoliday(string $date, string $countryCode): bool
-    {
-        $holiday = self::isHoliday($date, $countryCode);
+    public static function isMandatoryHoliday(
+        string $date,
+        string $countryCode,
+        ?string $regionCode = null
+    ): bool {
+        $holiday = self::isHoliday($date, $countryCode, $regionCode);
         return $holiday !== null && ($holiday['is_mandatory'] ?? 0) == 1;
     }
 

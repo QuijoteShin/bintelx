@@ -28,7 +28,7 @@ namespace bX;
  */
 final class PricingEngine
 {
-    const VERSION = '1.2.0';
+    const VERSION = '1.2.1'; # M3: applyDiscount uses HALF_UP instead of truncation
 
     # Error types
     const ERROR_INPUT = 'input';
@@ -415,8 +415,14 @@ final class PricingEngine
             $discountFactor = '1';
         }
 
-        $discountAmount = bcmul($amount, $discountFactor, $precision);
-        $discountedAmount = bcsub($amount, $discountAmount, $precision);
+        # FIX M3: Use high precision internally, HALF_UP at output
+        $internalPrecision = $precision + 4;
+        $discountAmountRaw = bcmul($amount, $discountFactor, $internalPrecision);
+        $discountedAmountRaw = bcsub($amount, $discountAmountRaw, $internalPrecision);
+
+        # HALF_UP rounding
+        $discountAmount = self::bcRound($discountAmountRaw, $precision);
+        $discountedAmount = self::bcRound($discountedAmountRaw, $precision);
 
         return [
             'discounted_amount' => $discountedAmount,

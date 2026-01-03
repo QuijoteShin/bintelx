@@ -14,6 +14,8 @@
 #   - H2: PRORATE() for partial month calculations (licencias médicas)
 #   - H6: BR_DSR() for Brazil DSR calculation
 #
+# @version 1.2.2 - FIX: TierCalculator errors now propagate (CL_IMPUESTO_UNICO, BR_INSS, TIER_CALC)
+# @version 1.2.1 - FIX: Exception $code must be int, use $lastErrorCode pattern
 # @version 1.2.0
 
 namespace bX;
@@ -24,7 +26,7 @@ require_once __DIR__ . '/HolidayProvider.php';
 
 class RulesEngine
 {
-    public const VERSION = '1.2.0';
+    public const VERSION = '1.2.1';
 
     # Token types
     private const T_NUMBER = 'NUMBER';
@@ -70,6 +72,9 @@ class RulesEngine
     private $paramResolver = null;
     private $empParamResolver = null;
     private $groupResolver = null;
+
+    # FIX M1: Track error code for proper propagation
+    private ?string $lastErrorCode = null;
 
     /**
      * Evaluate a DSL expression
@@ -121,6 +126,7 @@ class RulesEngine
     {
         $this->trace = [];
         $this->paramsUsed = [];
+        $this->lastErrorCode = null; # FIX M1: Reset error code
         $this->scale = $options['scale'] ?? 10;
         $this->evaluationDate = $context['date'] ?? date('Y-m-d');
         $this->employeeId = $context['employee_id'] ?? null;
@@ -145,10 +151,12 @@ class RulesEngine
                 'engine_version' => self::VERSION
             ];
         } catch (\Exception $e) {
+            # FIX M1: Use tracked error code if available
+            $errorCode = $this->lastErrorCode ?? self::ERR_SYNTAX;
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
-                'error_code' => $e->getCode() ?: self::ERR_SYNTAX,
+                'error_code' => $errorCode,
                 'expression' => $expression,
                 'trace' => $this->trace
             ];
@@ -438,7 +446,9 @@ class RulesEngine
         foreach ($path as $part) {
             $part = strtolower($part);
             if (!is_array($current) || !isset($current[$part])) {
-                throw new \Exception("Undefined variable: " . implode('.', $path), self::ERR_UNDEFINED_VAR);
+                # FIX: Store error code before throwing (code must be int)
+                $this->lastErrorCode = self::ERR_UNDEFINED_VAR;
+                throw new \Exception("Undefined variable: " . implode('.', $path));
             }
             $current = $current[$part];
         }
@@ -490,7 +500,9 @@ class RulesEngine
             case '/':
                 $result = Math::div($l, $r, $this->scale, true);
                 if ($result === null) {
-                    throw new \Exception("Division by zero", self::ERR_DIV_ZERO);
+                    # FIX M1: Set error code before throwing
+                    $this->lastErrorCode = self::ERR_DIV_ZERO;
+                    throw new \Exception("Division by zero");
                 }
                 return $result;
             case '<':  return Math::lt($l, $r, $this->scale) ? '1' : '0';
@@ -592,6 +604,9 @@ class RulesEngine
                 $baseTributable = $this->evalNode($args[0]);
                 $utm = $this->evalNode($args[1]);
                 $result = TierCalculator::chileImpuestoUnico($baseTributable, $utm);
+                if (isset($result['error'])) {
+                    throw new \Exception("CL_IMPUESTO_UNICO: {$result['error']}");
+                }
                 $this->trace[] = "CL_IMPUESTO_UNICO($baseTributable, UTM=$utm) = {$result['amount']} (rate: {$result['effective_rate']})";
                 return $result['amount'];
 
@@ -601,6 +616,9 @@ class RulesEngine
                 $this->assertArgCount($name, $args, 1);
                 $baseInss = $this->evalNode($args[0]);
                 $result = TierCalculator::brazilInssProgressivo($baseInss);
+                if (isset($result['error'])) {
+                    throw new \Exception("BR_INSS_PROGRESSIVO: {$result['error']}");
+                }
                 $this->trace[] = "BR_INSS_PROGRESSIVO($baseInss) = {$result['amount']} (rate: {$result['effective_rate']})";
                 return $result['amount'];
 
@@ -610,6 +628,9 @@ class RulesEngine
                 $this->assertArgCount($name, $args, 1);
                 $baseIrrf = $this->evalNode($args[0]);
                 $result = TierCalculator::brazilIrrfProgressivo($baseIrrf);
+                if (isset($result['error'])) {
+                    throw new \Exception("BR_IRRF_PROGRESSIVO: {$result['error']}");
+                }
                 $this->trace[] = "BR_IRRF_PROGRESSIVO($baseIrrf) = {$result['amount']} (rate: {$result['effective_rate']})";
                 return $result['amount'];
 
@@ -625,6 +646,9 @@ class RulesEngine
                     throw new \Exception("TIER_CALC: Invalid tiers JSON");
                 }
                 $result = TierCalculator::calculate($base, $tiers, $mode);
+                if (isset($result['error'])) {
+                    throw new \Exception("TIER_CALC: {$result['error']}");
+                }
                 $this->trace[] = "TIER_CALC($base, mode=$mode) = {$result['amount']}";
                 return $result['amount'];
 
@@ -741,7 +765,8 @@ class RulesEngine
                 return $gratifProrated;
 
             default:
-                throw new \Exception("Unknown function: $name", self::ERR_UNDEFINED_FUNC);
+                $this->lastErrorCode = self::ERR_UNDEFINED_FUNC;
+                throw new \Exception("Unknown function: $name");
         }
     }
 
@@ -767,7 +792,8 @@ class RulesEngine
             return $value;
         }
 
-        throw new \Exception("Parameter not found: $key for date $date", self::ERR_PARAM_NOT_FOUND);
+        $this->lastErrorCode = self::ERR_PARAM_NOT_FOUND;
+        throw new \Exception("Parameter not found: $key for date $date");
     }
 
     private function resolveEmpParam(string $key, int $empId, string $date): string
@@ -788,7 +814,8 @@ class RulesEngine
             return $value;
         }
 
-        throw new \Exception("Employee parameter not found: $key for employee $empId, date $date", self::ERR_PARAM_NOT_FOUND);
+        $this->lastErrorCode = self::ERR_PARAM_NOT_FOUND;
+        throw new \Exception("Employee parameter not found: $key for employee $empId, date $date");
     }
 
     private function resolveGroupSum(string $groupCode): string
@@ -823,7 +850,7 @@ class RulesEngine
     # UTILITIES
     # =========================================================================
 
-    private function assertArgCount(string $func, array $args, int $min, int $max = null): void
+    private function assertArgCount(string $func, array $args, int $min, ?int $max = null): void
     {
         $max = $max ?? $min;
         $count = count($args);
