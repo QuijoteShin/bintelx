@@ -35,6 +35,21 @@ Router::register(['POST'], 'register', function(...$params) {
 
 
 /**
+ * @endpoint   /api/_demo/register-company
+ * @method     POST
+ * @scope      ROUTER_SCOPE_PUBLIC
+ * @purpose    Registers a company account with 2 entities: person (owner) + organization (company)
+ * @body       (JSON) {"username": "...", "password": "...", "personName": "Juan Pérez", "companyName": "Mi Empresa SpA", "personNationalId": "12345678-9", "companyNationalId": "76123456-7", "nationalIsocode": "CL"}
+ * @tag        Authentication
+ */
+Router::register(['POST'], 'register-company', function(...$params) {
+  $result = AuthHandler::registerCompany(\bX\Args::$OPT);
+  $code = $result['success'] ? 201 : 400;
+  return Response::json(['data' => $result], $code);
+}, ROUTER_SCOPE_PUBLIC);
+
+
+/**
  * @endpoint   /api/_demo/profile/create
  * @method     POST
  * @scope      ROUTER_SCOPE_PUBLIC

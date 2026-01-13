@@ -403,7 +403,7 @@ class AuthHandler
 
   /**
    * Create entity_relationship (profile → entity) to grant scope/role.
-   * Delegates to kernel EntityRelationship class.
+   * Delegates to kernel Entity\Graph class.
    *
    * Expected:
    *   - profileId (int)
@@ -423,8 +423,8 @@ class AuthHandler
       return ['success' => false, 'message' => 'profileId y entityId son requeridos'];
     }
 
-    # Delegate to kernel Entity\Relationship
-    $result = \bX\Entity\Relationship::create([
+    # Delegate to kernel Entity\Graph
+    $result = \bX\Entity\Graph::create([
       'profile_id' => $profileId,
       'entity_id' => $entityId,
       'relation_kind' => $kind,
@@ -444,6 +444,162 @@ class AuthHandler
       'relation_kind' => $kind,
       'role_code' => $roleCode
     ];
+  }
+
+  /**
+   * Registers a company account with 2 entities: person (user) + organization (company)
+   * Creates: Account → Profile → Entity(person) + Entity(organization) + Relationship
+   *
+   * @param array $inputData Expected:
+   *   - username: string (required)
+   *   - password: string (required)
+   *   - personName: string (required) - Nombre del usuario/dueño
+   *   - companyName: string (required) - Nombre de la empresa
+   *   - personNationalId: string (optional) - RUT/DNI del usuario
+   *   - companyNationalId: string (optional) - RUT de la empresa
+   *   - nationalIsocode: string (default: 'CL')
+   * @return array
+   */
+  public static function registerCompany(array $inputData): array
+  {
+    try {
+      # Validar campos requeridos
+      if (empty($inputData['username']) || empty($inputData['password'])) {
+        return ['success' => false, 'message' => 'Username and password are required.'];
+      }
+      if (empty($inputData['personName'])) {
+        return ['success' => false, 'message' => 'personName is required.'];
+      }
+      if (empty($inputData['companyName'])) {
+        return ['success' => false, 'message' => 'companyName is required.'];
+      }
+
+      $nationalIsocode = $inputData['nationalIsocode'] ?? 'CL';
+
+      \bX\CONN::begin();
+
+      # 1. Crear Account
+      $jwtSecret = \bX\Config::get('JWT_SECRET');
+      $accountService = new \bX\Account($jwtSecret);
+
+      # Verificar si username ya existe
+      $existing = \bX\CONN::dml(
+        "SELECT account_id FROM accounts WHERE username = :u LIMIT 1",
+        [':u' => $inputData['username']]
+      );
+      if (!empty($existing)) {
+        \bX\CONN::rollback();
+        return ['success' => false, 'message' => 'Username already exists.'];
+      }
+
+      # Crear account (sin profile/entity automático - lo hacemos manual)
+      $hashedPassword = password_hash($inputData['password'], PASSWORD_DEFAULT);
+      $accountResult = \bX\CONN::nodml(
+        "INSERT INTO accounts (username, password_hash, is_active, status) VALUES (:u, :p, 1, 'active')",
+        [':u' => $inputData['username'], ':p' => $hashedPassword]
+      );
+
+      if (!$accountResult['success']) {
+        \bX\CONN::rollback();
+        return ['success' => false, 'message' => 'Failed to create account.'];
+      }
+
+      $accountId = (int)$accountResult['last_id'];
+
+      # 2. Crear Entity "person" (el usuario/dueño)
+      $personEntityId = \bX\Entity::save([
+        'entity_type' => 'person',
+        'primary_name' => $inputData['personName'],
+        'national_id' => $inputData['personNationalId'] ?? null,
+        'national_isocode' => $nationalIsocode,
+        'status' => 'active'
+      ]);
+
+      if (!$personEntityId) {
+        \bX\CONN::rollback();
+        return ['success' => false, 'message' => 'Failed to create person entity.'];
+      }
+
+      # 3. Crear Entity "organization" (la empresa)
+      $companyEntityId = \bX\Entity::save([
+        'entity_type' => 'organization',
+        'primary_name' => $inputData['companyName'],
+        'national_id' => $inputData['companyNationalId'] ?? null,
+        'national_isocode' => $nationalIsocode,
+        'status' => 'active'
+      ]);
+
+      if (!$companyEntityId) {
+        \bX\CONN::rollback();
+        return ['success' => false, 'message' => 'Failed to create company entity.'];
+      }
+
+      # 4. Crear Profile vinculado a Account + Person Entity
+      $profileResult = \bX\CONN::nodml(
+        "INSERT INTO profiles (account_id, primary_entity_id, profile_name, status)
+         VALUES (:account_id, :entity_id, :profile_name, 'active')",
+        [
+          ':account_id' => $accountId,
+          ':entity_id' => $personEntityId,
+          ':profile_name' => "Profile - " . $inputData['personName']
+        ]
+      );
+
+      if (!$profileResult['success']) {
+        \bX\CONN::rollback();
+        return ['success' => false, 'message' => 'Failed to create profile.'];
+      }
+
+      $profileId = (int)$profileResult['last_id'];
+
+      # 5. Crear Relationship: Profile → Company (owner_of)
+      # Pasamos scope_entity_id = companyEntityId porque es el tenant del nuevo usuario
+      $relResult = \bX\Entity\Graph::create([
+        'profile_id' => $profileId,
+        'entity_id' => $companyEntityId,
+        'relation_kind' => 'owner_of',
+        'relationship_label' => $inputData['companyName']
+      ], ['scope_entity_id' => $companyEntityId]);
+
+      if (!$relResult['success']) {
+        \bX\CONN::rollback();
+        return ['success' => false, 'message' => 'Failed to create relationship.'];
+      }
+
+      \bX\CONN::commit();
+
+      # 6. Generar token con scope de la empresa
+      $token = $accountService->generateToken(
+        (string)$accountId,
+        null,
+        null,
+        $profileId,
+        $companyEntityId # scope_entity_id = la empresa
+      );
+
+      \bX\Log::logInfo("Company registered: account_id=$accountId, person_entity=$personEntityId, company_entity=$companyEntityId, profile=$profileId");
+
+      return [
+        'success' => true,
+        'message' => 'Company account created successfully.',
+        'token' => $token,
+        'data' => [
+          'accountId' => $accountId,
+          'profileId' => $profileId,
+          'personEntityId' => $personEntityId,
+          'companyEntityId' => $companyEntityId,
+          'scopeEntityId' => $companyEntityId,
+          'username' => $inputData['username']
+        ]
+      ];
+
+    } catch (\Exception $e) {
+      if (\bX\CONN::isInTransaction()) {
+        \bX\CONN::rollback();
+      }
+      \bX\Log::logError("RegisterCompany Exception: " . $e->getMessage());
+      return ['success' => false, 'message' => 'An internal error occurred during registration.'];
+    }
   }
 
   /**
