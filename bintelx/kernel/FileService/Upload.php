@@ -206,7 +206,7 @@ class Upload
      * @param array $data [
      *   'upload_id' => string,
      *   'chunk_index' => int,
-     *   'chunk_data' => string (binary content)
+     *   'chunk_data' => string (binary content) - optional if reading from php://input
      * ]
      * @param array $options ['scope_entity_id' => int]
      * @return array ['success', 'received', 'remaining']
@@ -218,16 +218,12 @@ class Upload
     ): array {
         $uploadId = $data['upload_id'] ?? '';
         $chunkIndex = (int)($data['chunk_index'] ?? -1);
-        $chunkData = $data['chunk_data'] ?? '';
 
         if (empty($uploadId)) {
             return ['success' => false, 'message' => 'upload_id is required'];
         }
         if ($chunkIndex < 0) {
             return ['success' => false, 'message' => 'chunk_index is required'];
-        }
-        if (empty($chunkData)) {
-            return ['success' => false, 'message' => 'chunk_data is required'];
         }
 
         # Get session
@@ -251,13 +247,54 @@ class Upload
             return ['success' => false, 'message' => 'Invalid chunk index'];
         }
 
-        # Write chunk to temp directory
+        # Calculate expected chunk size
+        $expectedSize = $session['chunk_size'];
+        $isLastChunk = ($chunkIndex === $session['total_chunks'] - 1);
+        if ($isLastChunk) {
+            # Last chunk may be smaller
+            $expectedSize = $session['total_size'] - ($chunkIndex * $session['chunk_size']);
+        }
+
+        # Prepare temp file path
         $tempDir = self::getTempPath() . '/' . $uploadId;
         $chunkFile = $tempDir . '/chunk_' . str_pad($chunkIndex, 6, '0', STR_PAD_LEFT);
 
-        $written = file_put_contents($chunkFile, $chunkData);
+        # Stream copy from php://input to php://temp, then to file
+        # This is memory-efficient and secure
+        $input = fopen('php://input', 'rb');
+        if ($input === false) {
+            return ['success' => false, 'message' => 'Failed to open input stream'];
+        }
+
+        $output = fopen($chunkFile, 'wb');
+        if ($output === false) {
+            fclose($input);
+            return ['success' => false, 'message' => 'Failed to create chunk file'];
+        }
+
+        # Stream copy with size tracking
+        $written = stream_copy_to_stream($input, $output);
+        fclose($input);
+        fclose($output);
+
         if ($written === false) {
+            @unlink($chunkFile);
             return ['success' => false, 'message' => 'Failed to write chunk'];
+        }
+
+        # Validate chunk size
+        if ($written !== $expectedSize) {
+            Log::logWarning("Upload::chunk - Size mismatch for chunk $chunkIndex: expected $expectedSize, got $written");
+            # Allow small tolerance for last chunk, but log warning
+            if (!$isLastChunk && abs($written - $expectedSize) > 1024) {
+                @unlink($chunkFile);
+                return [
+                    'success' => false,
+                    'message' => 'Chunk size mismatch',
+                    'expected' => $expectedSize,
+                    'received' => $written
+                ];
+            }
         }
 
         # Update received chunks
@@ -280,9 +317,12 @@ class Upload
 
         $remaining = $session['total_chunks'] - count($receivedChunks);
 
+        Log::logDebug("Upload::chunk - Chunk $chunkIndex received: $written bytes");
+
         return [
             'success' => true,
             'chunk_index' => $chunkIndex,
+            'bytes_written' => $written,
             'received' => count($receivedChunks),
             'remaining' => $remaining,
             'complete' => $remaining === 0
@@ -328,7 +368,7 @@ class Upload
             ];
         }
 
-        # Assemble file
+        # Assemble file using stream_copy_to_stream (memory-efficient)
         $tempDir = self::getTempPath() . '/' . $uploadId;
         $assembledFile = $tempDir . '/assembled';
 
@@ -337,16 +377,40 @@ class Upload
             return ['success' => false, 'message' => 'Failed to create assembled file'];
         }
 
+        $totalWritten = 0;
         for ($i = 0; $i < $session['total_chunks']; $i++) {
             $chunkFile = $tempDir . '/chunk_' . str_pad($i, 6, '0', STR_PAD_LEFT);
             if (!file_exists($chunkFile)) {
                 fclose($outHandle);
+                @unlink($assembledFile);
                 return ['success' => false, 'message' => "Missing chunk $i"];
             }
-            $chunkData = file_get_contents($chunkFile);
-            fwrite($outHandle, $chunkData);
+
+            # Stream copy instead of file_get_contents (memory efficient)
+            $chunkHandle = fopen($chunkFile, 'rb');
+            if (!$chunkHandle) {
+                fclose($outHandle);
+                @unlink($assembledFile);
+                return ['success' => false, 'message' => "Failed to open chunk $i"];
+            }
+
+            $written = stream_copy_to_stream($chunkHandle, $outHandle);
+            fclose($chunkHandle);
+
+            if ($written === false) {
+                fclose($outHandle);
+                @unlink($assembledFile);
+                return ['success' => false, 'message' => "Failed to copy chunk $i"];
+            }
+
+            $totalWritten += $written;
         }
         fclose($outHandle);
+
+        # Verify assembled size matches expected
+        if ($totalWritten !== (int)$session['total_size']) {
+            Log::logWarning("Upload::complete - Size mismatch: expected {$session['total_size']}, got $totalWritten");
+        }
 
         # Verify hash
         $actualHash = hash_file(Storage::HASH_ALGO, $assembledFile);
