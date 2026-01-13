@@ -8,10 +8,16 @@
  * - Pub/Sub para broadcasting de mensajes
  * - Autenticación JWT integrada
  * - Canales privados y públicos
+ * - Conexiones DB no-bloqueantes (coroutine-aware)
  *
  * Uso:
  *   php app/channel.server.php [--port=9501] [--host=0.0.0.0]
  */
+
+# CRÍTICO: Habilitar hooks ANTES de cualquier otra cosa
+# Esto hace que PDO, file_get_contents, sleep, etc. sean non-blocking
+# Cada coroutine tendrá su propia conexión DB aislada (ver CONN::getCoroutineConnection)
+\Swoole\Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
 
 require_once __DIR__ . '/../bintelx/WarmUp.php';
 

@@ -39,14 +39,16 @@ print_r($groups);
 */
 
 class CONN {
-    // Pool of database connections
+    # Pool of database connections
     static array $pool = [];
-    // Default/primary database link
-    private static ?PDO $link = null; // Type hinted
-    // Index of the last used connection from the pool (if switchBack is used)
+    # Default/primary database link
+    private static ?PDO $link = null;
+    # Index of the last used connection from the pool (if switchBack is used)
     private static int $lastIndex = 0;
-    // Stores the PDO connection object currently being used for a transaction
-    private static ?PDO $transactionConnection = null; // Type hinted
+    # Stores the PDO connection object currently being used for a transaction
+    private static ?PDO $transactionConnection = null;
+    # Credenciales para reconnect (Swoole long-running)
+    private static ?array $primaryCredentials = null;
 
     /**
      * Establishes the primary database connection.
@@ -56,11 +58,11 @@ class CONN {
      * @return PDO The PDO connection object.
      */
     public static function connect(string $dsn, string $username, string $password): PDO {
-        #error_log("[CONN] connect DSN={$dsn} user={$username}");
+        # Guardar credenciales para reconnect (Swoole long-running)
+        self::$primaryCredentials = compact('dsn', 'username', 'password');
+
         self::$link = new PDO($dsn, $username, $password);
         self::$link->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        // Optional: self::$link->setAttribute(PDO::ATTR_EMULATE_PREPARES, false); for better security with some drivers
-        // Optional: self::$link->setAttribute(PDO::MYSQL_ATTR_INIT_COMMAND, 'SET NAMES utf8mb4'); for MySQL
         return self::$link;
     }
 
@@ -68,19 +70,116 @@ class CONN {
      * Retrieves the appropriate PDO connection object.
      * If a transaction is active, it returns the connection used for that transaction.
      * Otherwise, it returns a connection from the pool or the primary link.
+     * Verifies connection is alive and reconnects if needed (Swoole long-running).
+     *
+     * SWOOLE COROUTINE SUPPORT:
+     * When running inside a Swoole coroutine (Cid > 0), each coroutine gets its own
+     * isolated PDO connection stored in Coroutine::getContext(). This prevents race
+     * conditions when multiple coroutines share the same worker process.
+     *
      * @return PDO The PDO connection object.
      * @throws Exception If no database connection is available.
      */
     private static function getConnection(): PDO {
+        # Transacción activa tiene prioridad absoluta
         if (self::$transactionConnection !== null) {
             return self::$transactionConnection;
         }
-        $connection = self::get(); // Gets from pool or primary link
+
+        # SWOOLE COROUTINE: Conexión aislada por coroutine
+        if (class_exists('Swoole\Coroutine') && \Swoole\Coroutine::getCid() > 0) {
+            return self::getCoroutineConnection();
+        }
+
+        # PHP-FPM / CLI: Comportamiento legacy
+        $connection = self::get();
         if ($connection === null) {
             Log::logError("CONN::getConnection - No database connection available (link or pool is empty).");
             throw new Exception("Database connection not available.");
         }
+
+        # Ping para verificar conexión viva (Swoole long-running)
+        if (!self::ping($connection)) {
+            Log::logWarning("CONN::getConnection - Connection dead, attempting reconnect...");
+            $connection = self::reconnect();
+            if ($connection === null) {
+                throw new Exception("Database reconnection failed.");
+            }
+        }
+
         return $connection;
+    }
+
+    /**
+     * Obtiene o crea una conexión PDO aislada para la coroutine actual.
+     * Cada coroutine tiene su propia conexión, evitando race conditions.
+     * La conexión se limpia automáticamente cuando la coroutine termina.
+     *
+     * @return PDO
+     * @throws Exception Si no hay credenciales disponibles
+     */
+    private static function getCoroutineConnection(): PDO {
+        $ctx = \Swoole\Coroutine::getContext();
+
+        # Si ya existe conexión en este contexto, verificar que esté viva
+        if (isset($ctx->pdo_conn)) {
+            if (self::ping($ctx->pdo_conn)) {
+                return $ctx->pdo_conn;
+            }
+            # Conexión muerta, crear nueva
+            Log::logWarning("CONN::getCoroutineConnection - Connection dead in coroutine context, recreating...");
+            unset($ctx->pdo_conn);
+        }
+
+        # Crear nueva conexión para esta coroutine
+        if (self::$primaryCredentials === null) {
+            Log::logError("CONN::getCoroutineConnection - No credentials available.");
+            throw new Exception("Database credentials not available for coroutine connection.");
+        }
+
+        $creds = self::$primaryCredentials;
+        $ctx->pdo_conn = new PDO($creds['dsn'], $creds['username'], $creds['password']);
+        $ctx->pdo_conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+        Log::logDebug("CONN: New coroutine connection created for Cid=" . \Swoole\Coroutine::getCid());
+
+        return $ctx->pdo_conn;
+    }
+
+    /**
+     * Verifica si la conexión PDO está viva.
+     * @param PDO $connection
+     * @return bool
+     */
+    private static function ping(PDO $connection): bool {
+        try {
+            $connection->query('SELECT 1');
+            return true;
+        } catch (PDOException $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Reconecta la conexión primaria usando credenciales guardadas.
+     * @return PDO|null
+     */
+    private static function reconnect(): ?PDO {
+        if (self::$primaryCredentials === null) {
+            Log::logError("CONN::reconnect - No credentials available for reconnection.");
+            return null;
+        }
+
+        try {
+            $creds = self::$primaryCredentials;
+            self::$link = new PDO($creds['dsn'], $creds['username'], $creds['password']);
+            self::$link->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            Log::logInfo("CONN::reconnect - Successfully reconnected to database.");
+            return self::$link;
+        } catch (PDOException $e) {
+            Log::logError("CONN::reconnect - Failed: " . $e->getMessage());
+            return null;
+        }
     }
 
     /**
@@ -224,9 +323,10 @@ class CONN {
      * @param string $query The SQL query string.
      * @param array $data Parameters to bind to the query.
      * @param callable|null $callback Optional callback function to process each row.
-     *                                If provided, rows are passed one by one to the callback.
+     *                                If callback returns false, iteration stops (early exit).
+     *                                If callback returns true or void, iteration continues.
      * @return array|null If no callback, returns all rows as an array of associative arrays.
-     *                    If callback is used, returns null (or void, implicitly).
+     *                    If callback is used, returns null.
      */
     public static function dml(string $query, array $data = [], ?callable $callback = null): ?array {
         try {
@@ -235,17 +335,19 @@ class CONN {
             $stmt->execute($data);
             if ($callback) {
                 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                    call_user_func($callback, $row);
+                    $result = call_user_func($callback, $row);
+                    # Early exit: si callback retorna false, detener iteración
+                    if ($result === false) {
+                        $stmt->closeCursor(); # Liberar recursos del statement
+                        break;
+                    }
                 }
-                return null; // Callback handled output
+                return null;
             }
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (PDOException $e) {
             Log::logError("CONN::dml PDOException: " . $e->getMessage() . " | Query: " . $query . " | Data: " . json_encode($data));
-            if (defined('ENVIRONMENT') && ENVIRONMENT === 'development') {
-                // Avoid echoing
-            }
-            return null; // Indicate error or empty result on exception
+            return null;
         }
     }
 
