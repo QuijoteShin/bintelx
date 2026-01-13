@@ -6,8 +6,10 @@ class Log {
   # Propiedades estáticas configurables (inicializadas desde .env)
   public static bool $logToUser = false;
   public static bool $logToCli = true;
+  public static bool $logToStdout = false;       # Async logging para Swoole/Docker (sin LOCK_EX)
   public static string $logLevel = 'ERROR';      # Nivel para archivo de log
   public static string $logLevelCli = 'DEBUG';   # Nivel para stdout (independiente)
+  public static string $logLevelStdout = 'INFO'; # Nivel para stdout async
 
   private static bool $initialized = false;
 
@@ -25,8 +27,10 @@ class Log {
 
     self::$logToUser = Config::getBool('LOG_TO_USER', false);
     self::$logToCli = Config::getBool('LOG_TO_CLI', true);
+    self::$logToStdout = Config::getBool('LOG_TO_STDOUT', false); # Async para Swoole/Docker
     self::$logLevel = strtoupper(Config::get('LOG_LEVEL', 'ERROR'));
-    self::$logLevelCli = strtoupper(Config::get('LOG_LEVEL_CLI', 'DEBUG')); # Independiente para stdout
+    self::$logLevelCli = strtoupper(Config::get('LOG_LEVEL_CLI', 'DEBUG'));
+    self::$logLevelStdout = strtoupper(Config::get('LOG_LEVEL_STDOUT', 'INFO'));
 
     self::$initialized = true;
   }
@@ -128,6 +132,30 @@ class Log {
       echo "{$color}{$logEntry}{$reset}";
     }
 
+    # Async logging via STDOUT (Swoole/Docker/K8s) - NO LOCK_EX
+    # Usa fwrite(STDOUT) que es no-bloqueante y delegado al supervisor
+    if (self::$logToStdout) {
+      $configLevelStdoutNumeric = self::$logLevels[self::$logLevelStdout] ?? self::$logLevels['INFO'];
+      if ($messageLevelNumeric >= $configLevelStdoutNumeric) {
+        # Formato JSON para parseo estructurado (ELK, Datadog, etc)
+        $jsonEntry = json_encode([
+          'timestamp' => date('c'),
+          'level' => strtoupper($level),
+          'message' => $message,
+          'context' => $context ?: null,
+          'user_id' => $userId,
+          'uri' => $requestUri
+        ], JSON_UNESCAPED_SLASHES);
+
+        # fwrite a STDOUT es no-bloqueante (sin LOCK_EX)
+        if ($stdoutAvailable) {
+          fwrite(\STDOUT, $jsonEntry . "\n");
+        } else {
+          # Fallback: error_log delega al servidor web
+          error_log($jsonEntry);
+        }
+      }
+    }
 
     # Log específico para el usuario si está habilitado y es un error o warning
     if (self::$logToUser && ($level === 'ERROR' || $level === 'WARNING')) {
