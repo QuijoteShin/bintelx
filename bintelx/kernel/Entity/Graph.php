@@ -1,5 +1,5 @@
 <?php
-# bintelx/kernel/Entity/Relationship.php
+# bintelx/kernel/Entity/Graph.php
 namespace bX\Entity;
 
 use bX\CONN;
@@ -7,17 +7,18 @@ use bX\Profile;
 use bX\Tenant;
 
 /**
- * Relationship - Manages profile-entity relationships
+ * Graph - Entity graph edges (connections between entities/profiles)
  *
- * Handles the entity_relationships table which links profiles to entities
- * with different relation kinds (owner, member, technician, etc.)
+ * Manages the entity_relationships table as a graph structure:
+ * - Nodes: entities, profiles
+ * - Edges: relationships with kind (owner, member, supplier_of, customer_of, etc.)
  *
  * All methods follow Bintelx signature: (array $data, array $options, ?callable $callback)
  * Multi-tenant: uses Tenant helper for scope filtering
  *
  * @package bX\Entity
  */
-class Relationship
+class Graph
 {
     # Relation kinds constants
     public const KIND_OWNER = 'owner';

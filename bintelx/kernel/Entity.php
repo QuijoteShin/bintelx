@@ -1,4 +1,4 @@
-<?php # bintelx/kernel/entity
+<?php # bintelx/kernel/Entity.php
 namespace bX;
 
 class Entity {
@@ -7,11 +7,72 @@ class Entity {
   public static int $comp_id = 0;
   public static int $comp_branch_id = 0;
 
-  private array $data = [];      // Datos procesados
-  private array $data_raw = [];  // Datos sin procesar de la DB
+  private array $data = [];      # Datos procesados
+  private array $data_raw = [];  # Datos sin procesar de la DB
 
   public function __construct()
   {
+  }
+
+  /**
+   * Normaliza un identificador nacional según el país
+   * Elimina puntos, guiones, espacios y convierte a mayúsculas
+   *
+   * @param string $nationalId Ej: "76.543.210-K", "76543210-k"
+   * @param string $isocode Ej: "CL", "MX", "AR"
+   * @return string Normalizado: "765432100K"
+   */
+  public static function normalizeNationalId(string $nationalId, string $isocode = ''): string
+  {
+      # Quitar todo excepto alfanuméricos
+      $clean = preg_replace('/[^0-9A-Za-z]/', '', $nationalId);
+      # Uppercase para dígitos verificadores (K en Chile, etc.)
+      return strtoupper($clean);
+  }
+
+  /**
+   * Calcula el identity_hash para matching de entities
+   * Permite encontrar sombras del mismo entity real
+   *
+   * IMPORTANTE: NO incluye entity_type en el hash.
+   * Una empresa es UNA sola entidad aunque sea cliente Y proveedor.
+   * Las relaciones se manejan en entity_relationships con relation_kind.
+   *
+   * @param string $nationalIsocode Ej: "CL", "MX"
+   * @param string $nationalId Ej: "76.543.210-K" (se normaliza internamente)
+   * @return string SHA256 hash de 64 caracteres
+   */
+  public static function calculateIdentityHash(
+      string $nationalIsocode,
+      string $nationalId
+  ): string {
+      $normalized = self::normalizeNationalId($nationalId, $nationalIsocode);
+      $payload = strtoupper($nationalIsocode) . '|' . $normalized;
+      return hash('sha256', $payload);
+  }
+
+  /**
+   * Busca entities "sombra" con el mismo identity_hash
+   * Útil para discovery de claims
+   *
+   * @param string $identityHash Hash a buscar
+   * @param int|null $excludeEntityId Entity a excluir (el propio)
+   * @return array Lista de sombras encontradas
+   */
+  public static function findShadows(string $identityHash, ?int $excludeEntityId = null): array
+  {
+      $sql = "SELECT entity_id, primary_name, entity_type, national_id, created_at
+              FROM entities
+              WHERE identity_hash = :hash
+                AND canonical_entity_id IS NULL";
+      $params = [':hash' => $identityHash];
+
+      if ($excludeEntityId) {
+          $sql .= " AND entity_id != :exclude";
+          $params[':exclude'] = $excludeEntityId;
+      }
+
+      return CONN::dml($sql, $params) ?? [];
   }
 
   /**
@@ -67,19 +128,32 @@ class Entity {
       \bX\CONN::nodml($query, $params);
       return $existingId;
     } else {
-      // Insertar nuevo registro (TARGET SCHEMA)
+      # Preparar valores
+      $entityType = strtolower($entity['entity_type'] ?? 'general');
+      $nationalId = $entity['entity_idn'] ?? $entity['national_id'] ?? null;
+      $nationalIsocode = $entity['entity_country'] ?? $entity['national_isocode'] ?? null;
+
+      # Calcular identity_hash si hay national_id
+      # NOTA: No incluye entity_type - una empresa es una sola entidad
+      $identityHash = null;
+      if (!empty($nationalId) && !empty($nationalIsocode)) {
+          $identityHash = self::calculateIdentityHash($nationalIsocode, $nationalId);
+      }
+
+      # Insertar nuevo registro (TARGET SCHEMA)
       $query = "INSERT INTO `entities`
                       (entity_type, primary_name, national_id, national_isocode,
-                       status, created_by_profile_id, updated_by_profile_id)
+                       identity_hash, status, created_by_profile_id, updated_by_profile_id)
                       VALUES
                       (:entity_type, :primary_name, :national_id, :national_isocode,
-                       :status, :created_by, :updated_by)";
+                       :identity_hash, :status, :created_by, :updated_by)";
 
       $params = [
-        ':entity_type'        => strtolower($entity['entity_type'] ?? 'general'),
+        ':entity_type'        => $entityType,
         ':primary_name'       => $entity['entity_name'] ?? $entity['primary_name'] ?? null,
-        ':national_id'        => $entity['entity_idn'] ?? $entity['national_id'] ?? null,
-        ':national_isocode'   => $entity['entity_country'] ?? $entity['national_isocode'] ?? null,
+        ':national_id'        => $nationalId,
+        ':national_isocode'   => $nationalIsocode,
+        ':identity_hash'      => $identityHash,
         ':status'             => $entity['status'] ?? 'active',
         ':created_by'         => $entity['created_by_profile_id'] ?? null,
         ':updated_by'         => $entity['updated_by_profile_id'] ?? null,
