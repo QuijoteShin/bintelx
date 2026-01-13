@@ -55,9 +55,23 @@ class Args {
   /**
    * Processes the raw input stream for JSON data.
    * This is essential for handling API requests with JSON bodies.
+   * Only reads php://input if Content-Type indicates JSON.
+   * Binary streams (application/octet-stream) are left untouched.
    * @param string $method The HTTP method ('POST', 'PUT', etc.)
    */
   private function processJsonInputStream(string $method): void {
+    $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+
+    # Skip binary streams - leave php://input intact for handlers
+    if (str_contains($contentType, 'application/octet-stream')) {
+      return;
+    }
+
+    # Only process JSON content types
+    if (!str_contains($contentType, 'application/json')) {
+      return;
+    }
+
     $jsonInput = file_get_contents('php://input');
     if (!empty($jsonInput)) {
       $data = json_decode($jsonInput, true);
