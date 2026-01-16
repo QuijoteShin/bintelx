@@ -8,7 +8,10 @@ namespace bX;
  * Centralizes tenant logic for queries and security.
  * - Users with system.admin: access all tenants
  * - Users with tenant: access only their tenant
- * - Users without tenant: access only data without tenant (NULL)
+ * - Users without tenant: NO ACCESS (returns empty, not NULL records)
+ *
+ * SECURITY: scope_entity_id = NULL significa NO VER NADA, no "ver datos NULL".
+ * Esto previene que usuarios sin tenant vean datos de otros tenants.
  *
  * Usage:
  *   $scope = Tenant::resolve($options);
@@ -60,8 +63,10 @@ class Tenant
      * 1. $options['scope_entity_id'] if provided
      * 2. Profile::$scope_entity_id from session
      *
+     * SECURITY: NULL means user has no tenant and CANNOT see any data.
+     *
      * @param array $options
-     * @return int|null NULL means user has no tenant (can only see NULL data)
+     * @return int|null NULL means user has NO ACCESS (not "access NULL data")
      */
     public static function resolve(array $options = []): ?int
     {
@@ -79,6 +84,8 @@ class Tenant
     /**
      * Check if user can access a specific scope
      *
+     * SECURITY: User without tenant cannot access anything.
+     *
      * @param int|null $targetScope The scope to check access for
      * @param array $options Optional override
      * @return bool
@@ -92,13 +99,13 @@ class Tenant
 
         $userScope = self::resolve($options);
 
-        # User without tenant can only access NULL data
+        # SECURITY: User without tenant cannot access anything
         if ($userScope === null) {
-            return $targetScope === null;
+            return false;
         }
 
-        # User with tenant can access their tenant or NULL data
-        return $targetScope === null || $targetScope === $userScope;
+        # User with tenant can only access their tenant data
+        return $targetScope === $userScope;
     }
 
     /**
@@ -121,9 +128,10 @@ class Tenant
 
         $scope = self::resolve($options);
 
-        # User without tenant: can only see NULL data
+        # SECURITY: User without tenant cannot see anything
+        # Retorna condición imposible para bloquear acceso
         if ($scope === null) {
-            return " AND {$column} IS NULL";
+            return " AND 1=0";
         }
 
         # User with tenant: can see their tenant data

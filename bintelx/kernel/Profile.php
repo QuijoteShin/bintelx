@@ -196,10 +196,11 @@ class Profile {
             return;
         }
 
-        $assignments = self::fetchProfileRelationships(self::$profile_id);
-        self::hydrateRoleCaches($assignments);
+        $relationships = self::fetchProfileRelationships(self::$profile_id);
+        $roleAssignments = self::fetchProfileRoles(self::$profile_id);
+        self::hydrateRoleCaches($relationships, $roleAssignments);
 
-        $roleCount = count(self::$roles['assignments'] ?? []);
+        $roleCount = count(self::$roles['by_role'] ?? []);
         $routeCount = count(self::$userPermissions['routes'] ?? []);
         Log::logDebug("Permissions loaded for profile_id=" . self::$profile_id . " (roles={$roleCount}, route_rules={$routeCount})");
     }
@@ -218,12 +219,15 @@ class Profile {
             'routes' => ['*' => 'public'],
             'roles' => []
         ];
+
+        # Reset Tenant cache to prevent stale admin bypass between requests
+        Tenant::resetCache();
     }
 
     /**
-     * Checks whether a profile has the requested role for a given entity.
+     * Checks whether a profile has the requested role for a given scope entity.
      */
-    public static function hasRole(int $profileId, ?int $entityId, string $roleCode, bool $includePassive = true): bool
+    public static function hasRole(int $profileId, ?int $scopeEntityId, string $roleCode, bool $includePassive = true): bool
     {
         $roleCode = trim($roleCode);
         if ($roleCode === '') {
@@ -231,11 +235,11 @@ class Profile {
         }
 
         if ($profileId === self::$profile_id && !empty(self::$roles['by_role'])) {
-            return self::hasRoleInCache($entityId, $roleCode, $includePassive);
+            return self::hasRoleInCache($scopeEntityId, $roleCode, $includePassive);
         }
 
         $sql = "SELECT COUNT(*) AS total
-                FROM entity_relationships
+                FROM profile_roles
                 WHERE profile_id = :profile_id
                   AND status = 'active'
                   AND role_code = :role_code";
@@ -244,13 +248,10 @@ class Profile {
             ':role_code' => $roleCode
         ];
 
-        if ($entityId !== null) {
-            $sql .= " AND entity_id = :entity_id";
-            $params[':entity_id'] = $entityId;
-        }
-
-        if (!$includePassive) {
-            $sql .= " AND (grant_mode IS NULL OR grant_mode <> 'passive')";
+        if ($scopeEntityId !== null) {
+            # Check for specific scope OR global (NULL scope)
+            $sql .= " AND (scope_entity_id = :scope_id OR scope_entity_id IS NULL)";
+            $params[':scope_id'] = $scopeEntityId;
         }
 
         $result = CONN::dml($sql, $params);
@@ -382,38 +383,64 @@ class Profile {
     }
 
     /**
-     * Fetches active relationships for a profile from the database.
+     * Fetches active business relationships for a profile (owner, supplier_of, etc.)
+     * Role assignments are now in profile_roles table
      *
      * @return array<int,array<string,mixed>>
      */
     private static function fetchProfileRelationships(int $profileId): array
+    {
+        $sql = "SELECT
+                    er.relationship_id,
+                    er.profile_id,
+                    er.entity_id,
+                    er.relation_kind,
+                    er.grant_mode,
+                    er.relationship_label,
+                    er.status,
+                    e.primary_name AS entity_name,
+                    e.entity_type
+                FROM entity_relationships er
+                LEFT JOIN entities e ON e.entity_id = er.entity_id
+                WHERE er.profile_id = :profile_id
+                  AND er.status = 'active'
+                  AND er.relation_kind != 'role_assignment'
+                ORDER BY e.primary_name ASC";
+
+        $rows = CONN::dml($sql, [':profile_id' => $profileId]);
+        return $rows ?? [];
+    }
+
+    /**
+     * Fetches role assignments from profile_roles table
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private static function fetchProfileRoles(int $profileId): array
     {
         $permissionsField = self::rolesTableHasPermissionsColumn()
             ? ", r.permissions_json"
             : ", NULL AS permissions_json";
 
         $sql = "SELECT
-                    er.relationship_id,
-                    er.profile_id,
-                    er.entity_id,
-                    er.relation_kind,
-                    er.role_code,
-                    er.grant_mode,
-                    er.relationship_label,
-                    er.status,
-                    e.primary_name AS entity_name,
-                    e.entity_type,
+                    pr.profile_role_id,
+                    pr.profile_id,
+                    pr.role_code,
+                    pr.scope_entity_id,
+                    pr.status,
                     r.role_label,
                     r.scope_type,
-                    r.status AS role_status
+                    r.status AS role_status,
+                    e.primary_name AS scope_name,
+                    e.entity_type AS scope_type_entity
                     {$permissionsField}
-                FROM entity_relationships er
-                LEFT JOIN entities e ON e.entity_id = er.entity_id
-                LEFT JOIN roles r ON r.role_code = er.role_code
-                WHERE er.profile_id = :profile_id
-                  AND er.status = 'active'
-                  AND (r.role_code IS NULL OR r.status = 'active')
-                ORDER BY e.primary_name ASC, er.role_code ASC";
+                FROM profile_roles pr
+                LEFT JOIN roles r ON r.role_code = pr.role_code
+                LEFT JOIN entities e ON e.entity_id = pr.scope_entity_id
+                WHERE pr.profile_id = :profile_id
+                  AND pr.status = 'active'
+                  AND r.status = 'active'
+                ORDER BY r.role_label ASC";
 
         $rows = CONN::dml($sql, [':profile_id' => $profileId]);
         return $rows ?? [];
@@ -422,9 +449,10 @@ class Profile {
     /**
      * Builds the cached structures for roles and router permissions.
      *
-     * @param array<int,array<string,mixed>> $relationships
+     * @param array<int,array<string,mixed>> $relationships Business relationships (owner, supplier, etc.)
+     * @param array<int,array<string,mixed>> $roleAssignments Role assignments from profile_roles
      */
-    private static function hydrateRoleCaches(array $relationships): void
+    private static function hydrateRoleCaches(array $relationships, array $roleAssignments = []): void
     {
         $assignments = [];
         $byRole = [];
@@ -432,6 +460,7 @@ class Profile {
         $ownership = [];
         $routeMap = ['*' => 'private'];
 
+        # Process business relationships (owner, supplier_of, customer_of, etc.)
         foreach ($relationships as $row) {
             $assignment = [
                 'relationshipId' => (int)($row['relationship_id'] ?? 0),
@@ -440,12 +469,12 @@ class Profile {
                 'entityName' => $row['entity_name'] ?? null,
                 'entityType' => $row['entity_type'] ?? null,
                 'relationKind' => $row['relation_kind'] ?? null,
-                'roleCode' => $row['role_code'] ?? null,
-                'roleLabel' => $row['role_label'] ?? null,
-                'scopeType' => $row['scope_type'] ?? null,
+                'roleCode' => null,
+                'roleLabel' => null,
+                'scopeType' => null,
                 'grantMode' => $row['grant_mode'] ?? null,
                 'relationshipLabel' => $row['relationship_label'] ?? null,
-                'permissions' => self::decodePermissionsJson($row['permissions_json'] ?? null),
+                'permissions' => null,
             ];
 
             $assignments[] = $assignment;
@@ -466,16 +495,50 @@ class Profile {
                 $ownership[$assignment['entityId']] = true;
                 $routeMap['*'] = self::selectHigherScope($routeMap['*'] ?? 'private', 'write');
             }
+        }
 
-            if (!empty($assignment['roleCode'])) {
-                if ($assignment['roleCode'] === 'system.admin') {
-                    $routeMap['*'] = 'write'; # sysadmin acceso total
-                }
-                $byEntity[$entityKey]['roles'][$assignment['roleCode']] = $assignment;
-                $byRole[$assignment['roleCode']][] = $assignment;
-                if (!empty($assignment['permissions'])) {
-                    self::mergeRoutePermissions($routeMap, $assignment['permissions']);
-                }
+        # Process role assignments from profile_roles table
+        foreach ($roleAssignments as $row) {
+            $roleCode = $row['role_code'] ?? null;
+            if (empty($roleCode)) continue;
+
+            $scopeEntityId = isset($row['scope_entity_id']) ? (int)$row['scope_entity_id'] : null;
+
+            $roleAssignment = [
+                'profileRoleId' => (int)($row['profile_role_id'] ?? 0),
+                'profileId' => (int)($row['profile_id'] ?? 0),
+                'roleCode' => $roleCode,
+                'roleLabel' => $row['role_label'] ?? null,
+                'scopeType' => $row['scope_type'] ?? null,
+                'scopeEntityId' => $scopeEntityId,
+                'scopeName' => $row['scope_name'] ?? null,
+                'permissions' => self::decodePermissionsJson($row['permissions_json'] ?? null),
+            ];
+
+            # System admin gets full access
+            if ($roleCode === 'system.admin') {
+                $routeMap['*'] = 'write';
+            }
+
+            # Index by role code
+            $byRole[$roleCode][] = $roleAssignment;
+
+            # Index by scope entity (for scoped permissions)
+            $scopeKey = $scopeEntityId ?? 'global';
+            if (!isset($byEntity[$scopeKey])) {
+                $byEntity[$scopeKey] = [
+                    'entityId' => $scopeEntityId,
+                    'entityName' => $row['scope_name'] ?? null,
+                    'entityType' => $row['scope_type_entity'] ?? null,
+                    'ownership' => false,
+                    'roles' => []
+                ];
+            }
+            $byEntity[$scopeKey]['roles'][$roleCode] = $roleAssignment;
+
+            # Merge route permissions from role
+            if (!empty($roleAssignment['permissions'])) {
+                self::mergeRoutePermissions($routeMap, $roleAssignment['permissions']);
             }
         }
 
@@ -488,7 +551,7 @@ class Profile {
 
         self::$userPermissions = [
             'routes' => $routeMap,
-            'roles' => $assignments
+            'roles' => array_keys($byRole)
         ];
     }
 
@@ -575,17 +638,16 @@ class Profile {
     /**
      * Checks the cached roles for a match.
      */
-    private static function hasRoleInCache(?int $entityId, string $roleCode, bool $includePassive): bool
+    private static function hasRoleInCache(?int $scopeEntityId, string $roleCode, bool $includePassive): bool
     {
         if (empty(self::$roles['by_role'][$roleCode])) {
             return false;
         }
 
         foreach (self::$roles['by_role'][$roleCode] as $assignment) {
-            if (!$includePassive && ($assignment['grantMode'] ?? null) === 'passive') {
-                continue;
-            }
-            if ($entityId === null || (int)($assignment['entityId'] ?? 0) === (int)$entityId) {
+            $assignmentScope = $assignment['scopeEntityId'] ?? null;
+            # Match if: no scope requested, or scope matches, or assignment is global (null scope)
+            if ($scopeEntityId === null || $assignmentScope === null || $assignmentScope === $scopeEntityId) {
                 return true;
             }
         }
@@ -624,18 +686,24 @@ class Profile {
         $scopes = [];
 
         # Query ACL from entity_relationships
-        # Generic: ANY active relationship where profile → entity (scope)
-        # No hardcoded relation_kind → allows future kinds without code changes
+        # Get DISTINCT scope_entity_id values (tenant IDs) for this profile
+        # Excludes NULL scopes - those are internal/system relationships
         CONN::dml(
-            "SELECT DISTINCT entity_id AS scope_entity_id
+            "SELECT DISTINCT scope_entity_id
              FROM entity_relationships
              WHERE profile_id = :profile_id
-               AND status = 'active'",
+               AND status = 'active'
+               AND scope_entity_id IS NOT NULL",
             [':profile_id' => self::$profile_id],
             function(array $row) use (&$scopes) {
                 $scopes[] = (int)$row['scope_entity_id'];
             }
         );
+
+        # Fallback: if no scopes found, use profile's own entity_id
+        if (empty($scopes) && self::$entity_id > 0) {
+            $scopes[] = self::$entity_id;
+        }
 
         self::$cachedAllowedScopes = array_values(array_unique($scopes));
         return self::$cachedAllowedScopes;

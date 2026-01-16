@@ -41,7 +41,8 @@ Router::register(['GET'], 'list', function() {
     $limit = min((int)(Args::$OPT['limit'] ?? 100), 500);
     $offset = (int)(Args::$OPT['offset'] ?? 0);
     $entityType = Args::$OPT['entity_type'] ?? null;
-    $scopeId = Profile::$scope_entity_id;
+    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $profileId = Profile::$profile_id;
     $params = [];
 
     # Query 1: Obtener entities únicos (EXISTS para usuarios, directo para admin)
@@ -53,6 +54,8 @@ Router::register(['GET'], 'list', function() {
                 WHERE 1=1";
     } else {
         # EXISTS es más eficiente que DISTINCT+JOIN cuando hay múltiples relaciones por entity
+        # Filtrar por: profile_id (relaciones del usuario) + scope_entity_id (tenant)
+        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
         $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
                        e.national_id, e.national_isocode,
                        e.status, e.created_at
@@ -60,9 +63,12 @@ Router::register(['GET'], 'list', function() {
                 WHERE EXISTS (
                     SELECT 1 FROM entity_relationships er
                     WHERE er.entity_id = e.entity_id
-                    AND er.scope_entity_id = :scope
+                    AND er.profile_id = :profile_id
+                    AND er.status = 'active'
+                    {$tenantFilter['sql']}
                 )";
-        $params[':scope'] = $scopeId;
+        $params[':profile_id'] = $profileId;
+        $params = array_merge($params, $tenantFilter['params']);
     }
 
     if ($entityType) {
@@ -83,34 +89,50 @@ Router::register(['GET'], 'list', function() {
         ]]);
     }
 
-    # Query 2: Obtener relation_kinds para los entity_ids encontrados (desagregado)
+    # Query 2: Obtener relation_kinds para los entity_ids encontrados
+    # Traemos TODOS los tipos de relación del entity (no solo del profile actual)
+    # Esto permite mostrar badges correctos: un entity puede ser cliente Y proveedor
     $entityIds = array_column($entities, 'entity_id');
     $relationsByEntity = [];
 
-    if (!Tenant::isAdmin() && !empty($entityIds)) {
+    if (!empty($entityIds)) {
         $placeholders = [];
-        $relParams = [':scope' => $scopeId];
+        $relParams = [];
         foreach ($entityIds as $i => $id) {
             $key = ":eid{$i}";
             $placeholders[] = $key;
             $relParams[$key] = $id;
         }
 
-        $relSql = "SELECT entity_id, relation_kind
-                   FROM entity_relationships
-                   WHERE scope_entity_id = :scope
-                   AND entity_id IN (" . implode(',', $placeholders) . ")";
+        if (Tenant::isAdmin()) {
+            # Admin: ver todas las relaciones sin filtro de scope
+            $relSql = "SELECT DISTINCT entity_id, relation_kind
+                       FROM entity_relationships
+                       WHERE status = 'active'
+                       AND entity_id IN (" . implode(',', $placeholders) . ")";
+        } else {
+            # Usuarios: todas las relaciones dentro de su scope (no solo las suyas)
+            $tenantFilter2 = Tenant::filter('scope_entity_id', $options);
+            $relSql = "SELECT DISTINCT entity_id, relation_kind
+                       FROM entity_relationships
+                       WHERE status = 'active'
+                       AND entity_id IN (" . implode(',', $placeholders) . ")"
+                       . $tenantFilter2['sql'];
+            $relParams = array_merge($relParams, $tenantFilter2['params']);
+        }
 
-        $relations = CONN::dml($relSql, $relParams) ?? [];
-
-        # Agrupar kinds por entity_id
-        foreach ($relations as $rel) {
-            $eid = $rel['entity_id'];
+        # Usar callback para armar el índice directamente
+        CONN::dml($relSql, $relParams, function($row) use (&$relationsByEntity) {
+            $eid = $row['entity_id'];
+            $kind = $row['relation_kind'];
             if (!isset($relationsByEntity[$eid])) {
                 $relationsByEntity[$eid] = [];
             }
-            $relationsByEntity[$eid][] = $rel['relation_kind'];
-        }
+            # Evitar duplicados
+            if (!in_array($kind, $relationsByEntity[$eid])) {
+                $relationsByEntity[$eid][] = $kind;
+            }
+        });
     }
 
     # Enriquecer entities con relation_kinds y datos EAV
@@ -141,7 +163,8 @@ Router::register(['GET'], 'list', function() {
  */
 Router::register(['GET'], '(?P<id>\d+)', function($id) {
     $entityId = (int)$id;
-    $scopeId = Profile::$scope_entity_id;
+    $profileId = Profile::$profile_id;
+    $options = ['scope_entity_id' => Profile::$scope_entity_id];
     $params = [':id' => $entityId];
 
     # Admin: acceso directo sin verificar relaciones
@@ -153,7 +176,8 @@ Router::register(['GET'], '(?P<id>\d+)', function($id) {
                 FROM entities e
                 WHERE e.entity_id = :id";
     } else {
-        # Usuarios: verificar acceso via relationship con EXISTS
+        # Usuarios: verificar acceso via relationship + tenant
+        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
         $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
                        e.national_id, e.national_isocode,
                        e.status, e.identity_hash,
@@ -163,9 +187,12 @@ Router::register(['GET'], '(?P<id>\d+)', function($id) {
                 AND EXISTS (
                     SELECT 1 FROM entity_relationships er
                     WHERE er.entity_id = e.entity_id
-                    AND er.scope_entity_id = :scope
+                    AND er.profile_id = :profile_id
+                    AND er.status = 'active'
+                    {$tenantFilter['sql']}
                 )";
-        $params[':scope'] = $scopeId;
+        $params[':profile_id'] = $profileId;
+        $params = array_merge($params, $tenantFilter['params']);
     }
 
     $result = CONN::dml($sql, $params);
@@ -178,21 +205,68 @@ Router::register(['GET'], '(?P<id>\d+)', function($id) {
         ]], 404);
     }
 
-    # Obtener relation_kinds para este entity (desagregado)
+    # Obtener relation_kinds para este entity (todos los del scope, no solo del profile actual)
     $relationKinds = [];
-    if (!Tenant::isAdmin()) {
-        $relSql = "SELECT relation_kind FROM entity_relationships
-                   WHERE entity_id = :id AND scope_entity_id = :scope";
-        $relations = CONN::dml($relSql, [':id' => $entityId, ':scope' => $scopeId]) ?? [];
-        $relationKinds = array_column($relations, 'relation_kind');
+    if (Tenant::isAdmin()) {
+        # Admin: ver todas las relaciones
+        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
+                   WHERE entity_id = :id AND status = 'active'";
+        $relParams = [':id' => $entityId];
+    } else {
+        # Usuarios: todas las relaciones dentro de su scope
+        $tenantFilter2 = Tenant::filter('scope_entity_id', $options);
+        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
+                   WHERE entity_id = :id AND status = 'active'"
+                   . $tenantFilter2['sql'];
+        $relParams = array_merge([':id' => $entityId], $tenantFilter2['params']);
     }
-    $entity['relation_kinds'] = $relationKinds;
+    $relations = CONN::dml($relSql, $relParams) ?? [];
+    $entity['relation_kinds'] = array_column($relations, 'relation_kind');
 
-    # Obtener datos EAV (email, phone, address)
+    # Obtener owner_label si es dueño (relationship_label de relación owner)
+    $ownerLabel = CONN::dml(
+        "SELECT relationship_label FROM entity_relationships
+         WHERE entity_id = :id AND relation_kind = 'owner'
+           AND profile_id = :pid AND status = 'active' LIMIT 1",
+        [':id' => $entityId, ':pid' => $profileId]
+    );
+    $entity['owner_label'] = $ownerLabel[0]['relationship_label'] ?? null;
+
+    # Obtener datos EAV más recientes (para campos principales)
     $eav = DataCaptureService::getHotData($entityId, ['entity.email', 'entity.phone', 'entity.address']);
     $entity['email'] = $eav['data']['entity.email']['value'] ?? null;
     $entity['phone'] = $eav['data']['entity.phone']['value'] ?? null;
     $entity['address'] = $eav['data']['entity.address']['value'] ?? null;
+
+    # Obtener datos EAV agrupados por contexto (relation_kind)
+    # Permite ver: dirección como proveedor vs dirección como cliente
+    $contactByContext = [];
+    $ctxSql = "SELECT cg.event_context, d.unique_name,
+                      COALESCE(h.value_string, h.value_decimal, h.value_datetime) as value
+               FROM data_values_history h
+               JOIN context_groups cg ON cg.context_group_id = h.context_group_id
+               JOIN data_dictionary d ON d.variable_id = h.variable_id
+               WHERE cg.subject_entity_id = :eid
+                 AND cg.macro_context = 'entity'
+                 AND h.is_active = 1
+                 AND d.unique_name IN ('entity.email', 'entity.phone', 'entity.address')
+               ORDER BY cg.event_context, h.timestamp DESC";
+
+    CONN::dml($ctxSql, [':eid' => $entityId], function($row) use (&$contactByContext) {
+        $ctx = $row['event_context'];
+        $varName = $row['unique_name'];
+        $shortName = str_replace('entity.', '', $varName); # email, phone, address
+
+        if (!isset($contactByContext[$ctx])) {
+            $contactByContext[$ctx] = [];
+        }
+        # Solo guardar el primero (más reciente por ORDER BY)
+        if (!isset($contactByContext[$ctx][$shortName])) {
+            $contactByContext[$ctx][$shortName] = $row['value'];
+        }
+    });
+
+    $entity['contact_by_context'] = $contactByContext;
 
     return Response::json(['data' => [
         'success' => true,
@@ -300,6 +374,296 @@ Router::register(['POST'], 'create', function() {
 }, ROUTER_SCOPE_WRITE);
 
 /**
+ * @endpoint   /api/entities/{id}/update
+ * @method     POST
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Update existing entity
+ * @body       (JSON) {entity_type, primary_name, national_id, national_isocode, email, phone, address}
+ */
+Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
+    $entityId = (int)$id;
+    $data = Args::$OPT;
+    $profileId = Profile::$profile_id;
+    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+
+    # Verificar que el entity existe y es accesible
+    if (Tenant::isAdmin()) {
+        $accessCheck = CONN::dml(
+            "SELECT entity_id FROM entities WHERE entity_id = :id",
+            [':id' => $entityId]
+        );
+    } else {
+        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+        $accessCheck = CONN::dml(
+            "SELECT e.entity_id FROM entities e
+             WHERE e.entity_id = :id
+             AND EXISTS (
+                 SELECT 1 FROM entity_relationships er
+                 WHERE er.entity_id = e.entity_id
+                 AND er.profile_id = :profile_id
+                 AND er.status = 'active'
+                 {$tenantFilter['sql']}
+             )",
+            array_merge([':id' => $entityId, ':profile_id' => $profileId], $tenantFilter['params'])
+        );
+    }
+
+    if (empty($accessCheck)) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => 'Entity not found or not accessible'
+        ]], 404);
+    }
+
+    # Construir UPDATE dinámico solo con campos proporcionados
+    $updates = [];
+    $params = [':id' => $entityId, ':updated_by' => $profileId];
+
+    if (isset($data['entity_type'])) {
+        $updates[] = 'entity_type = :entity_type';
+        $params[':entity_type'] = $data['entity_type'];
+    }
+    if (isset($data['primary_name'])) {
+        $updates[] = 'primary_name = :primary_name';
+        $params[':primary_name'] = $data['primary_name'];
+    }
+    if (array_key_exists('national_id', $data)) {
+        $updates[] = 'national_id = :national_id';
+        $params[':national_id'] = $data['national_id'];
+    }
+    if (array_key_exists('national_isocode', $data)) {
+        $updates[] = 'national_isocode = :national_isocode';
+        $params[':national_isocode'] = $data['national_isocode'];
+    }
+
+    # Recalcular identity_hash si cambió national_id o national_isocode
+    $newNationalId = $data['national_id'] ?? null;
+    $newIsocode = $data['national_isocode'] ?? null;
+    if ($newNationalId !== null || $newIsocode !== null) {
+        # Obtener valores actuales para completar el hash
+        $current = CONN::dml(
+            "SELECT national_id, national_isocode FROM entities WHERE entity_id = :id",
+            [':id' => $entityId]
+        )[0] ?? [];
+
+        $finalNationalId = $newNationalId ?? $current['national_id'];
+        $finalIsocode = $newIsocode ?? $current['national_isocode'] ?? 'CL';
+
+        if (!empty($finalNationalId)) {
+            $identityHash = Entity::calculateIdentityHash($finalIsocode, $finalNationalId);
+            $updates[] = 'identity_hash = :identity_hash';
+            $params[':identity_hash'] = $identityHash;
+        }
+    }
+
+    # Ejecutar UPDATE si hay cambios en tabla entities
+    if (!empty($updates)) {
+        $updates[] = 'updated_by_profile_id = :updated_by';
+        $sql = "UPDATE entities SET " . implode(', ', $updates) . " WHERE entity_id = :id";
+        $result = CONN::nodml($sql, $params);
+
+        if (!$result['success']) {
+            return Response::json(['data' => [
+                'success' => false,
+                'message' => 'Error updating entity: ' . ($result['error'] ?? 'Unknown')
+            ]], 500);
+        }
+    }
+
+    # Actualizar datos EAV (email, phone, address)
+    $eavValues = [];
+    if (array_key_exists('email', $data)) {
+        $eavValues[] = ['variable_name' => 'entity.email', 'value' => $data['email'] ?: ''];
+    }
+    if (array_key_exists('phone', $data)) {
+        $eavValues[] = ['variable_name' => 'entity.phone', 'value' => $data['phone'] ?: ''];
+    }
+    if (array_key_exists('address', $data)) {
+        $eavValues[] = ['variable_name' => 'entity.address', 'value' => $data['address'] ?: ''];
+    }
+
+    if (!empty($eavValues)) {
+        DataCaptureService::saveData(
+            $profileId,
+            $entityId,
+            Profile::$scope_entity_id,
+            [
+                'macro_context' => 'entity',
+                'event_context' => 'contact_info',
+                'sub_context' => 'primary'
+            ],
+            $eavValues,
+            'entity_update'
+        );
+    }
+
+    return Response::json(['data' => [
+        'success' => true,
+        'entity_id' => $entityId,
+        'message' => 'Entity updated'
+    ]]);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   /api/entities/ensure
+ * @method     POST
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Ensure entity exists (create or reuse) + add relationship + contextual data
+ * @body       (JSON) {
+ *               entity_type, primary_name, national_id, national_isocode,
+ *               relation_kind,
+ *               email, phone, address (datos contextuales guardados por relation_kind)
+ *             }
+ * @note       Los módulos usan este endpoint para agregar entities desde su contexto.
+ *             Si el entity ya existe (por identity_hash), se reutiliza.
+ *             La data contextual (email, phone, address) se guarda con event_context=relation_kind
+ *             permitiendo que un entity tenga diferentes direcciones/teléfonos por contexto.
+ */
+Router::register(['POST'], 'ensure', function() {
+    $data = Args::$OPT;
+    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+
+    # Validaciones
+    if (empty($data['primary_name'])) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => 'primary_name is required'
+        ]], 400);
+    }
+
+    $relationKind = $data['relation_kind'] ?? 'contact_of';
+
+    $tenant = Tenant::validateForWrite($options);
+    if (!$tenant['valid']) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => $tenant['error']
+        ]], 403);
+    }
+
+    # Paso 1: Buscar entity existente por identity_hash
+    $entityId = null;
+    $created = false;
+    $identityHash = null;
+
+    if (!empty($data['national_id']) && !empty($data['national_isocode'])) {
+        $identityHash = Entity::calculateIdentityHash(
+            $data['national_isocode'],
+            $data['national_id']
+        );
+
+        $existing = CONN::dml(
+            "SELECT entity_id FROM entities WHERE identity_hash = :hash LIMIT 1",
+            [':hash' => $identityHash]
+        );
+
+        if (!empty($existing)) {
+            $entityId = (int)$existing[0]['entity_id'];
+        }
+    }
+
+    # Paso 2: Si no existe, crear entity
+    if (!$entityId) {
+        $sql = "INSERT INTO entities
+                (entity_type, primary_name, national_id, national_isocode,
+                 identity_hash, status, created_by_profile_id, created_at)
+                VALUES
+                (:entity_type, :primary_name, :national_id, :national_isocode,
+                 :identity_hash, 'active', :created_by, NOW())";
+
+        $result = CONN::nodml($sql, [
+            ':entity_type' => $data['entity_type'] ?? 'general',
+            ':primary_name' => $data['primary_name'],
+            ':national_id' => $data['national_id'] ?? null,
+            ':national_isocode' => $data['national_isocode'] ?? 'CL',
+            ':identity_hash' => $identityHash,
+            ':created_by' => Profile::$profile_id
+        ]);
+
+        if (!$result['success']) {
+            return Response::json(['data' => [
+                'success' => false,
+                'message' => 'Error creating entity: ' . ($result['error'] ?? 'Unknown')
+            ]], 500);
+        }
+
+        $entityId = (int)$result['last_id'];
+        $created = true;
+    }
+
+    # Paso 3: Crear relación (Graph::create aplica role templates automáticamente)
+    $graphResult = Graph::create([
+        'profile_id' => Profile::$profile_id,
+        'entity_id' => $entityId,
+        'relation_kind' => $relationKind
+    ], $options);
+
+    # Paso 4: Guardar data contextual en EAV con event_context = relation_kind
+    # Esto permite: proveedor tiene dirección de despacho, cliente tiene dirección de facturación
+    $eavValues = [];
+    if (!empty($data['email'])) {
+        $eavValues[] = ['variable_name' => 'entity.email', 'value' => $data['email']];
+    }
+    if (!empty($data['phone'])) {
+        $eavValues[] = ['variable_name' => 'entity.phone', 'value' => $data['phone']];
+    }
+    if (!empty($data['address'])) {
+        $eavValues[] = ['variable_name' => 'entity.address', 'value' => $data['address']];
+    }
+
+    if (!empty($eavValues)) {
+        DataCaptureService::saveData(
+            Profile::$profile_id,
+            $entityId,
+            Profile::$scope_entity_id,
+            [
+                'macro_context' => 'entity',
+                'event_context' => $relationKind,  # Contexto = tipo de relación
+                'sub_context' => 'default'
+            ],
+            $eavValues,
+            'entity_ensure'
+        );
+    }
+
+    # Paso 5: Devolver entity completo con todos sus relation_kinds y data
+    $entity = CONN::dml(
+        "SELECT entity_id, primary_name, entity_type, national_id, national_isocode, status
+         FROM entities WHERE entity_id = :id",
+        [':id' => $entityId]
+    )[0] ?? null;
+
+    # Obtener todos los relation_kinds
+    if (Tenant::isAdmin()) {
+        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
+                   WHERE entity_id = :id AND status = 'active'";
+        $relParams = [':id' => $entityId];
+    } else {
+        $tenantFilter = Tenant::filter('scope_entity_id', $options);
+        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
+                   WHERE entity_id = :id AND status = 'active'" . $tenantFilter['sql'];
+        $relParams = array_merge([':id' => $entityId], $tenantFilter['params']);
+    }
+    $relations = CONN::dml($relSql, $relParams) ?? [];
+    $entity['relation_kinds'] = array_column($relations, 'relation_kind');
+
+    # Obtener data EAV (la más reciente de cualquier contexto)
+    $eav = DataCaptureService::getHotData($entityId, ['entity.email', 'entity.phone', 'entity.address']);
+    $entity['email'] = $eav['data']['entity.email']['value'] ?? null;
+    $entity['phone'] = $eav['data']['entity.phone']['value'] ?? null;
+    $entity['address'] = $eav['data']['entity.address']['value'] ?? null;
+
+    return Response::json(['data' => [
+        'success' => true,
+        'created' => $created,
+        'entity_id' => $entityId,
+        'entity' => $entity,
+        'relationship' => $graphResult,
+        'context' => $relationKind
+    ]], $created ? 201 : 200);
+}, ROUTER_SCOPE_WRITE);
+
+/**
  * @endpoint   /api/entities/check-identity/{isocode}/{national_id}
  * @method     GET
  * @scope      ROUTER_SCOPE_READ
@@ -384,6 +748,7 @@ Router::register(['GET'], '(?P<id>\d+)/shadows', function($id) {
  * @purpose    Get entity statistics for current scope (admin sees global stats)
  */
 Router::register(['GET'], 'stats', function() {
+    $profileId = Profile::$profile_id;
     $options = ['scope_entity_id' => Profile::$scope_entity_id];
     $params = [];
 
@@ -396,16 +761,19 @@ Router::register(['GET'], 'stats', function() {
                     SUM(CASE WHEN entity_type = 'person' THEN 1 ELSE 0 END) as persons
                 FROM entities";
     } else {
-        # Usuarios normales: estadísticas basadas en relaciones
+        # Usuarios normales: estadísticas basadas en relaciones del profile + tenant
+        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
         $sql = "SELECT
                     COUNT(DISTINCT e.entity_id) as total,
                     SUM(CASE WHEN er.relation_kind = 'supplier_of' THEN 1 ELSE 0 END) as suppliers,
-                    SUM(CASE WHEN er.relation_kind = 'customer_of' THEN 1 ELSE 0 END) as customers,
+                    SUM(CASE WHEN er.relation_kind = 'customer_of' OR er.relation_kind = 'customer' THEN 1 ELSE 0 END) as customers,
                     SUM(CASE WHEN e.entity_type = 'person' THEN 1 ELSE 0 END) as persons
                 FROM entities e
                 INNER JOIN entity_relationships er ON e.entity_id = er.entity_id
-                WHERE 1=1";
-        $sql = Tenant::applySql($sql, 'er.scope_entity_id', $options, $params);
+                WHERE er.profile_id = :profile_id AND er.status = 'active'"
+                . $tenantFilter['sql'];
+        $params[':profile_id'] = $profileId;
+        $params = array_merge($params, $tenantFilter['params']);
     }
 
     $result = CONN::dml($sql, $params);
@@ -421,18 +789,25 @@ Router::register(['GET'], 'stats', function() {
 }, ROUTER_SCOPE_READ);
 
 /**
- * @endpoint   /api/entity-relationships/create
+ * @endpoint   /api/entities/relationships/create
  * @method     POST
  * @scope      ROUTER_SCOPE_WRITE
  * @purpose    Create relationship between profile and entity
- * @body       (JSON) {entity_id, relation_kind}
+ * @body       (JSON) {entity_id, relation_kind, relationship_label?, scope_entity_id?}
  */
-Router::register(['POST'], '../entity-relationships/create', function() {
+Router::register(['POST'], 'relationships/create', function() {
     $data = Args::$OPT;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
 
     $entityId = (int)($data['entity_id'] ?? 0);
     $relationKind = $data['relation_kind'] ?? 'contact_of';
+    $relationshipLabel = $data['relationship_label'] ?? null;
+
+    # scope_entity_id: if provided (e.g., for owner), use it; otherwise use current scope
+    $scopeEntityId = isset($data['scope_entity_id'])
+        ? (int)$data['scope_entity_id']
+        : Profile::$scope_entity_id;
+
+    $options = ['scope_entity_id' => $scopeEntityId];
 
     if ($entityId <= 0) {
         return Response::json(['data' => [
@@ -441,12 +816,111 @@ Router::register(['POST'], '../entity-relationships/create', function() {
         ]], 400);
     }
 
-    $result = Graph::create([
+    $relationData = [
         'profile_id' => Profile::$profile_id,
         'entity_id' => $entityId,
         'relation_kind' => $relationKind
-    ], $options);
+    ];
+
+    # Add optional label (for owner: CEO, Director, etc.)
+    if ($relationshipLabel) {
+        $relationData['relationship_label'] = $relationshipLabel;
+    }
+
+    $result = Graph::create($relationData, $options);
 
     $code = $result['success'] ? 201 : 400;
     return Response::json(['data' => $result], $code);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   /api/entities/relationships/delete
+ * @method     POST
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Delete/deactivate relationship between profile and entity
+ * @body       (JSON) {entity_id, relation_kind}
+ */
+Router::register(['POST'], 'relationships/delete', function() {
+    $data = Args::$OPT;
+
+    $entityId = (int)($data['entity_id'] ?? 0);
+    $relationKind = $data['relation_kind'] ?? '';
+
+    if ($entityId <= 0 || empty($relationKind)) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => 'entity_id and relation_kind are required'
+        ]], 400);
+    }
+
+    $result = CONN::nodml(
+        "UPDATE entity_relationships
+         SET status = 'inactive', updated_by_profile_id = :actor
+         WHERE profile_id = :profile_id
+           AND entity_id = :entity_id
+           AND relation_kind = :kind
+           AND status = 'active'",
+        [
+            ':profile_id' => Profile::$profile_id,
+            ':entity_id' => $entityId,
+            ':kind' => $relationKind,
+            ':actor' => Profile::$profile_id
+        ]
+    );
+
+    if (($result['rowCount'] ?? 0) === 0) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => 'Relationship not found'
+        ]], 404);
+    }
+
+    return Response::json(['data' => ['success' => true, 'message' => 'Relationship deleted']]);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   /api/entities/relationships/update
+ * @method     POST
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Update relationship label
+ * @body       (JSON) {entity_id, relation_kind, relationship_label}
+ */
+Router::register(['POST'], 'relationships/update', function() {
+    $data = Args::$OPT;
+
+    $entityId = (int)($data['entity_id'] ?? 0);
+    $relationKind = $data['relation_kind'] ?? '';
+    $relationshipLabel = $data['relationship_label'] ?? null;
+
+    if ($entityId <= 0 || empty($relationKind)) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => 'entity_id and relation_kind are required'
+        ]], 400);
+    }
+
+    $result = CONN::nodml(
+        "UPDATE entity_relationships
+         SET relationship_label = :label, updated_by_profile_id = :actor
+         WHERE profile_id = :profile_id
+           AND entity_id = :entity_id
+           AND relation_kind = :kind
+           AND status = 'active'",
+        [
+            ':profile_id' => Profile::$profile_id,
+            ':entity_id' => $entityId,
+            ':kind' => $relationKind,
+            ':label' => $relationshipLabel,
+            ':actor' => Profile::$profile_id
+        ]
+    );
+
+    if (($result['rowCount'] ?? 0) === 0) {
+        return Response::json(['data' => [
+            'success' => false,
+            'message' => 'Relationship not found'
+        ]], 404);
+    }
+
+    return Response::json(['data' => ['success' => true, 'message' => 'Relationship updated']]);
 }, ROUTER_SCOPE_WRITE);

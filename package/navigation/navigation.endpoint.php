@@ -92,13 +92,87 @@ Router::register(['GET','POST'], '', function() {
         return strcmp($a['path'] ?? '', $b['path'] ?? '');
     });
 
+    # Profile data for avatar display
+    $profileData = getProfileAvatarData();
+
     return Response::json([
         'success' => true,
         'routes' => $filtered,
         'roles' => $userRoles,
-        'configured' => !empty($dbConfig)
+        'configured' => !empty($dbConfig),
+        'profile' => $profileData
     ]);
 }, ROUTER_SCOPE_PRIVATE);
+
+/**
+ * Get profile data for avatar display in header
+ * Returns: initial, scope_name, profile_id (for hue generation)
+ */
+function getProfileAvatarData(): array {
+    $profileId = Profile::$profile_id;
+    $scopeId = Profile::$scope_entity_id;
+    $ownEntityId = Profile::$entity_id; # Profile's own entity (primary_entity_id)
+
+    # Get profile name from DB
+    $profileName = null;
+    $row = CONN::dml(
+        "SELECT profile_name FROM profiles WHERE profile_id = :pid LIMIT 1",
+        [':pid' => $profileId]
+    );
+    if (!empty($row)) {
+        $profileName = $row[0]['profile_name'] ?? null;
+    }
+
+    # Get scope (company/tenant) name
+    $scopeName = null;
+    if ($scopeId > 0) {
+        $scopeRow = CONN::dml(
+            "SELECT primary_name FROM entities WHERE entity_id = :eid LIMIT 1",
+            [':eid' => $scopeId]
+        );
+        if (!empty($scopeRow)) {
+            $scopeName = $scopeRow[0]['primary_name'] ?? null;
+        }
+    }
+
+    # Determine if in own scope or switched to another workspace
+    $isOwnScope = ($scopeId === $ownEntityId) || ($scopeId <= 0);
+
+    # Get user's role in this scope from profile_roles
+    $roleLabel = null;
+    if (!$isOwnScope && $scopeId > 0) {
+        $roleRow = CONN::dml(
+            "SELECT r.role_label FROM profile_roles pr
+             JOIN roles r ON r.role_code = pr.role_code
+             WHERE pr.profile_id = :pid
+               AND pr.scope_entity_id = :sid
+               AND pr.status = 'active'
+               AND r.status = 'active'
+             ORDER BY pr.profile_role_id ASC
+             LIMIT 1",
+            [':pid' => $profileId, ':sid' => $scopeId]
+        );
+        if (!empty($roleRow)) {
+            $roleLabel = $roleRow[0]['role_label'] ?? null;
+        }
+    }
+
+    # Generate initial from profile name or fallback
+    $initial = 'U';
+    if ($profileName) {
+        $initial = mb_strtoupper(mb_substr(trim($profileName), 0, 1));
+    }
+
+    return [
+        'profile_id' => $profileId,
+        'initial' => $initial,
+        'scope_name' => $scopeName,
+        'profile_name' => $profileName,
+        'is_own_scope' => $isOwnScope,
+        'role_label' => $roleLabel,
+        'scope_entity_id' => $scopeId
+    ];
+}
 
 function handleSaveAction(): array {
     if (!isSysAdmin()) {

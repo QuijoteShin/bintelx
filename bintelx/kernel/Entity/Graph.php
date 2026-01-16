@@ -5,6 +5,7 @@ namespace bX\Entity;
 use bX\CONN;
 use bX\Profile;
 use bX\Tenant;
+use bX\RoleTemplateService;
 
 /**
  * Graph - Entity graph edges (connections between entities/profiles)
@@ -90,10 +91,23 @@ class Graph
             return ['success' => false, 'message' => 'Failed to create relationship'];
         }
 
+        $relationshipId = (int)$result['last_id'];
+
+        # Auto-apply role templates for this relation_kind
+        $templateResult = RoleTemplateService::applyTemplates(
+            $profileId,
+            $entityId,
+            $kind,
+            $tenant['scope'],
+            Profile::$profile_id ?: null
+        );
+
         return [
             'success' => true,
-            'relationship_id' => (int)$result['last_id'],
-            'message' => 'Relationship created'
+            'relationship_id' => $relationshipId,
+            'message' => 'Relationship created',
+            'roles_applied' => $templateResult['applied'],
+            'roles_skipped' => $templateResult['skipped']
         ];
     }
 
