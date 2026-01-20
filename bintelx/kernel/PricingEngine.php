@@ -57,7 +57,18 @@ final class PricingEngine
         $discountFactor = $document['discount_factor'] ?? '0';
 
         # Options
-        $taxRates = $options['tax_rates'] ?? ['VAT19' => '19.00'];
+        # Tax rates: explicit > GeoService > hardcoded fallback
+        if (isset($options['tax_rates'])) {
+            $taxRates = $options['tax_rates'];
+        } elseif (class_exists('\\bX\\GeoService')) {
+            $countryCode = $options['country_code'] ?? 'CL';
+            $taxRates = GeoService::getTaxRatesMap($countryCode);
+            if (empty($taxRates)) {
+                $taxRates = ['VAT19' => '19.00']; # Ultimate fallback
+            }
+        } else {
+            $taxRates = ['VAT19' => '19.00']; # Legacy fallback
+        }
         $precision = (int)($options['precision'] ?? 2);
         $roundPerLine = (bool)($options['round_per_line'] ?? true);
 
