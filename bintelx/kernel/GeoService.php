@@ -17,6 +17,21 @@
 #   GeoService::getTaxRatesMap('CL');                  // ['VAT19'=>'19.00',...]
 #   GeoService::getLaborPolicyValue('CL','workday_hours','2026-05-01'); // '40'
 #
+# Currency Display Pattern (main_currency):
+#   Los valores monetarios se almacenan SIEMPRE en CLP en la base de datos.
+#   El campo `main_currency` indica cómo MOSTRAR los valores al usuario.
+#
+#   Backend: Guarda/calcula todo en CLP
+#   Frontend: Si main_currency === 'UF', convierte CLP→UF para mostrar
+#
+#   Ejemplo en frontend (JS):
+#     const ufRate = await api.get('/geo/uf.json');  // { value: 38123.45 }
+#     const displayValue = main_currency === 'UF'
+#         ? `UF ${(clpAmount / ufRate).toFixed(2)}`
+#         : formatCLP(clpAmount);
+#
+#   Endpoint: GET /api/geo/uf.json → { success: true, value: '38123.45' }
+#
 # @version 1.0.0
 
 namespace bX;
