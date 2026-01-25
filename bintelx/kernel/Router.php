@@ -253,11 +253,11 @@ class Router
         $callback = $route['callback'];
 
         if (is_string($callback) && count($parts = explode('::', $callback)) === 2) {
-          # PHP 8+: wrap in array to pass as single $params argument, not named args
-          $result = call_user_func_array([new $parts[0](), $parts[1]], [$finalArgs]);
+          # Pass named params as individual arguments
+          $result = call_user_func_array([new $parts[0](), $parts[1]], array_values($finalArgs));
         } elseif (is_callable($callback)) {
-          # PHP 8+: wrap in array to pass as single $params argument, not named args
-          $result = call_user_func_array($callback, [$finalArgs]);
+          # Pass named params as individual arguments
+          $result = call_user_func_array($callback, array_values($finalArgs));
         } else {
           throw new \Exception("Route callback is not executable.");
         }
