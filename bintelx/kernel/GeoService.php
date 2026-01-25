@@ -308,6 +308,8 @@ class GeoService
      * Get ALL exchange rates for a base currency (no filtering by currency list)
      * Returns all available rates from geo_exchange_rates table
      *
+     * Uses DML callback for memory efficiency - processes rows as they stream
+     *
      * @param string $baseCurrency Base currency code (default: CLP)
      * @param string|null $date Effective date
      * @return array Map of target_currency_code => rate
@@ -334,13 +336,12 @@ class GeoService
             ':scope' => $scopeEntityId
         ];
 
-        $rows = CONN::dml($sql, $params);
-
         # Build map with priority: tenant-specific > global
+        # Using callback for memory efficiency (streaming rows)
         $map = [];
         $seen = [];
 
-        foreach ($rows as $row) {
+        CONN::dml($sql, $params, function($row) use (&$map, &$seen) {
             $target = $row['target_currency_code'];
             $isScoped = $row['scope_entity_id'] !== null;
 
@@ -349,7 +350,7 @@ class GeoService
                 $map[$target] = (float)$row['rate'];
                 $seen[$target] = true;
             }
-        }
+        });
 
         return $map;
     }
@@ -497,6 +498,8 @@ class GeoService
     /**
      * Get tax rates map for a country (code => rate)
      *
+     * Uses DML callback for memory efficiency
+     *
      * @param string $country Country code
      * @param string|null $date Effective date
      * @return array Map of tax_code => rate
@@ -513,18 +516,18 @@ class GeoService
                   AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
                 ORDER BY scope_entity_id DESC, effective_from DESC";
 
-        $rows = CONN::dml($sql, [
+        $map = [];
+
+        CONN::dml($sql, [
             ':country' => strtoupper($country),
             ':date' => $date,
             ':scope' => $scopeEntityId
-        ]);
-
-        $map = [];
-        foreach ($rows as $row) {
+        ], function($row) use (&$map) {
+            # First occurrence wins (tenant > global due to ORDER BY)
             if (!isset($map[$row['tax_code']])) {
                 $map[$row['tax_code']] = Math::round($row['rate'], 2);
             }
-        }
+        });
 
         return $map;
     }
