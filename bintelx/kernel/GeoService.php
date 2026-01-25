@@ -305,6 +305,56 @@ class GeoService
     }
 
     /**
+     * Get ALL exchange rates for a base currency (no filtering by currency list)
+     * Returns all available rates from geo_exchange_rates table
+     *
+     * @param string $baseCurrency Base currency code (default: CLP)
+     * @param string|null $date Effective date
+     * @return array Map of target_currency_code => rate
+     */
+    public static function getAllExchangeRates(
+        string $baseCurrency = 'CLP',
+        ?string $date = null
+    ): array {
+        $date = $date ?? date('Y-m-d');
+        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $baseCurrency = strtoupper($baseCurrency);
+
+        $sql = "SELECT target_currency_code, rate, scope_entity_id
+                FROM geo_exchange_rates
+                WHERE base_currency_code = :base
+                  AND effective_from <= :date
+                  AND effective_to >= :date
+                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
+                ORDER BY scope_entity_id DESC, effective_from DESC";
+
+        $params = [
+            ':base' => $baseCurrency,
+            ':date' => $date,
+            ':scope' => $scopeEntityId
+        ];
+
+        $rows = CONN::dml($sql, $params);
+
+        # Build map with priority: tenant-specific > global
+        $map = [];
+        $seen = [];
+
+        foreach ($rows as $row) {
+            $target = $row['target_currency_code'];
+            $isScoped = $row['scope_entity_id'] !== null;
+
+            # Priorizar rate del tenant sobre global
+            if (!isset($seen[$target]) || $isScoped) {
+                $map[$target] = (float)$row['rate'];
+                $seen[$target] = true;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
      * Save exchange rate with ALCOA+ audit
      *
      * @param string $base Base currency code
