@@ -1,6 +1,47 @@
 <?php
+# bintelx/kernel/Sequent.php
 namespace bX;
 
+/**
+ * Sequent - Generador de secuencias numéricas únicas por scope/family
+ *
+ * IMPORTANTE: Todos los métodos reciben UN SOLO argumento tipo ARRAY con keys específicos.
+ * NO usar argumentos posicionales.
+ *
+ * EJEMPLO DE USO CORRECTO:
+ * ```php
+ * $sequent = Sequent::consume([
+ *     'scope_entity_id' => Profile::$scope_entity_id,
+ *     'sequent_family' => 'offering_quote',      # Identifica el tipo de secuencia
+ *     'sequent_prefix' => 'QT-',                 # Prefijo visible (incluir guión)
+ *     'sequent_padding_length' => 5              # QT-00001, QT-00002, etc.
+ * ]);
+ * $code = $sequent['consume'];  # "QT-00001"
+ * ```
+ *
+ * EJEMPLO INCORRECTO (error común):
+ * ```php
+ * # ❌ ESTO FALLA - NO usar argumentos posicionales
+ * $code = Sequent::consume("WO_CODE", "WO-", 5);
+ *
+ * # ✅ CORRECTO - usar array asociativo
+ * $sequent = Sequent::consume(['scope_entity_id' => $scope, 'sequent_family' => 'WO', ...]);
+ * ```
+ *
+ * KEYS DISPONIBLES:
+ * - scope_entity_id (int): Tenant/empresa que controla la secuencia
+ * - branch_entity_id (int, opcional): Sub-división (sucursal, proyecto)
+ * - sequent_family (string): Categoría lógica (orders, invoices, quotes)
+ * - sequent_prefix (string): Prefijo visible en el código (ORD-, INV-)
+ * - sequent_padding_length (int): Largo del número con ceros (5 = 00001)
+ * - sequent_padding (string, default '0'): Caracter de padding
+ * - sequent_increment_by (int, default 1): Incremento por consumo
+ *
+ * RETORNO de consume():
+ * - sequent_id: ID del registro en tabla sequent
+ * - sequent_value: Valor numérico actual (ej: 42)
+ * - consume: Código formateado (ej: "ORD-00042")
+ */
 class Sequent
 {
 
