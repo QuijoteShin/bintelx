@@ -34,6 +34,7 @@ foreach ($entityVariables as $varDef) {
  * @query      limit (int) - Max results (default 100)
  * @query      offset (int) - Pagination offset
  * @query      entity_type (string) - Filter by type
+ * @query      relation_kind (string) - Filter by relation kind (customer, supplier, contact, partner, etc.)
  * @note       Usa EXISTS + query separada para relation_kinds (optimizado para escala)
  * @index      Requiere: entity_relationships(scope_entity_id, entity_id)
  */
@@ -41,21 +42,35 @@ Router::register(['GET'], 'list', function() {
     $limit = min((int)(Args::$OPT['limit'] ?? 100), 500);
     $offset = (int)(Args::$OPT['offset'] ?? 0);
     $entityType = Args::$OPT['entity_type'] ?? null;
+    $relationKind = Args::$OPT['relation_kind'] ?? null;
     $options = ['scope_entity_id' => Profile::$scope_entity_id];
     $profileId = Profile::$profile_id;
     $params = [];
 
     # Query 1: Obtener entities únicos (EXISTS para usuarios, directo para admin)
     if (Tenant::isAdmin()) {
-        $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
-                       e.national_id, e.national_isocode,
-                       e.status, e.created_at
-                FROM entities e
-                WHERE 1=1";
+        if ($relationKind) {
+            # Admin con filtro relation_kind: JOIN con entity_relationships
+            $sql = "SELECT DISTINCT e.entity_id, e.primary_name, e.entity_type,
+                           e.national_id, e.national_isocode,
+                           e.status, e.created_at
+                    FROM entities e
+                    INNER JOIN entity_relationships er ON er.entity_id = e.entity_id
+                    WHERE er.relation_kind = :relation_kind
+                      AND er.status = 'active'";
+            $params[':relation_kind'] = $relationKind;
+        } else {
+            $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
+                           e.national_id, e.national_isocode,
+                           e.status, e.created_at
+                    FROM entities e
+                    WHERE 1=1";
+        }
     } else {
         # EXISTS es más eficiente que DISTINCT+JOIN cuando hay múltiples relaciones por entity
         # Filtrar por: profile_id (relaciones del usuario) + scope_entity_id (tenant)
         $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+        $relationKindFilter = $relationKind ? "AND er.relation_kind = :relation_kind" : "";
         $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
                        e.national_id, e.national_isocode,
                        e.status, e.created_at
@@ -65,9 +80,13 @@ Router::register(['GET'], 'list', function() {
                     WHERE er.entity_id = e.entity_id
                     AND er.profile_id = :profile_id
                     AND er.status = 'active'
+                    {$relationKindFilter}
                     {$tenantFilter['sql']}
                 )";
         $params[':profile_id'] = $profileId;
+        if ($relationKind) {
+            $params[':relation_kind'] = $relationKind;
+        }
         $params = array_merge($params, $tenantFilter['params']);
     }
 
@@ -531,7 +550,7 @@ Router::register(['POST'], 'ensure', function() {
         ]], 400);
     }
 
-    $relationKind = $data['relation_kind'] ?? 'contact_of';
+    $relationKind = $data['relation_kind'] ?? 'contact';
 
     $tenant = Tenant::validateForWrite($options);
     if (!$tenant['valid']) {
@@ -765,8 +784,8 @@ Router::register(['GET'], 'stats', function() {
         $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
         $sql = "SELECT
                     COUNT(DISTINCT e.entity_id) as total,
-                    SUM(CASE WHEN er.relation_kind = 'supplier_of' THEN 1 ELSE 0 END) as suppliers,
-                    SUM(CASE WHEN er.relation_kind = 'customer_of' OR er.relation_kind = 'customer' THEN 1 ELSE 0 END) as customers,
+                    SUM(CASE WHEN er.relation_kind = 'supplier' THEN 1 ELSE 0 END) as suppliers,
+                    SUM(CASE WHEN er.relation_kind = 'customer' THEN 1 ELSE 0 END) as customers,
                     SUM(CASE WHEN e.entity_type = 'person' THEN 1 ELSE 0 END) as persons
                 FROM entities e
                 INNER JOIN entity_relationships er ON e.entity_id = er.entity_id
@@ -799,7 +818,7 @@ Router::register(['POST'], 'relationships/create', function() {
     $data = Args::$OPT;
 
     $entityId = (int)($data['entity_id'] ?? 0);
-    $relationKind = $data['relation_kind'] ?? 'contact_of';
+    $relationKind = $data['relation_kind'] ?? 'contact';
     $relationshipLabel = $data['relationship_label'] ?? null;
 
     # scope_entity_id: if provided (e.g., for owner), use it; otherwise use current scope
