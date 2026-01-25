@@ -11,6 +11,43 @@
  * - Multi-source (source_system, device_id)
  * - Versionado atómico (is_active)
  *
+ * ============================================================================
+ * REGLA CRÍTICA: NUNCA ACCEDER DIRECTAMENTE A LAS TABLAS EAV
+ * ============================================================================
+ *
+ * Las tablas internas del sistema EAV son:
+ *   - data_dictionary
+ *   - data_values_history
+ *   - context_groups
+ *
+ * PROHIBIDO hacer SELECT/INSERT/UPDATE/DELETE directo a estas tablas.
+ * SIEMPRE usar los métodos de esta clase:
+ *
+ *   - defineCaptureField()  → Definir/actualizar variables (IDEMPOTENTE)
+ *   - saveData()            → Guardar valores con contexto ALCOA+
+ *   - getHotData()          → Leer valores actuales
+ *   - getAuditTrailForVariable() → Leer historial de cambios
+ *
+ * ============================================================================
+ * IDEMPOTENCIA
+ * ============================================================================
+ *
+ * defineCaptureField() es IDEMPOTENTE (UPSERT por unique_name):
+ *   - Si la variable no existe → INSERT
+ *   - Si la variable existe → UPDATE
+ *
+ * Por lo tanto, NO es necesario verificar existencia antes de llamar:
+ *
+ *   // INCORRECTO - no hacer esto
+ *   $exists = CONN::dml("SELECT 1 FROM data_dictionary WHERE unique_name = :name");
+ *   if (empty($exists)) {
+ *       DataCaptureService::defineCaptureField($def, $profileId);
+ *   }
+ *
+ *   // CORRECTO - llamar directamente
+ *   DataCaptureService::defineCaptureField($def, $profileId);
+ *
+ * ============================================================================
  *
  * @package bX
  * @version 2.0
@@ -26,7 +63,12 @@ class DataCaptureService {
     /**
      * Define o actualiza una variable en el diccionario de datos
      *
-     * Escribe en data_dictionary con auditoría completa
+     * IDEMPOTENTE: Realiza UPSERT por unique_name.
+     * - Si no existe → INSERT
+     * - Si existe → UPDATE
+     *
+     * NO es necesario verificar existencia antes de llamar.
+     * Llamar directamente cuantas veces sea necesario.
      *
      * @param array $fieldDefinition ['unique_name', 'label', 'data_type', 'is_pii', 'attributes_json', 'status']
      * @param int $actorProfileId ID del perfil que define el campo
