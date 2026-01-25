@@ -12,7 +12,7 @@ use bX\RoleTemplateService;
  *
  * Manages the entity_relationships table as a graph structure:
  * - Nodes: entities, profiles
- * - Edges: relationships with kind (owner, member, supplier_of, customer_of, etc.)
+ * - Edges: relationships with kind (owner, member, supplier, customer, contact, partner, etc.)
  *
  * All methods follow Bintelx signature: (array $data, array $options, ?callable $callback)
  * Multi-tenant: uses Tenant helper for scope filtering

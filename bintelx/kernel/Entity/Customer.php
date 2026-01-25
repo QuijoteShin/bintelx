@@ -10,14 +10,14 @@ use bX\Tenant;
 /**
  * Customer - Gestión de clientes
  *
- * Un cliente es un Entity con relación 'customer_of' hacia un scope.
+ * Un cliente es un Entity con relación 'customer' hacia un scope.
  * Usa identity_hash para matching (sin entity_type en el hash).
  *
  * @package bX\Entity
  */
 class Customer
 {
-    public const RELATION_KIND = 'customer_of';
+    public const RELATION_KIND = 'customer';
     public const ENTITY_TYPE = 'organization'; # o 'person' si es persona natural
 
     /**

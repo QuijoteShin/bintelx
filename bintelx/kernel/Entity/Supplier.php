@@ -10,14 +10,14 @@ use bX\Tenant;
 /**
  * Supplier - Gestión de proveedores
  *
- * Un proveedor es un Entity con relación 'supplier_of' hacia un scope.
+ * Un proveedor es un Entity con relación 'supplier' hacia un scope.
  * Usa identity_hash para matching (sin entity_type en el hash).
  *
  * @package bX\Entity
  */
 class Supplier
 {
-    public const RELATION_KIND = 'supplier_of';
+    public const RELATION_KIND = 'supplier';
     public const ENTITY_TYPE = 'organization'; # o 'person' si es persona natural
 
     /**
