@@ -383,7 +383,7 @@ class Profile {
     }
 
     /**
-     * Fetches active business relationships for a profile (owner, supplier_of, etc.)
+     * Fetches active business relationships for a profile (owner, supplier, customer, etc.)
      * Role assignments are now in profile_roles table
      *
      * @return array<int,array<string,mixed>>
@@ -460,7 +460,7 @@ class Profile {
         $ownership = [];
         $routeMap = ['*' => 'private'];
 
-        # Process business relationships (owner, supplier_of, customer_of, etc.)
+        # Process business relationships (owner, supplier, customer, etc.)
         foreach ($relationships as $row) {
             $assignment = [
                 'relationshipId' => (int)($row['relationship_id'] ?? 0),
@@ -722,6 +722,22 @@ class Profile {
         $scopes = self::getAllowedScopes();
         $result = [];
 
+        # Always include personal scope first (user's own entity)
+        $personalEntityId = self::$entity_id;
+        if ($personalEntityId > 0) {
+            CONN::dml(
+                "SELECT entity_id, primary_name FROM entities WHERE entity_id = :id",
+                [':id' => $personalEntityId],
+                function(array $row) use (&$result) {
+                    $result[] = [
+                        'id' => (int)$row['entity_id'],
+                        'name' => $row['primary_name'],
+                        'is_personal' => true
+                    ];
+                }
+            );
+        }
+
         # Admin wildcard: return all companies
         if ($scopes === ['*']) {
             CONN::dml(
@@ -730,10 +746,13 @@ class Profile {
                  WHERE entity_type IN ('company', 'crm_company')
                    AND status = 'active'",
                 [],
-                function(array $row) use (&$result) {
+                function(array $row) use (&$result, $personalEntityId) {
+                    # Skip personal entity (already added)
+                    if ((int)$row['entity_id'] === $personalEntityId) return;
                     $result[] = [
                         'id' => (int)$row['entity_id'],
-                        'name' => $row['primary_name']
+                        'name' => $row['primary_name'],
+                        'is_personal' => false
                     ];
                 }
             );
@@ -742,30 +761,34 @@ class Profile {
 
         # Specific scopes: fetch metadata in single query
         if (empty($scopes)) {
-            return [];
+            return $result; # Return at least personal scope
         }
 
-        # Build IN clause
+        # Build IN clause (exclude personal entity)
         $placeholders = [];
         $params = [];
         foreach ($scopes as $index => $scopeId) {
+            if ($scopeId === $personalEntityId) continue; # Skip personal
             $key = ":scope{$index}";
             $placeholders[] = $key;
             $params[$key] = $scopeId;
         }
 
-        CONN::dml(
-            "SELECT entity_id, primary_name
-             FROM entities
-             WHERE entity_id IN (" . implode(',', $placeholders) . ")",
-            $params,
-            function(array $row) use (&$result) {
-                $result[] = [
-                    'id' => (int)$row['entity_id'],
-                    'name' => $row['primary_name']
-                ];
-            }
-        );
+        if (!empty($placeholders)) {
+            CONN::dml(
+                "SELECT entity_id, primary_name
+                 FROM entities
+                 WHERE entity_id IN (" . implode(',', $placeholders) . ")",
+                $params,
+                function(array $row) use (&$result) {
+                    $result[] = [
+                        'id' => (int)$row['entity_id'],
+                        'name' => $row['primary_name'],
+                        'is_personal' => false
+                    ];
+                }
+            );
+        }
 
         return $result;
     }
@@ -778,6 +801,11 @@ class Profile {
      */
     public static function canAccessScope(int $scopeEntityId): bool
     {
+        # Personal scope is always allowed
+        if ($scopeEntityId === self::$entity_id && self::$entity_id > 0) {
+            return true;
+        }
+
         $allowedScopes = self::getAllowedScopes();
 
         # Admin wildcard
