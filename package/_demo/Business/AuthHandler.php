@@ -552,12 +552,12 @@ class AuthHandler
 
       $profileId = (int)$profileResult['last_id'];
 
-      # 5. Crear Relationship: Profile → Company (owner_of)
+      # 5. Crear Relationship: Profile → Company (owner)
       # Pasamos scope_entity_id = companyEntityId porque es el tenant del nuevo usuario
       $relResult = \bX\Entity\Graph::create([
         'profile_id' => $profileId,
         'entity_id' => $companyEntityId,
-        'relation_kind' => 'owner_of',
+        'relation_kind' => 'owner',
         'relationship_label' => $inputData['companyName']
       ], ['scope_entity_id' => $companyEntityId]);
 
