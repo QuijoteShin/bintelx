@@ -53,14 +53,31 @@ class Account {
 
       // Verify the provided password against the stored hash
       if (password_verify($credentials['password'], $user['password_hash'])) {
-        // Password is correct, generate token
-        $token = $this->generateToken((string)$user['account_id']);
+        # Get profile_id and personal entity_id for this account
+        $profileData = null;
+        CONN::dml(
+          "SELECT profile_id, primary_entity_id FROM profiles WHERE account_id = :aid LIMIT 1",
+          [':aid' => $user['account_id']],
+          function($row) use (&$profileData) { $profileData = $row; return false; }
+        );
+
+        $profileId = $profileData ? (int)$profileData['profile_id'] : null;
+        $personalScope = $profileData ? (int)$profileData['primary_entity_id'] : null;
+
+        # Generate token with profile_id and personal scope (default at login)
+        $token = $this->generateToken(
+          (string)$user['account_id'],
+          null,                    # metadata (auto timestamp)
+          null,                    # expiresIn (default)
+          $profileId,              # profile_id
+          $personalScope           # scope_entity_id (área personal por defecto)
+        );
 
         if (!$token) {
           return ['success' => false, 'message' => 'Failed to generate session token.'];
         }
 
-        Log::logInfo('Successful login for account_id: ' . $user['account_id']);
+        Log::logInfo('Successful login for account_id: ' . $user['account_id'] . ' with personal scope: ' . $personalScope);
         return ['success' => true, 'message' => 'Login successful.', 'token' => $token];
       } else {
         Log::logWarning('Failed login attempt (wrong password) for account_id: ' . $user['account_id']);
