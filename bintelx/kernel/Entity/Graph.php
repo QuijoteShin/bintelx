@@ -88,7 +88,7 @@ class Graph
         $result = CONN::nodml($sql, $params);
 
         if (!$result['success']) {
-            return ['success' => false, 'message' => 'Failed to create relationship'];
+            return ['success' => false, 'message' => 'Failed to create relationship: ' . ($result['error'] ?? 'Unknown error')];
         }
 
         $relationshipId = (int)$result['last_id'];

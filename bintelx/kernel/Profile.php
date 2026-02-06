@@ -817,7 +817,7 @@ class Profile {
     }
 
     /**
-     * Assert scope access or throw exception
+     * Asserts scope access or throw exception
      *
      * Validates scope and logs security violation if invalid.
      * Use ONLY in login and scope switch endpoints.
@@ -843,5 +843,62 @@ class Profile {
 
             throw new \RuntimeException('Forbidden: You do not have access to this scope');
         }
+    }
+
+    /**
+     * Gets comprehensive profile information including entity and account details.
+     * Use this to retrieve "author" names or user profile cards.
+     *
+     * @param int $profileId The ID of the profile to fetch.
+     * @param array $options [
+     *   'includeAccount' => bool,
+     *   'onlyActive' => bool (default: true)
+     * ]
+     * @return array|null Profile data array or null if not found.
+     */
+    public static function getProfileInfo(int $profileId, array $options = []): ?array
+    {
+        if ($profileId <= 0) {
+            return null;
+        }
+
+        $onlyActive = $options['onlyActive'] ?? true;
+        $includeAccount = $options['includeAccount'] ?? false;
+
+        $sql = "SELECT p.*,
+                       e.primary_name AS entity_name,
+                       e.entity_type,
+                       e.national_id,
+                       e.national_isocode";
+
+        if ($includeAccount) {
+            $sql .= ", a.username, a.is_active";
+        }
+
+        $sql .= " FROM profiles p
+                  LEFT JOIN entities e ON e.entity_id = p.primary_entity_id";
+
+        if ($includeAccount) {
+            $sql .= " LEFT JOIN accounts a ON a.account_id = p.account_id";
+        }
+
+        $sql .= " WHERE p.profile_id = :pid";
+
+        if ($onlyActive) {
+            $sql .= " AND p.status = 'active' AND e.status = 'active'";
+            if ($includeAccount) {
+                $sql .= " AND a.is_active = 1";
+            }
+        }
+
+        $sql .= " LIMIT 1";
+
+        $profileInfo = null;
+        CONN::dml($sql, [':pid' => $profileId], function ($row) use (&$profileInfo) {
+            $profileInfo = $row;
+            return false;
+        });
+
+        return $profileInfo;
     }
 }
