@@ -78,12 +78,11 @@ Router::register(['GET'], 'list', function() {
                 WHERE EXISTS (
                     SELECT 1 FROM entity_relationships er
                     WHERE er.entity_id = e.entity_id
-                    AND er.profile_id = :profile_id
                     AND er.status = 'active'
                     {$relationKindFilter}
                     {$tenantFilter['sql']}
                 )";
-        $params[':profile_id'] = $profileId;
+        # $params[':profile_id'] = $profileId; # Removed to allow seeing all tenant entities
         if ($relationKind) {
             $params[':relation_kind'] = $relationKind;
         }
@@ -171,6 +170,71 @@ Router::register(['GET'], 'list', function() {
         'success' => true,
         'data' => $entities,
         'count' => count($entities)
+    ]]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   /api/entities/find.json
+ * @method     POST
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Find entities by text search
+ * @body       (JSON) {query, relation_kind, limit}
+ */
+Router::register(['POST'], 'find.json', function() {
+    $data = Args::$OPT;
+    $query = trim($data['query'] ?? $data['search'] ?? '');
+    $relationKind = $data['relation_kind'] ?? null;
+    $limit = min((int)($data['limit'] ?? 20), 100);
+    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $params = [];
+
+    $sql = "SELECT e.entity_id, e.primary_name, e.entity_type, 
+                   e.national_id, e.national_isocode, e.status
+            FROM entities e ";
+
+    $conditions = ["1=1"];
+
+    # Tenant & Relationship Filter
+    if (Tenant::isAdmin()) {
+        if ($relationKind) {
+            $sql .= " JOIN entity_relationships er ON er.entity_id = e.entity_id ";
+            $conditions[] = "er.relation_kind = :kind";
+            $conditions[] = "er.status = 'active'";
+            $params[':kind'] = $relationKind;
+        }
+    } else {
+        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+        $kindSql = $relationKind ? "AND er.relation_kind = :kind" : "";
+        
+        # Visibility: Entities linked to the current scope (not just user)
+        $exists = "EXISTS (
+            SELECT 1 FROM entity_relationships er
+            WHERE er.entity_id = e.entity_id
+            AND er.status = 'active'
+            {$kindSql}
+            {$tenantFilter['sql']}
+        )";
+        $conditions[] = $exists;
+        $params = array_merge($params, $tenantFilter['params']);
+        if ($relationKind) {
+            $params[':kind'] = $relationKind;
+        }
+    }
+
+    if (!empty($query)) {
+        $conditions[] = "(e.primary_name LIKE :q OR e.national_id LIKE :q)";
+        $params[':q'] = "%{$query}%";
+    }
+
+    $sql .= " WHERE " . implode(" AND ", $conditions);
+    $sql .= " ORDER BY e.primary_name ASC LIMIT {$limit}";
+
+    $rows = CONN::dml($sql, $params) ?? [];
+
+    return Response::json(['data' => [
+        'success' => true,
+        'data' => $rows,
+        'count' => count($rows)
     ]]);
 }, ROUTER_SCOPE_READ);
 
@@ -327,6 +391,24 @@ Router::register(['POST'], 'create', function() {
             $data['national_isocode'],
             $data['national_id']
         );
+
+        # Check for existing entity with same identity_hash
+        $existing = CONN::dml(
+            "SELECT entity_id FROM entities WHERE identity_hash = :hash LIMIT 1",
+            [':hash' => $identityHash]
+        );
+
+        if (!empty($existing)) {
+            $existingEntityId = (int)$existing[0]['entity_id'];
+            
+            # If we're just creating, return the existing ID so the frontend can link it
+            return Response::json(['data' => [
+                'success' => true,
+                'entity_id' => $existingEntityId,
+                'identity_hash' => $identityHash,
+                'message' => 'Entity already exists, returned existing ID'
+            ]], 200);
+        }
     }
 
     # Insert entity (solo columnas de tabla entities)
@@ -846,7 +928,7 @@ Router::register(['POST'], 'relationships/create', function() {
         $relationData['relationship_label'] = $relationshipLabel;
     }
 
-    $result = Graph::create($relationData, $options);
+    $result = Graph::createIfNotExists($relationData, $options);
 
     $code = $result['success'] ? 201 : 400;
     return Response::json(['data' => $result], $code);
