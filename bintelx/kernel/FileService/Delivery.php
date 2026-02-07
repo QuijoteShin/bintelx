@@ -270,9 +270,9 @@ class Delivery
             $sizeBytes = filesize($diskPath);
         }
 
-        # Set headers
+        # Common headers
         header('Content-Type: ' . $mimeType);
-        header('Content-Length: ' . $sizeBytes);
+        header('Accept-Ranges: bytes');
 
         if ($inline) {
             header('Content-Disposition: inline; filename="' . addslashes($originalName) . '"');
@@ -280,12 +280,37 @@ class Delivery
             header('Content-Disposition: attachment; filename="' . addslashes($originalName) . '"');
         }
 
-        # Disable output buffering for large files
+        # Disable output buffering
         if (ob_get_level()) {
             ob_end_clean();
         }
 
-        # Stream file
+        # Range request support (audio/video seek)
+        $rangeHeader = $_SERVER['HTTP_RANGE'] ?? null;
+        if ($rangeHeader && preg_match('/bytes=(\d+)-(\d*)/', $rangeHeader, $m)) {
+            $start = (int)$m[1];
+            $end = $m[2] !== '' ? (int)$m[2] : $sizeBytes - 1;
+
+            if ($start > $end || $start >= $sizeBytes) {
+                http_response_code(416);
+                header("Content-Range: bytes */$sizeBytes");
+                return;
+            }
+
+            $length = $end - $start + 1;
+            http_response_code(206);
+            header("Content-Range: bytes $start-$end/$sizeBytes");
+            header("Content-Length: $length");
+
+            $fp = fopen($diskPath, 'rb');
+            fseek($fp, $start);
+            echo fread($fp, $length);
+            fclose($fp);
+            return;
+        }
+
+        # Full file
+        header('Content-Length: ' . $sizeBytes);
         readfile($diskPath);
     }
 
