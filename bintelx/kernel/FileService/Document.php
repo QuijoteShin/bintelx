@@ -101,6 +101,45 @@ class Document
         $diskPath = Storage::getDiskPath($hash);
         $shardPath = Storage::getShardPath($hash);
 
+        # Check for soft-deleted document with same key+scope (unique constraint)
+        $deletedSql = "SELECT document_id FROM file_documents
+                        WHERE storage_key = :hash AND status = 'deleted'";
+        $deletedParams = [':hash' => $storageKey];
+        $deletedSql .= Tenant::whereClause('scope_entity_id', $options);
+        $deletedParams = array_merge($deletedParams, Tenant::params($options));
+        $deletedSql .= " LIMIT 1";
+
+        $deletedDoc = null;
+        CONN::dml($deletedSql, $deletedParams, function($row) use (&$deletedDoc) {
+            $deletedDoc = $row;
+            return false;
+        });
+
+        if ($deletedDoc) {
+            # Revive soft-deleted document
+            $reviveSql = "UPDATE file_documents SET
+                            status = 'stored', mime_type = :mime, original_name = :name,
+                            size_bytes = :size, created_by = :created_by
+                          WHERE document_id = :id";
+            CONN::nodml($reviveSql, [
+                ':mime' => $mimeType,
+                ':name' => $originalName,
+                ':size' => $sizeBytes,
+                ':created_by' => Profile::$profile_id ?: null,
+                ':id' => $deletedDoc['document_id']
+            ]);
+
+            $documentId = (int)$deletedDoc['document_id'];
+            Log::logInfo("Document::create - Revived deleted document $documentId for $originalName");
+
+            return [
+                'success' => true,
+                'document_id' => $documentId,
+                'storage_key' => $storageKey,
+                'revived' => true
+            ];
+        }
+
         $sql = "INSERT INTO file_documents
                 (storage_key, hash_algo, hash, size_bytes, mime_type,
                  original_name, relative_path, storage_provider, disk_path, shard_path,
