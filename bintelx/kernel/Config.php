@@ -77,8 +77,49 @@ class Config
         return true;
     }
 
+    /**
+     * Load a project .env that overrides base config
+     * Does not check $loaded flag — always applies on top of existing config
+     */
+    public static function loadOverride(string $path): bool
+    {
+        if (!file_exists($path)) {
+            return false;
+        }
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        foreach ($lines as $line) {
+            if (strpos(trim($line), '#') === 0) {
+                continue;
+            }
+            if (strpos($line, '=') !== false) {
+                list($key, $value) = explode('=', $line, 2);
+                $key = trim($key);
+                $value = trim($value);
+
+                if (preg_match('/^(["\'])(.*)\1$/', $value, $matches)) {
+                    $value = $matches[2];
+                }
+
+                # Force overwrite — project values win
+                self::$config[$key] = $value;
+                $_ENV[$key] = $value;
+                putenv("{$key}={$value}");
+            }
+        }
+
+        return true;
+    }
+
     private static function setConfig(string $key, string $value): void
     {
+        # Server/pool env vars take precedence over .env file
+        $existing = getenv($key);
+        if ($existing !== false) {
+            $value = $existing;
+        }
+
         $_ENV[$key] = $value;
         putenv("{$key}={$value}");
         self::$config[$key] = $value;
