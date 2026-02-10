@@ -18,6 +18,7 @@ $entityVariables = [
     ['unique_name' => 'entity.email', 'label' => 'Email', 'data_type' => 'STRING', 'is_pii' => true],
     ['unique_name' => 'entity.phone', 'label' => 'Teléfono', 'data_type' => 'STRING', 'is_pii' => true],
     ['unique_name' => 'entity.address', 'label' => 'Dirección', 'data_type' => 'STRING', 'is_pii' => false],
+    ['unique_name' => 'entity.giros', 'label' => 'Giros comerciales', 'data_type' => 'JSON', 'is_pii' => false],
 ];
 foreach ($entityVariables as $varDef) {
     $exists = CONN::dml("SELECT 1 FROM data_dictionary WHERE unique_name = :name LIMIT 1", [':name' => $varDef['unique_name']]);
@@ -316,10 +317,11 @@ Router::register(['GET'], '(?P<id>\d+)', function($id) {
     $entity['owner_label'] = $ownerLabel[0]['relationship_label'] ?? null;
 
     # Obtener datos EAV más recientes (para campos principales)
-    $eav = DataCaptureService::getHotData($entityId, ['entity.email', 'entity.phone', 'entity.address']);
+    $eav = DataCaptureService::getHotData($entityId, ['entity.email', 'entity.phone', 'entity.address', 'entity.giros']);
     $entity['email'] = $eav['data']['entity.email']['value'] ?? null;
     $entity['phone'] = $eav['data']['entity.phone']['value'] ?? null;
     $entity['address'] = $eav['data']['entity.address']['value'] ?? null;
+    $entity['giros'] = $eav['data']['entity.giros']['value'] ?? [];
 
     # Obtener datos EAV agrupados por contexto (relation_kind)
     # Permite ver: dirección como proveedor vs dirección como cliente
@@ -467,6 +469,22 @@ Router::register(['POST'], 'create', function() {
         );
     }
 
+    # Guardar giros comerciales (JSON array en EAV)
+    if (!empty($data['giros']) && is_array($data['giros'])) {
+        DataCaptureService::saveData(
+            Profile::$profile_id,
+            $entityId,
+            Profile::$scope_entity_id,
+            [
+                'macro_context' => 'entity',
+                'event_context' => 'business_info',
+                'sub_context' => 'giros'
+            ],
+            [['variable_name' => 'entity.giros', 'value' => array_values(array_filter($data['giros']))]],
+            'entity_create'
+        );
+    }
+
     return Response::json(['data' => [
         'success' => true,
         'entity_id' => $entityId,
@@ -594,6 +612,23 @@ Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
                 'sub_context' => 'primary'
             ],
             $eavValues,
+            'entity_update'
+        );
+    }
+
+    # Actualizar giros comerciales (JSON array en EAV)
+    if (array_key_exists('giros', $data)) {
+        $giros = is_array($data['giros']) ? array_values(array_filter($data['giros'])) : [];
+        DataCaptureService::saveData(
+            $profileId,
+            $entityId,
+            Profile::$scope_entity_id,
+            [
+                'macro_context' => 'entity',
+                'event_context' => 'business_info',
+                'sub_context' => 'giros'
+            ],
+            [['variable_name' => 'entity.giros', 'value' => $giros]],
             'entity_update'
         );
     }
@@ -749,10 +784,11 @@ Router::register(['POST'], 'ensure', function() {
     $entity['relation_kinds'] = array_column($relations, 'relation_kind');
 
     # Obtener data EAV (la más reciente de cualquier contexto)
-    $eav = DataCaptureService::getHotData($entityId, ['entity.email', 'entity.phone', 'entity.address']);
+    $eav = DataCaptureService::getHotData($entityId, ['entity.email', 'entity.phone', 'entity.address', 'entity.giros']);
     $entity['email'] = $eav['data']['entity.email']['value'] ?? null;
     $entity['phone'] = $eav['data']['entity.phone']['value'] ?? null;
     $entity['address'] = $eav['data']['entity.address']['value'] ?? null;
+    $entity['giros'] = $eav['data']['entity.giros']['value'] ?? [];
 
     return Response::json(['data' => [
         'success' => true,
