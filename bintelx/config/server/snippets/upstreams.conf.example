@@ -1,0 +1,128 @@
+# snippets/upstreams.conf.example
+#
+# Upstream template for bintelx multi-client deployments.
+# Copy to upstreams.conf and adjust per environment.
+#
+# Each client gets its own API upstream pointing to its PHP-FPM pool.
+# Frontend, realtime and signaling upstreams can be shared or per-client.
+#
+# ─── Socket types ─────────────────────────────────────────────
+#
+#   Unix socket  — local only, lowest latency, no TCP overhead
+#     server unix:/run/php/php8.4-fpm-{client}.sock;
+#
+#   TCP socket   — local or remote, required for multi-server
+#     server 10.0.1.10:9001;
+#
+#   Mixed        — combine both in the same upstream block
+#     server unix:/run/php/php8.4-fpm-{client}.sock;
+#     server 10.0.1.10:9001 backup;
+#
+# ─── Scaling phases ───────────────────────────────────────────
+#
+#   Phase 1 (single server):   unix socket per client
+#   Phase 2 (front/back split): TCP to dedicated backend server
+#   Phase 3 (horizontal):       TCP to multiple backend servers
+#
+# ─── Security (remote FPM) ───────────────────────────────────
+#
+#   FastCGI has NO authentication. Remote FPM ports must be
+#   firewalled to accept connections only from nginx servers:
+#
+#     ufw allow from {nginx_server_ip} to any port 9001:9010 proto tcp
+#     ufw deny 9001:9010/tcp
+#
+#   Prefer a private VLAN between nginx and backend servers.
+#
+# ─── Remote server requirements ───────────────────────────────
+#
+#   The remote FPM server needs:
+#     /var/www/bintelx/           — kernel code (same version)
+#     /var/www/{client}/bintelx/  — custom modules (CUSTOM_PATH)
+#     PHP-FPM pool listening on the configured port
+#     Database access (same DB_HOST or network-reachable)
+#
+#   The remote server does NOT need:
+#     nginx, frontend dist/, node/npm, SSL certs
+#
+# ══════════════════════════════════════════════════════════════
+
+
+# ─── DNS resolver ─────────────────────────────────────────────
+# Required for domain-based server entries with 'resolve' flag
+resolver 127.0.0.1 valid=30s;
+
+
+# ══════════════════════════════════════════════════════════════
+#  FRONTEND — per client
+# ══════════════════════════════════════════════════════════════
+
+# Dev server running (npm start) → use it. Otherwise → dist/ build.
+upstream erp_labtronic_front {
+    zone erp_labtronic_front_shm 64k;
+    server 127.0.0.1:8080;         # npm run start (dev)
+    server 127.0.0.1:8081 backup;  # dist/ static (prod)
+}
+
+# Second client example
+#upstream cifrid_front {
+#    zone cifrid_front_shm 64k;
+#    server 127.0.0.1:8082;
+#    server 127.0.0.1:8083 backup;
+#}
+
+
+# ══════════════════════════════════════════════════════════════
+#  BACKEND API — per client, per FPM pool
+# ══════════════════════════════════════════════════════════════
+
+# ── Phase 1: local socket ──
+upstream erp_labtronic_api {
+    server unix:/run/php/php8.4-fpm-erp_labtronic.sock;
+}
+
+# ── Phase 2: remote backend ──
+# upstream erp_labtronic_api {
+#     server 10.0.1.10:9001;
+# }
+
+# ── Phase 3: horizontal + local fallback ──
+# upstream erp_labtronic_api {
+#     zone erp_labtronic_api_shm 64k;
+#     least_conn;
+#     keepalive 16;
+#
+#     server 10.0.1.10:9001;                                      # backend A
+#     server 10.0.1.11:9001;                                      # backend B
+#     server unix:/run/php/php8.4-fpm-erp_labtronic.sock backup;  # local fallback
+# }
+
+# Second client example
+#upstream cifrid_api {
+#    server unix:/run/php/php8.4-fpm-cifrid.sock;
+#}
+
+
+# ══════════════════════════════════════════════════════════════
+#  REALTIME — shared across clients
+# ══════════════════════════════════════════════════════════════
+
+# SSE + WebSocket (Python ASGI: Hypercorn/Uvicorn/Starlette)
+upstream stream_backend {
+    zone stream_shm 64k;
+    server 127.0.0.1:8000;
+    #server 10.0.1.10:8000 backup;  # remote fallback
+}
+
+# Swoole channel server (SSE fallback)
+upstream swoole_cluster {
+    server 127.0.0.1:9501;
+    #server 127.0.0.1:9502;         # local replica
+    #server 10.0.1.10:9501 backup;  # remote fallback
+}
+
+# WebRTC signaling (webrtc-rs)
+upstream webrtc_signaling_server {
+    zone webrtc_shm 64k;
+    server 127.0.0.1:9000;
+}

@@ -1,0 +1,148 @@
+; bintelx/config/server/pool.conf.example
+;
+; PHP-FPM Pool Template for bintelx installations
+; Copy to: /etc/php/8.4/fpm/pool.d/{client}.conf
+;
+; Each bintelx client gets its own pool with isolated env vars.
+; The kernel at /var/www/bintelx/ is shared — only CUSTOM_PATH changes.
+;
+; Setup:
+;   1. Create pool config in the client repo:
+;        cp pool.conf.example /var/www/{client}/fpm-pool.conf
+;        # Edit and replace all {PLACEHOLDERS}
+;
+;   2. Symlink to PHP-FPM pools directory:
+;        sudo ln -s /var/www/{client}/fpm-pool.conf /etc/php/8.4/fpm/pool.d/{client}.conf
+;
+;   3. Prepare client directories:
+;        mkdir -p /var/www/{client}/{log,storage,secrets}
+;        chown -R quijote:www-data /var/www/{client}
+;        chmod -R g+r /var/www/{client}
+;
+;   4. Reload FPM:
+;        sudo systemctl reload php8.4-fpm
+;
+;   5. Point nginx fastcgi_pass to the new socket
+;
+; ─────────────────────────────────────────────────────────────
+
+[{client_name}]
+
+; ── Process identity ──────────────────────────────────────
+user = www-data
+group = www-data
+
+; ── Socket ────────────────────────────────────────────────
+; Each pool MUST have a unique socket path
+listen = /run/php/php8.4-fpm-{client_name}.sock
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+
+; ── Process manager ───────────────────────────────────────
+; "dynamic" is recommended for most cases.
+; Adjust based on server RAM and expected traffic.
+;
+; Rule of thumb: max_children = (Available RAM - OS overhead) / avg_process_memory
+; PHP-FPM process ~30-50MB each. Server with 4GB → max_children ~40-60
+pm = dynamic
+pm.max_children = 20
+pm.start_servers = 4
+pm.min_spare_servers = 2
+pm.max_spare_servers = 8
+pm.max_requests = 1000
+
+; ── Timeouts & logging ────────────────────────────────────
+request_terminate_timeout = 60s
+slowlog = /var/www/{client_path}/log/fpm-slow.log
+request_slowlog_timeout = 5s
+
+; ── Security ──────────────────────────────────────────────
+; clear_env = yes (default) clears ALL env vars except those
+; defined below with env[]. This is critical for multi-tenant
+; isolation — each pool only sees its own configuration.
+;
+; DO NOT set clear_env = no in production.
+
+security.limit_extensions = .php
+
+; ── PHP settings per pool ─────────────────────────────────
+php_admin_value[error_log] = /var/www/{client_path}/log/php-error.log
+php_admin_flag[log_errors] = on
+php_admin_value[memory_limit] = 256M
+php_admin_value[max_execution_time] = 60
+php_admin_value[upload_max_filesize] = 100M
+php_admin_value[post_max_size] = 100M
+php_flag[display_errors] = off
+
+; ══════════════════════════════════════════════════════════
+;  ENV VARS — Pool-specific overrides
+; ══════════════════════════════════════════════════════════
+;
+;  These take PRECEDENCE over the shared .env file at
+;  /var/www/bintelx/.env (thanks to Config::setConfig check).
+;
+;  Only define vars that DIFFER from the shared .env.
+;  Common vars (DB_HOST, JWT_ALGORITHM, etc.) are inherited
+;  from the .env file automatically.
+;
+
+; ── Required: identifies this installation ────────────────
+env[CUSTOM_PATH] = /var/www/{client_path}/bintelx
+env[APP_URL] = https://{client_domain}
+env[APP_ENV] = production
+
+; ── CORS: must match the client domain ────────────────────
+env[CORS_ALLOWED_ORIGINS] = https://{client_domain}
+
+; ── Database: shared or per-client ────────────────────────
+; Option A: separate database per client (recommended)
+env[DB_DATABASE] = bintelx_{client_name}
+
+; Option B: shared database, tenant isolation via scope_entity_id
+; (do NOT override DB_DATABASE — uses the .env default)
+
+; ── Secrets: per-client if each has its own DB ────────────
+; Uncomment if this client has its own database credentials
+;env[DB_USERNAME] = {client_name}_user
+;env[DB_PASSWORD] = {client_db_password}
+
+; ── Storage: isolated paths per client ────────────────────
+env[LOG_PATH] = /var/www/{client_path}/log
+env[UPLOAD_PATH] = /var/www/{client_path}/storage
+
+; ── Timezone: per-client if multi-country ─────────────────
+;env[DEFAULT_TIMEZONE] = America/Santiago
+
+; ══════════════════════════════════════════════════════════
+;  EXAMPLE: erp_labtronic
+; ══════════════════════════════════════════════════════════
+;
+;  [erp_labtronic]
+;  user = www-data
+;  group = www-data
+;  listen = /run/php/php8.4-fpm-erp_labtronic.sock
+;  listen.owner = www-data
+;  listen.group = www-data
+;  listen.mode = 0660
+;  pm = dynamic
+;  pm.max_children = 20
+;  pm.start_servers = 4
+;  pm.min_spare_servers = 2
+;  pm.max_spare_servers = 8
+;  pm.max_requests = 1000
+;  request_terminate_timeout = 60s
+;  security.limit_extensions = .php
+;  php_admin_value[error_log] = /var/www/erp_labtronic/log/php-error.log
+;  php_admin_flag[log_errors] = on
+;  php_admin_value[memory_limit] = 256M
+;  php_flag[display_errors] = off
+;
+;  env[CUSTOM_PATH] = /var/www/erp_labtronic/bintelx
+;  env[APP_URL] = https://erp.labtronic.cl
+;  env[APP_ENV] = production
+;  env[CORS_ALLOWED_ORIGINS] = https://erp.labtronic.cl
+;  env[DB_DATABASE] = bintelx_labtronic
+;  env[LOG_PATH] = /var/www/erp_labtronic/log
+;  env[UPLOAD_PATH] = /var/www/erp_labtronic/storage
+;
