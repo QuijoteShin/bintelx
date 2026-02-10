@@ -103,8 +103,15 @@ new \bX\WarmUp();
 new \bX\Log();
 
 // Load environment configuration
-$envPath = dirname(__DIR__) . '/.env';
-\bX\Config::load($envPath);
+# 1) Base: bintelx .env (DB, JWT, shared config)
+$basePath = dirname(__DIR__) . '/.env';
+\bX\Config::load($basePath);
+
+# 2) Override: project .env via ENV_FILE from FPM pool (CUSTOM_PATH, APP_URL, etc.)
+$envFile = getenv('ENV_FILE');
+if ($envFile && $envFile !== $basePath) {
+    \bX\Config::loadOverride($envFile);
+}
 
 // Set custom path from environment (allows custom modules from external directory)
 $customPath = \bX\Config::get('CUSTOM_PATH');
