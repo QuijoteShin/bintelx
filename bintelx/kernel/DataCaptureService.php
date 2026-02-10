@@ -717,6 +717,10 @@ class DataCaptureService {
             case 'ENTITY_REF':
                 return ['value_entity_ref', is_numeric($value) ? (int)$value : null];
 
+            case 'JSON':
+                $encoded = $value !== null ? (is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE)) : null;
+                return ['value_string', $encoded];
+
             case 'STRING':
             default:
                 return ['value_string', $value !== null ? (string)$value : null];
@@ -726,7 +730,7 @@ class DataCaptureService {
     /**
      * Lee un valor desde la columna correcta en data_values_history
      *
-     * @param string $dataType 'STRING', 'DECIMAL', 'DATETIME', 'BOOLEAN', 'ENTITY_REF'
+     * @param string $dataType 'STRING', 'DECIMAL', 'DATETIME', 'BOOLEAN', 'ENTITY_REF', 'JSON'
      * @param array $row Fila de la BD con todas las columnas value_*
      * @return mixed El valor deserializado
      */
@@ -744,6 +748,9 @@ class DataCaptureService {
 
             case 'ENTITY_REF':
                 return $row['value_entity_ref'];
+
+            case 'JSON':
+                return json_decode($row['value_string'] ?? 'null', true);
 
             case 'STRING':
             default:
