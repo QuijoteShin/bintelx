@@ -10,7 +10,7 @@ User=www-data
 Group=www-data
 WorkingDirectory=/var/www/bintelx.cifrid.com
 
-ExecStart=/usr/bin/php8.4 /var/www/bintelx.cifrid.com/app/channel.server.php --host=127.0.0.1 --port=9501
+ExecStart=/usr/bin/php8.4 /var/www/bintelx.cifrid.com/app/channel.server.php --host=127.0.0.1
 ExecReload=/bin/kill -USR1 $MAINPID
 
 Restart=on-failure
