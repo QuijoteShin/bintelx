@@ -6,7 +6,7 @@ require_once '../bintelx/WarmUp.php';
   if(empty($_SERVER["HTTP_X_USER_TIMEZONE"])) {
     $_SERVER["HTTP_X_USER_TIMEZONE"] = \bX\Config::get('DEFAULT_TIMEZONE', 'America/Santiago');
   }
-  \bx\CONN::nodml("SET time_zone = '" . $_SERVER["HTTP_X_USER_TIMEZONE"] . "'");
+  # timezone se aplica via CONN::pdoOptions() MYSQL_ATTR_INIT_COMMAND
 
 new \bX\Args();
 
