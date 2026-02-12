@@ -1,9 +1,10 @@
-<?php # custom/ws/unsubscribe.endpoint.php
+<?php # package/ws/unsubscribe.endpoint.php
 namespace ws;
 
 use bX\Router;
 use bX\Response;
 use bX\Log;
+use bX\ChannelContext;
 
 /**
  * @endpoint   /ws/unsubscribe
@@ -14,9 +15,9 @@ use bX\Log;
  * @tag        WebSocket
  */
 Router::register(['POST'], 'unsubscribe', function(...$params) {
-    $server = $_SERVER['WS_SERVER'];
+    $server = ChannelContext::$server;
     $fd = $_SERVER['WS_FD'];
-    $channelsTable = $_SERVER['WS_CHANNELS_TABLE'];
+    $channelsTable = ChannelContext::$channelsTable;
 
     $channel = $_POST['channel'] ?? null;
 

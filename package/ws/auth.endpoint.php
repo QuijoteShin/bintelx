@@ -1,4 +1,4 @@
-<?php # custom/ws/auth.endpoint.php
+<?php # package/ws/auth.endpoint.php
 namespace ws;
 
 use bX\Router;
@@ -7,6 +7,7 @@ use bX\JWT;
 use bX\Config;
 use bX\CONN;
 use bX\Log;
+use bX\ChannelContext;
 
 /**
  * @endpoint   /ws/auth
@@ -17,9 +18,9 @@ use bX\Log;
  * @tag        WebSocket
  */
 Router::register(['POST'], 'auth', function(...$params) {
-    $server = $_SERVER['WS_SERVER'];
+    $server = ChannelContext::$server;
     $fd = $_SERVER['WS_FD'];
-    $authTable = $_SERVER['WS_AUTH_TABLE'];
+    $authTable = ChannelContext::$authTable;
 
     $token = $_POST['token'] ?? null;
 

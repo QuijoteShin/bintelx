@@ -1,4 +1,4 @@
-<?php # custom/ws/publish.endpoint.php
+<?php # package/ws/publish.endpoint.php
 namespace ws;
 
 use bX\Router;
@@ -6,6 +6,7 @@ use bX\Response;
 use bX\Log;
 use bX\CONN;
 use bX\Channel\MessagePersistence;
+use bX\ChannelContext;
 
 /**
  * @endpoint   /ws/publish
@@ -16,10 +17,10 @@ use bX\Channel\MessagePersistence;
  * @tag        WebSocket
  */
 Router::register(['POST'], 'publish', function(...$params) {
-    $server = $_SERVER['WS_SERVER'];
+    $server = ChannelContext::$server;
     $fd = $_SERVER['WS_FD'];
-    $channelsTable = $_SERVER['WS_CHANNELS_TABLE'];
-    $authTable = $_SERVER['WS_AUTH_TABLE'];
+    $channelsTable = ChannelContext::$channelsTable;
+    $authTable = ChannelContext::$authTable;
 
     # Require authentication
     if (!$authTable->exists((string)$fd)) {

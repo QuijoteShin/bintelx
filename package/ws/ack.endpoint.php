@@ -1,10 +1,11 @@
-<?php # custom/ws/ack.endpoint.php
+<?php # package/ws/ack.endpoint.php
 namespace ws;
 
 use bX\Router;
 use bX\Response;
 use bX\Log;
 use bX\Channel\MessagePersistence;
+use bX\ChannelContext;
 
 /**
  * @endpoint   /ws/ack
@@ -15,7 +16,7 @@ use bX\Channel\MessagePersistence;
  * @tag        WebSocket
  */
 Router::register(['POST'], 'ack', function(...$params) {
-    $authTable = $_SERVER['WS_AUTH_TABLE'];
+    $authTable = ChannelContext::$authTable;
     $fd = $_SERVER['WS_FD'];
 
     $messageId = $_POST['message_id'] ?? null;

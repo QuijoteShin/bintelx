@@ -1,10 +1,11 @@
-<?php # custom/ws/endpoint.endpoint.php
+<?php # package/ws/endpoint.endpoint.php
 namespace ws;
 
 use bX\Router;
 use bX\Response;
 use bX\Log;
 use bX\Async\SwooleAsyncBusAdapter;
+use bX\ChannelContext;
 
 /**
  * @endpoint   /ws/endpoint
@@ -15,9 +16,9 @@ use bX\Async\SwooleAsyncBusAdapter;
  * @tag        WebSocket
  */
 Router::register(['GET', 'POST'], 'endpoint', function(...$params) {
-    $server = $_SERVER['WS_SERVER'];
+    $server = ChannelContext::$server;
     $fd = $_SERVER['WS_FD'];
-    $authTable = $_SERVER['WS_AUTH_TABLE'];
+    $authTable = ChannelContext::$authTable;
 
     $method = strtoupper($_POST['method'] ?? 'GET');
     $uri = $_POST['uri'] ?? null;

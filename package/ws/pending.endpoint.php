@@ -1,9 +1,10 @@
-<?php # custom/ws/pending.endpoint.php
+<?php # package/ws/pending.endpoint.php
 namespace ws;
 
 use bX\Router;
 use bX\Response;
 use bX\Channel\MessagePersistence;
+use bX\ChannelContext;
 
 /**
  * @endpoint   /ws/pending
@@ -14,7 +15,7 @@ use bX\Channel\MessagePersistence;
  * @tag        WebSocket
  */
 Router::register(['GET'], 'pending', function(...$params) {
-    $authTable = $_SERVER['WS_AUTH_TABLE'];
+    $authTable = ChannelContext::$authTable;
     $fd = $_SERVER['WS_FD'];
 
     if (!$authTable->exists((string)$fd)) {
