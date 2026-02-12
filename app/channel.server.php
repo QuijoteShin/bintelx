@@ -31,6 +31,8 @@ use bX\Router;
 use bX\Profile;
 use bX\CONN;
 use bX\SuperGlobalHydrator;
+use bX\Cache;
+use bX\Cache\SwooleTableBackend;
 use bX\Async\TaskRouter;
 use bX\Async\SwooleResponseBus;
 use bX\Async\SwooleAsyncBusAdapter;
@@ -40,7 +42,9 @@ class ChannelServer
     private $server;
     private ?\Swoole\Table $channelsTable = null; # Memoria compartida entre workers
     private ?\Swoole\Table $authTable = null; # Autenticaciones compartidas
-    private array $authenticatedConnections = []; # Compatibilidad para headers/token
+    # Per-worker array — crece con conexiones, se limpia en onClose.
+    # heartbeat_idle_time (65s) fuerza onClose en conexiones muertas sin FIN.
+    private array $authenticatedConnections = [];
     private ?TaskRouter $taskRouter = null;
     private ?SwooleResponseBus $responseBus = null;
     private ?SwooleAsyncBusAdapter $asyncBus = null;
@@ -78,6 +82,13 @@ class ChannelServer
         $this->authTable->column('token', \Swoole\Table::TYPE_STRING, 512);
         $this->authTable->create();
 
+        # Cache compartido entre workers (GeoService, FeePolicyRepository, EDC, HolidayProvider)
+        $cacheTable = new \Swoole\Table(65536); # 64k entries
+        $cacheTable->column('data', \Swoole\Table::TYPE_STRING, 8192);
+        $cacheTable->column('expires_at', \Swoole\Table::TYPE_INT);
+        $cacheTable->create();
+        Cache::init(new SwooleTableBackend($cacheTable));
+
         $workerNum = Config::getInt('CHANNEL_WORKER_NUM', swoole_cpu_num() * 2);
         $taskWorkerNum = Config::getInt('CHANNEL_TASK_WORKER_NUM', swoole_cpu_num());
 
@@ -88,6 +99,10 @@ class ChannelServer
             'log_level' => SWOOLE_LOG_INFO,
             'heartbeat_check_interval' => 30,
             'heartbeat_idle_time' => 65,
+            # Límite de payload WebSocket: rechaza frames > 1MB antes de json_decode
+            'package_max_length' => 1 * 1024 * 1024,
+            # Buffer de salida por worker (respuestas grandes)
+            'buffer_output_size' => 2 * 1024 * 1024,
         ]);
 
         $this->registerHandlers();
@@ -100,16 +115,64 @@ class ChannelServer
         $this->server->on('open', [$this, 'onOpen']);
         $this->server->on('message', [$this, 'onMessage']);
         $this->server->on('close', [$this, 'onClose']);
+        $this->server->on('request', [$this, 'onRequest']);
         $this->server->on('task', [$this, 'onTask']);
         $this->server->on('finish', [$this, 'onFinish']);
     }
 
     public function onStart(Swoole\WebSocket\Server $server): void
     {
+        cli_set_process_title('bintelx-channel-master');
+        # SIGUSR1: recarga workers (código nuevo), master mantiene puerto — sin "address already in use"
+        # Swoole\Table (cache) persiste en memoria compartida, conexiones WS persisten
+        Swoole\Process::signal(SIGUSR1, function() use ($server) {
+            $server->reload();
+            $this->info("Channel workers reloaded via SIGUSR1");
+        });
+
         $this->success("Channel Server started successfully");
         $this->info("Listening on ws://{$this->host}:{$this->port}");
         $this->info("Workers: {$server->setting['worker_num']}, Task Workers: {$server->setting['task_worker_num']}");
-        $this->info("Connect via: ws://{$this->host}:{$this->port} (local) or wss://your-domain.com/ws (via Nginx)");
+        $this->info("Hot reload: kill -USR1 \$(pgrep -f 'bintelx-channel-master')");
+    }
+
+    # Endpoint HTTP interno para invalidación de cache desde FPM/CLI
+    # Solo accesible desde 127.0.0.1 (no expuesto por Nginx)
+    public function onRequest(Swoole\Http\Request $request, Swoole\Http\Response $response): void
+    {
+        $uri = $request->server['request_uri'] ?? '';
+        $method = $request->server['request_method'] ?? 'GET';
+        $remoteAddr = $request->server['remote_addr'] ?? '';
+
+        # Endpoints internos solo accesibles desde localhost
+        if (str_starts_with($uri, '/_internal/') && !in_array($remoteAddr, ['127.0.0.1', '::1'], true)) {
+            $response->status(403);
+            $response->end('Forbidden');
+            Log::logWarning("Channel: Blocked internal endpoint access from {$remoteAddr}: {$uri}");
+            return;
+        }
+
+        if ($uri === '/_internal/cache/flush' && $method === 'POST') {
+            $body = json_decode($request->rawContent(), true);
+            $ns = $body['namespace'] ?? '';
+            if ($ns) {
+                Cache::flush($ns);
+                Log::logInfo("Channel: Cache namespace '{$ns}' flushed via internal HTTP");
+            }
+            $response->header('Content-Type', 'application/json');
+            $response->end(json_encode(['flushed' => $ns]));
+            return;
+        }
+
+        # Health check
+        if ($uri === '/_internal/health') {
+            $response->header('Content-Type', 'application/json');
+            $response->end(json_encode(['status' => 'ok', 'workers' => $this->server->setting['worker_num']]));
+            return;
+        }
+
+        $response->status(404);
+        $response->end('Not Found');
     }
 
     public function onWorkerStart(Swoole\WebSocket\Server $server, int $workerId): void
