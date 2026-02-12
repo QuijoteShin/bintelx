@@ -1,0 +1,38 @@
+# config/channel.service
+# ln -s /var/www/bintelx.cifrid.com/config/channel.service /etc/systemd/system/bintelx-channel-cifrid.service
+[Unit]
+Description=Bintelx Channel Server - cifrid (Swoole WebSocket/Pub-Sub)
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/bintelx.cifrid.com
+
+ExecStart=/usr/bin/php8.4 /var/www/bintelx.cifrid.com/app/channel.server.php --host=127.0.0.1 --port=9501
+ExecReload=/bin/kill -USR1 $MAINPID
+
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitInterval=60s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bintelx-channel-cifrid
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/www/bintelx.cifrid.com/log /var/www/bintelx.cifrid.com/storage
+
+LimitNOFILE=65535
+LimitNPROC=512
+
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="APP_ENV=production"
+
+[Install]
+WantedBy=multi-user.target
