@@ -13,6 +13,7 @@ namespace bX;
  * SECURITY: scope_entity_id = NULL significa NO VER NADA, no "ver datos NULL".
  * Esto previene que usuarios sin tenant vean datos de otros tenants.
  *
+ *
  * Usage:
  *   $scope = Tenant::resolve($options);
  *   $sql .= Tenant::whereClause('er.scope_entity_id', $options);

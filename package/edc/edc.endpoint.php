@@ -30,7 +30,7 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
     $actorId = Profile::$account_id;
-    $scopeId = Profile::$scope_entity_id ?? null;
+    $scopeId = Profile::$scope_entity_id ?: null;
 
     if (!$actorId) {
         
@@ -58,8 +58,8 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
 Router::register(['GET'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
     
 
-    $scopeId = Profile::$scope_entity_id ?? null;
-    $formDef = EDC::getFormDefinition($formName, $scopeId, true);
+    $scopeId = Profile::$scope_entity_id ?: null;
+    $formDef = EDC::getFormDefinition($formName, $scopeId);
 
     if ($formDef) {
         
@@ -81,10 +81,10 @@ Router::register(['GET'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
 Router::register(['GET'], 'v1/forms', function() {
     
 
-    $scopeId = Profile::$scope_entity_id ?? null;
+    $scopeId = Profile::$scope_entity_id ?: null;
     $status = Args::$OPT['status'] ?? null;
 
-    $result = EDC::listForms($scopeId, true, $status);
+    $result = EDC::listForms($scopeId, $status);
 
     return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
@@ -123,13 +123,8 @@ Router::register(['GET'], 'v1/forms/(?P<formName>[a-zA-Z0-9_-]+)/responses', fun
     $filters = [
         'form_name' => $formName,
     ];
-    # scope_entity_id se pasa siempre (incluyendo null) para que listResponses
-    # filtre IS NULL cuando no hay tenant — evita devolver responses de otros scopes
-    if (Profile::$scope_entity_id !== null) {
-        $filters['scope_entity_id'] = Profile::$scope_entity_id;
-    } else {
-        $filters['scope_entity_id'] = null;
-    }
+    # scope_entity_id filtrado via Tenant:: (null scope = AND 1=0)
+    $filters['scope_entity_id'] = Profile::$scope_entity_id ?: null;
 
     return Response::json(EDC::listResponses($filters));
 }, ROUTER_SCOPE_PRIVATE);
@@ -149,7 +144,7 @@ Router::register(['POST'], 'v1/responses', function() {
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
     $respondentId = Profile::$account_id;
-    $scopeId = Profile::$scope_entity_id ?? null;
+    $scopeId = Profile::$scope_entity_id ?: null;
 
     if (!$respondentId) {
         
@@ -290,8 +285,8 @@ Router::register(['GET'], 'v1/responses', function() {
     if (!empty(Args::$OPT['status'])) {
         $filters['status'] = Args::$OPT['status'];
     }
-    # scope_entity_id siempre presente (null = IS NULL) para aislar por tenant
-    $filters['scope_entity_id'] = Profile::$scope_entity_id ?? null;
+    # scope_entity_id filtrado via Tenant:: (null scope = AND 1=0)
+    $filters['scope_entity_id'] = Profile::$scope_entity_id ?: null;
 
     $result = EDC::listResponses($filters);
 

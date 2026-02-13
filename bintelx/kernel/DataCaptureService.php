@@ -7,8 +7,8 @@
  * Purpose: Servicio centralizado para captura de datos usando modelo EAV versionado
  * con soporte completo para:
  * - ALCOA+ (Attributable, Legible, Contemporaneous, Original, Accurate)
- * - Multi-tenant (scope_entity_id) — NULL = dato personal/global, no "sin acceso"
- *   NO usa Tenant:: (que trata null como AND 1=0). Usa nullableWhere() propio.
+ * - Multi-tenant (scope_entity_id) via Tenant:: — NULL = NO ACCESS (AND 1=0)
+ *   Columnas de contexto (macro/event/sub/parent) mantienen NULL como identidad vía contextWhere()
  * - Multi-source (source_system, device_id)
  * - Versionado atómico (is_active)
  *
@@ -591,9 +591,12 @@ class DataCaptureService {
                 $cgParams[':ctype'] = $options['context_type'];
             }
             if (array_key_exists('scope_entity_id', $options)) {
-                $sw = self::nullableWhere('cg.scope_entity_id', $options['scope_entity_id'], ':scope');
-                $cgWhere[] = $sw['sql'];
-                $cgParams = array_merge($cgParams, $sw['params']);
+                $scopeOpts = $options['scope_entity_id'] !== null
+                    ? ['scope_entity_id' => $options['scope_entity_id']]
+                    : [];
+                $sf = Tenant::filter('cg.scope_entity_id', $scopeOpts);
+                $cgWhere[] = ltrim($sf['sql'], ' AND ');
+                $cgParams = array_merge($cgParams, $sf['params']);
             }
             if (!empty($options['from'])) {
                 $cgWhere[] = 'cg.timestamp >= :from_ts';
@@ -887,28 +890,30 @@ class DataCaptureService {
         $sub = $contextPayload['sub_context'] ?? null;
         $parentContextId = $contextPayload['parent_context_id'] ?? null;
 
-        # Construir consulta para buscar contexto existente
-        # nullableWhere: columnas donde NULL es valor legítimo de identidad (no "sin dato")
+        # scope_entity_id: filtrado via Tenant::
+        $scopeOpts = $scopeEntityId !== null ? ['scope_entity_id' => $scopeEntityId] : [];
+        $sf = Tenant::filter('scope_entity_id', $scopeOpts);
+
+        # Columnas de contexto: NULL es identidad legítima (no tenant)
         $nw = [
-            self::nullableWhere('scope_entity_id', $scopeEntityId, ':scope_eid'),
-            self::nullableWhere('macro_context', $macro, ':macro'),
-            self::nullableWhere('event_context', $event, ':event'),
-            self::nullableWhere('sub_context', $sub, ':sub'),
-            self::nullableWhere('parent_context_id', $parentContextId, ':parent'),
+            self::contextWhere('macro_context', $macro, ':macro'),
+            self::contextWhere('event_context', $event, ':event'),
+            self::contextWhere('sub_context', $sub, ':sub'),
+            self::contextWhere('parent_context_id', $parentContextId, ':parent'),
         ];
 
         $sqlFind = "SELECT context_group_id FROM context_groups
                     WHERE subject_entity_id = :subject_eid
                       AND profile_id = :pid
-                      AND context_type = :type
-                      AND " . implode(' AND ', array_column($nw, 'sql')) . "
-                    LIMIT 1";
+                      AND context_type = :type"
+                 . $sf['sql']
+                 . " AND " . implode(' AND ', array_column($nw, 'sql'))
+                 . " LIMIT 1";
 
-        $paramsFind = [
-            ':subject_eid' => $subjectEntityId,
-            ':pid' => $actorProfileId,
-            ':type' => $contextType
-        ];
+        $paramsFind = array_merge(
+            [':subject_eid' => $subjectEntityId, ':pid' => $actorProfileId, ':type' => $contextType],
+            $sf['params']
+        );
         foreach ($nw as $w) {
             $paramsFind = array_merge($paramsFind, $w['params']);
         }
@@ -1078,10 +1083,10 @@ class DataCaptureService {
         }
     }
 
-    # WHERE clause para columna nullable donde NULL es valor legítimo (no "sin acceso")
-    # Distinto de Tenant:: donde null scope = AND 1=0
-    # Usado en context_groups donde scope_entity_id NULL = dato personal/global
-    private static function nullableWhere(string $column, $value, string $paramName): array
+    # WHERE para columnas de contexto donde NULL es identidad legítima (no tenant)
+    # Solo para: macro_context, event_context, sub_context, parent_context_id
+    # scope_entity_id usa Tenant:: (null = AND 1=0)
+    private static function contextWhere(string $column, $value, string $paramName): array
     {
         if ($value !== null) {
             return ['sql' => "{$column} = {$paramName}", 'params' => [$paramName => $value]];
@@ -1132,9 +1137,12 @@ class DataCaptureService {
         $params = [];
 
         if (array_key_exists('scope_entity_id', $filters)) {
-            $sw = self::nullableWhere('cg.scope_entity_id', $filters['scope_entity_id'], ':scope_entity_id');
-            $whereConditions[] = $sw['sql'];
-            $params = array_merge($params, $sw['params']);
+            $scopeOpts = $filters['scope_entity_id'] !== null
+                ? ['scope_entity_id' => $filters['scope_entity_id']]
+                : [];
+            $sf = Tenant::filter('cg.scope_entity_id', $scopeOpts);
+            $whereConditions[] = ltrim($sf['sql'], ' AND ');
+            $params = array_merge($params, $sf['params']);
         }
 
         if (!empty($filters['subject_entity_ids']) && is_array($filters['subject_entity_ids'])) {
