@@ -111,6 +111,29 @@ Router::register(['PUT'], 'v1/forms/(?P<formDefId>\d+)/publish', function($formD
     return Response::json($result);
 }, ROUTER_SCOPE_PRIVATE);
 
+/**
+ * @endpoint   /api/edc/v1/forms/{formName}/responses
+ * @method     GET
+ * @scope      ROUTER_SCOPE_PRIVATE
+ * @purpose    Lists responses for a specific form (semantic URL)
+ * @tag        Responses
+ */
+Router::register(['GET'], 'v1/forms/(?P<formName>[a-zA-Z0-9_-]+)/responses', function($formName) {
+
+    $filters = [
+        'form_name' => $formName,
+    ];
+    # scope_entity_id se pasa siempre (incluyendo null) para que listResponses
+    # filtre IS NULL cuando no hay tenant — evita devolver responses de otros scopes
+    if (Profile::$scope_entity_id !== null) {
+        $filters['scope_entity_id'] = Profile::$scope_entity_id;
+    } else {
+        $filters['scope_entity_id'] = null;
+    }
+
+    return Response::json(EDC::listResponses($filters));
+}, ROUTER_SCOPE_PRIVATE);
+
 // ==================== FORM RESPONSES ====================
 
 /**
@@ -257,15 +280,18 @@ Router::register(['PUT'], 'v1/responses/(?P<responseId>\d+)/lock', function($res
 Router::register(['GET'], 'v1/responses', function() {
     
 
-    $filters = [
-        'form_name' => Args::$OPT['form_name'] ?? null,
-        'respondent_profile_id' => Args::$OPT['respondent_profile_id'] ?? null,
-        'status' => Args::$OPT['status'] ?? null,
-        'scope_entity_id' => Profile::$scope_entity_id ?? null
-    ];
-
-    // Remover filtros null
-    $filters = array_filter($filters, fn($v) => $v !== null);
+    $filters = [];
+    if (!empty(Args::$OPT['form_name'])) {
+        $filters['form_name'] = Args::$OPT['form_name'];
+    }
+    if (!empty(Args::$OPT['respondent_profile_id'])) {
+        $filters['respondent_profile_id'] = Args::$OPT['respondent_profile_id'];
+    }
+    if (!empty(Args::$OPT['status'])) {
+        $filters['status'] = Args::$OPT['status'];
+    }
+    # scope_entity_id siempre presente (null = IS NULL) para aislar por tenant
+    $filters['scope_entity_id'] = Profile::$scope_entity_id ?? null;
 
     $result = EDC::listResponses($filters);
 
