@@ -51,7 +51,8 @@ class Account {
         return ['success' => false, 'message' => 'Account is inactive.'];
       }
 
-      // Verify the provided password against the stored hash
+      # NOTA CHANNEL: password_verify es CPU-heavy (~50-100ms con bcrypt)
+      # Bloquea el worker del Channel. Si se usa desde Channel frecuentemente, mover a TaskWorker.
       if (password_verify($credentials['password'], $user['password_hash'])) {
         # Get profile_id and personal entity_id for this account
         $profileData = null;
@@ -65,12 +66,14 @@ class Account {
         $personalScope = $profileData ? (int)$profileData['primary_entity_id'] : null;
 
         # Generate token with profile_id and personal scope (default at login)
+        $deviceHash = $credentials['device_hash'] ?? null;
         $token = $this->generateToken(
           (string)$user['account_id'],
           null,                    # metadata (auto timestamp)
           null,                    # expiresIn (default)
           $profileId,              # profile_id
-          $personalScope           # scope_entity_id (área personal por defecto)
+          $personalScope,          # scope_entity_id (área personal por defecto)
+          $deviceHash              # device fingerprint (opcional, xxh128)
         );
 
         if (!$token) {
@@ -220,7 +223,7 @@ class Account {
      * @param ?int $scopeEntityId Scope/tenant ID (optional, for multi-tenant)
      * @return string|false The generated JWT token or false on failure.
      */
-    public function generateToken(string $accountId, $metadataElement = null, ?int $expiresIn = null, ?int $profileId = null, ?int $scopeEntityId = null): string|false {
+    public function generateToken(string $accountId, $metadataElement = null, ?int $expiresIn = null, ?int $profileId = null, ?int $scopeEntityId = null, ?string $deviceHash = null): string|false {
         if (empty(trim($accountId))) {
             Log::logError("Account::generateToken - Account ID cannot be empty.");
             return false;
@@ -239,6 +242,11 @@ class Account {
         # Include scope_entity_id if provided (multi-tenant)
         if ($scopeEntityId !== null) {
             $userPayload["scope_entity_id"] = $scopeEntityId;
+        }
+
+        # Device fingerprint hash (xxh128) — identifica el dispositivo en Channel Server
+        if ($deviceHash !== null) {
+            $userPayload["device_hash"] = $deviceHash;
         }
 
         $payloadStructure = [

@@ -22,8 +22,9 @@ final class FeePolicyRepository
 {
     const VERSION = '1.0.0';
 
-    # Simple in-memory cache (per-request)
-    private static array $cache = [];
+    # Cache namespace (transparente: Swoole\Table o static array via bX\Cache)
+    private const CACHE_NS = 'fee:policy';
+    private const CACHE_TTL = 3600; # 1h
 
     /**
      * Load active policy for a channel
@@ -41,32 +42,23 @@ final class FeePolicyRepository
         $asOf = $asOf ?? date('Y-m-d');
         $cacheKey = "{$channelKey}:{$asOf}:{$scopeId}";
 
-        if (isset(self::$cache[$cacheKey])) {
-            return self::$cache[$cacheKey];
-        }
+        return Cache::getOrSet(self::CACHE_NS, $cacheKey, self::CACHE_TTL, function() use ($channelKey, $asOf, $scopeId) {
+            $policy = null;
 
-        # Find matching policy (scope-specific first, then global)
-        $policy = null;
+            if ($scopeId !== null) {
+                $policy = self::findPolicy($channelKey, $asOf, $scopeId);
+            }
 
-        if ($scopeId !== null) {
-            # Try scope-specific policy first
-            $policy = self::findPolicy($channelKey, $asOf, $scopeId);
-        }
+            if (!$policy) {
+                $policy = self::findPolicy($channelKey, $asOf, null);
+            }
 
-        if (!$policy) {
-            # Fall back to global policy (scope_entity_id IS NULL)
-            $policy = self::findPolicy($channelKey, $asOf, null);
-        }
+            if (!$policy) {
+                return null;
+            }
 
-        if (!$policy) {
-            return null;
-        }
-
-        # Load components and convert to FeeEngine format
-        $feePolicy = self::convertToFeeEngineFormat($policy);
-
-        self::$cache[$cacheKey] = $feePolicy;
-        return $feePolicy;
+            return self::convertToFeeEngineFormat($policy);
+        });
     }
 
     /**
@@ -129,7 +121,8 @@ final class FeePolicyRepository
      */
     public static function clearCache(): void
     {
-        self::$cache = [];
+        Cache::flush(self::CACHE_NS);
+        Cache::notifyChannel(self::CACHE_NS);
     }
 
     # =========================================================================

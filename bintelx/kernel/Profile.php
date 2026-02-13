@@ -213,15 +213,20 @@ class Profile {
         self::$profile_id = 0;
         self::$account_id = 0;
         self::$entity_id = 0;
+        self::$scope_entity_id = 0;
         self::$isLoggedIn = false;
         self::$roles = [];
         self::$userPermissions = [
             'routes' => ['*' => 'public'],
             'roles' => []
         ];
+        self::$cachedAllowedScopes = null;
 
         # Reset Tenant cache to prevent stale admin bypass between requests
         Tenant::resetCache();
+
+        # Reset Entity static context
+        Entity::reset();
     }
 
     /**

@@ -715,7 +715,12 @@ class RecalcQueue
             # Batch limit
             if ($processed >= $this->batchSize) {
                 if ($this->delayMs > 0) {
-                    usleep($this->delayMs * 1000);
+                    # Channel-safe: usleep bloquea el event loop; Coroutine::sleep cede el control
+                    if (class_exists('Swoole\Coroutine') && \Swoole\Coroutine::getCid() > 0) {
+                        \Swoole\Coroutine::sleep($this->delayMs / 1000);
+                    } else {
+                        usleep($this->delayMs * 1000);
+                    }
                 }
                 $processed = 0;
             }

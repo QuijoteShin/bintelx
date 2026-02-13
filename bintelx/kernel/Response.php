@@ -135,6 +135,9 @@ class Response
         }
     }
 
+    # NOTA CHANNEL: header() y http_response_code() son silenciosamente ignorados
+    # en el Channel Server. El body se captura via ob_start/ob_get_clean.
+    # Si se agregan endpoints HTTP REST al Channel, crear ResponseAdapter.
     protected function sendJson(): void
     {
         # Set JSON header

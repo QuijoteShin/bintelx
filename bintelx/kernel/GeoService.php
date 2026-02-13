@@ -40,12 +40,14 @@ class GeoService
 {
     public const VERSION = '1.0.0';
 
-    # Cache for performance
-    private static array $rateCache = [];
-    private static array $taxCache = [];
-    private static array $policyCache = [];
-    private static array $countryCache = [];
-    private static array $currencyCache = [];
+    # Cache namespaces (transparente: Swoole\Table o static array via bX\Cache)
+    private const CACHE_RATES = 'geo:rates';
+    private const CACHE_TAX = 'geo:tax';
+    private const CACHE_POLICY = 'geo:policy';
+    private const CACHE_COUNTRY = 'geo:country';
+    private const CACHE_CURRENCY = 'geo:currency';
+    private const TTL_SCOPED = 3600;    # 1h for tenant-scoped data
+    private const TTL_GLOBAL = 86400;   # 24h for global catalogs
 
     # =========================================================================
     # EXCHANGE RATES
@@ -70,32 +72,25 @@ class GeoService
         $scopeEntityId = $scopeEntityId ?? (Profile::$scope_entity_id ?? null);
 
         $cacheKey = "{$base}|{$target}|{$date}|{$scopeEntityId}";
-        if (isset(self::$rateCache[$cacheKey])) {
-            return self::$rateCache[$cacheKey];
-        }
+        return Cache::getOrSet(self::CACHE_RATES, $cacheKey, self::TTL_SCOPED, function() use ($base, $target, $date, $scopeEntityId) {
+            $sql = "SELECT * FROM geo_exchange_rates
+                    WHERE base_currency_code = :base
+                      AND target_currency_code = :target
+                      AND effective_from <= :date
+                      AND effective_to >= :date
+                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
+                    ORDER BY scope_entity_id DESC, effective_from DESC
+                    LIMIT 1";
 
-        # Try tenant-specific rate first, then global
-        $sql = "SELECT * FROM geo_exchange_rates
-                WHERE base_currency_code = :base
-                  AND target_currency_code = :target
-                  AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC
-                LIMIT 1";
+            $rows = CONN::dml($sql, [
+                ':base' => strtoupper($base),
+                ':target' => strtoupper($target),
+                ':date' => $date,
+                ':scope' => $scopeEntityId
+            ]);
 
-        $params = [
-            ':base' => strtoupper($base),
-            ':target' => strtoupper($target),
-            ':date' => $date,
-            ':scope' => $scopeEntityId
-        ];
-
-        $rows = CONN::dml($sql, $params);
-        $result = !empty($rows) ? $rows[0] : null;
-
-        self::$rateCache[$cacheKey] = $result;
-        return $result;
+            return !empty($rows) ? $rows[0] : null;
+        });
     }
 
     /**
@@ -439,8 +434,9 @@ class GeoService
             'effective_from' => $effectiveFrom
         ]);
 
-        # Clear cache
-        self::$rateCache = [];
+        # Clear cache (local + Channel Server)
+        Cache::flush(self::CACHE_RATES);
+        Cache::notifyChannel(self::CACHE_RATES);
 
         return [
             'success' => true,
@@ -470,29 +466,25 @@ class GeoService
         $scopeEntityId = Profile::$scope_entity_id ?? null;
 
         $cacheKey = "{$country}|{$code}|{$date}|{$scopeEntityId}";
-        if (isset(self::$taxCache[$cacheKey])) {
-            return self::$taxCache[$cacheKey];
-        }
+        return Cache::getOrSet(self::CACHE_TAX, $cacheKey, self::TTL_SCOPED, function() use ($country, $code, $date, $scopeEntityId) {
+            $sql = "SELECT * FROM geo_tax_rates
+                    WHERE country_code = :country
+                      AND tax_code = :code
+                      AND effective_from <= :date
+                      AND effective_to >= :date
+                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
+                    ORDER BY scope_entity_id DESC, effective_from DESC
+                    LIMIT 1";
 
-        $sql = "SELECT * FROM geo_tax_rates
-                WHERE country_code = :country
-                  AND tax_code = :code
-                  AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC
-                LIMIT 1";
+            $rows = CONN::dml($sql, [
+                ':country' => strtoupper($country),
+                ':code' => $code,
+                ':date' => $date,
+                ':scope' => $scopeEntityId
+            ]);
 
-        $rows = CONN::dml($sql, [
-            ':country' => strtoupper($country),
-            ':code' => $code,
-            ':date' => $date,
-            ':scope' => $scopeEntityId
-        ]);
-
-        $result = !empty($rows) ? $rows[0] : null;
-        self::$taxCache[$cacheKey] = $result;
-        return $result;
+            return !empty($rows) ? $rows[0] : null;
+        });
     }
 
     /**
@@ -583,29 +575,25 @@ class GeoService
         $scopeEntityId = Profile::$scope_entity_id ?? null;
 
         $cacheKey = "{$country}|{$key}|{$date}|{$scopeEntityId}";
-        if (isset(self::$policyCache[$cacheKey])) {
-            return self::$policyCache[$cacheKey];
-        }
+        return Cache::getOrSet(self::CACHE_POLICY, $cacheKey, self::TTL_SCOPED, function() use ($country, $key, $date, $scopeEntityId) {
+            $sql = "SELECT * FROM geo_labor_policies
+                    WHERE country_code = :country
+                      AND policy_key = :key
+                      AND effective_from <= :date
+                      AND effective_to >= :date
+                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
+                    ORDER BY scope_entity_id DESC, effective_from DESC
+                    LIMIT 1";
 
-        $sql = "SELECT * FROM geo_labor_policies
-                WHERE country_code = :country
-                  AND policy_key = :key
-                  AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC
-                LIMIT 1";
+            $rows = CONN::dml($sql, [
+                ':country' => strtoupper($country),
+                ':key' => $key,
+                ':date' => $date,
+                ':scope' => $scopeEntityId
+            ]);
 
-        $rows = CONN::dml($sql, [
-            ':country' => strtoupper($country),
-            ':key' => $key,
-            ':date' => $date,
-            ':scope' => $scopeEntityId
-        ]);
-
-        $result = !empty($rows) ? $rows[0] : null;
-        self::$policyCache[$cacheKey] = $result;
-        return $result;
+            return !empty($rows) ? $rows[0] : null;
+        });
     }
 
     /**
@@ -684,16 +672,11 @@ class GeoService
     {
         $code = strtoupper($code);
 
-        if (isset(self::$countryCache[$code])) {
-            return self::$countryCache[$code];
-        }
-
-        $sql = "SELECT * FROM geo_countries WHERE country_code = :code AND is_active = 1";
-        $rows = CONN::dml($sql, [':code' => $code]);
-
-        $result = !empty($rows) ? $rows[0] : null;
-        self::$countryCache[$code] = $result;
-        return $result;
+        return Cache::getOrSet(self::CACHE_COUNTRY, $code, self::TTL_GLOBAL, function() use ($code) {
+            $sql = "SELECT * FROM geo_countries WHERE country_code = :code AND is_active = 1";
+            $rows = CONN::dml($sql, [':code' => $code]);
+            return !empty($rows) ? $rows[0] : null;
+        });
     }
 
     /**
@@ -717,16 +700,11 @@ class GeoService
     {
         $code = strtoupper($code);
 
-        if (isset(self::$currencyCache[$code])) {
-            return self::$currencyCache[$code];
-        }
-
-        $sql = "SELECT * FROM geo_currencies WHERE currency_code = :code AND is_active = 1";
-        $rows = CONN::dml($sql, [':code' => $code]);
-
-        $result = !empty($rows) ? $rows[0] : null;
-        self::$currencyCache[$code] = $result;
-        return $result;
+        return Cache::getOrSet(self::CACHE_CURRENCY, $code, self::TTL_GLOBAL, function() use ($code) {
+            $sql = "SELECT * FROM geo_currencies WHERE currency_code = :code AND is_active = 1";
+            $rows = CONN::dml($sql, [':code' => $code]);
+            return !empty($rows) ? $rows[0] : null;
+        });
     }
 
     /**
@@ -874,10 +852,16 @@ class GeoService
      */
     public static function clearCache(): void
     {
-        self::$rateCache = [];
-        self::$taxCache = [];
-        self::$policyCache = [];
-        self::$countryCache = [];
-        self::$currencyCache = [];
+        Cache::flush(self::CACHE_RATES);
+        Cache::flush(self::CACHE_TAX);
+        Cache::flush(self::CACHE_POLICY);
+        Cache::flush(self::CACHE_COUNTRY);
+        Cache::flush(self::CACHE_CURRENCY);
+        # Notificar al Channel Server
+        Cache::notifyChannel(self::CACHE_RATES);
+        Cache::notifyChannel(self::CACHE_TAX);
+        Cache::notifyChannel(self::CACHE_POLICY);
+        Cache::notifyChannel(self::CACHE_COUNTRY);
+        Cache::notifyChannel(self::CACHE_CURRENCY);
     }
 }

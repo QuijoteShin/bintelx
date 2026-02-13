@@ -17,8 +17,9 @@ class HolidayProvider
     public const TYPE_MUNICIPAL = 'MUNICIPAL';
     public const TYPE_OPTIONAL = 'OPTIONAL';
 
-    # Cache para evitar queries repetidas
-    private static array $cache = [];
+    # Cache namespace (transparente: Swoole\Table o static array via bX\Cache)
+    private const CACHE_NS = 'geo:holidays';
+    private const CACHE_TTL = 86400; # 24h
     private static bool $useDb = true;
 
     # Fallback holidays si no hay DB (para tests)
@@ -41,25 +42,16 @@ class HolidayProvider
     ): array {
         $cacheKey = "{$countryCode}_{$fromDate}_{$toDate}_{$regionCode}";
 
-        if (isset(self::$cache[$cacheKey])) {
-            return self::$cache[$cacheKey];
-        }
-
-        $holidays = [];
-
-        if (self::$useDb) {
-            try {
-                $holidays = self::loadFromDb($countryCode, $fromDate, $toDate, $regionCode);
-            } catch (\Exception $e) {
-                # Fallback to in-memory
-                $holidays = self::loadFromFallback($countryCode, $fromDate, $toDate);
+        return Cache::getOrSet(self::CACHE_NS, $cacheKey, self::CACHE_TTL, function() use ($countryCode, $fromDate, $toDate, $regionCode) {
+            if (self::$useDb) {
+                try {
+                    return self::loadFromDb($countryCode, $fromDate, $toDate, $regionCode);
+                } catch (\Exception $e) {
+                    return self::loadFromFallback($countryCode, $fromDate, $toDate);
+                }
             }
-        } else {
-            $holidays = self::loadFromFallback($countryCode, $fromDate, $toDate);
-        }
-
-        self::$cache[$cacheKey] = $holidays;
-        return $holidays;
+            return self::loadFromFallback($countryCode, $fromDate, $toDate);
+        });
     }
 
     /**
@@ -343,7 +335,8 @@ class HolidayProvider
      */
     public static function clearCache(): void
     {
-        self::$cache = [];
+        Cache::flush(self::CACHE_NS);
+        Cache::notifyChannel(self::CACHE_NS);
         self::$fallbackHolidays = [];
     }
 

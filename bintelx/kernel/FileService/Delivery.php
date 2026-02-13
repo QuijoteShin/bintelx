@@ -142,6 +142,8 @@ class Delivery
         }
 
         # Check access code
+        # NOTA CHANNEL: password_verify es CPU-heavy (~50-100ms con bcrypt)
+        # Bloquea el worker del Channel. Si se usa desde Channel frecuentemente, mover a TaskWorker.
         if ($link['access_code_hash']) {
             if (!$accessCode || !password_verify($accessCode, $link['access_code_hash'])) {
                 self::logDelivery($documentId, false, self::REASON_BAD_CODE, $scopeOptions, $linkId);
@@ -270,6 +272,8 @@ class Delivery
             $sizeBytes = filesize($diskPath);
         }
 
+        # NOTA CHANNEL: header() es silenciosamente ignorado en el Channel Server.
+        # El body se captura via ob_start/ob_get_clean. Solo aplica a FPM.
         # Common headers
         header('Content-Type: ' . $mimeType);
         header('Accept-Ranges: bytes');

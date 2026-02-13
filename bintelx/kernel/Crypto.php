@@ -37,20 +37,10 @@ class Crypto {
      * @param string $data Data to hash
      * @return string|false Hex hash string or false on failure
      */
+    # Channel-safe: usa hash() nativo (PHP 8.1+) en vez de shell_exec que bloquea el event loop
     public static function xxh32(string $data): string|false
     {
-        $command = sprintf('echo -n %s | xxhsum -H32', escapeshellarg($data));
-
-        $output = shell_exec($command);
-
-        if ($output === null || $output === false) {
-            Log::logError("Crypto::xxh32 - Command failed", ['command' => $command]);
-            return false;
-        }
-
-        # Output format: "hash  stdin" or "hash  -"
-        $parts = preg_split('/\s+/', trim($output));
-        return $parts[0] ?? false;
+        return hash('xxh32', $data);
     }
 
     /**
@@ -61,17 +51,7 @@ class Crypto {
      */
     public static function xxh64(string $data): string|false
     {
-        $command = sprintf('echo -n %s | xxhsum -H64', escapeshellarg($data));
-
-        $output = shell_exec($command);
-
-        if ($output === null || $output === false) {
-            Log::logError("Crypto::xxh64 - Command failed", ['command' => $command]);
-            return false;
-        }
-
-        $parts = preg_split('/\s+/', trim($output));
-        return $parts[0] ?? false;
+        return hash('xxh64', $data);
     }
 
     /**
@@ -82,17 +62,7 @@ class Crypto {
      */
     public static function xxh128(string $data): string|false
     {
-        $command = sprintf('echo -n %s | xxhsum -H128', escapeshellarg($data));
-
-        $output = shell_exec($command);
-
-        if ($output === null || $output === false) {
-            Log::logError("Crypto::xxh128 - Command failed", ['command' => $command]);
-            return false;
-        }
-
-        $parts = preg_split('/\s+/', trim($output));
-        return $parts[0] ?? false;
+        return hash('xxh128', $data);
     }
 
     /**

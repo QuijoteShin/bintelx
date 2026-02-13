@@ -7,6 +7,14 @@ class Entity {
   public static int $comp_id = 0;
   public static int $comp_branch_id = 0;
 
+  # Swoole safety: reset static context between requests
+  public static function reset(): void {
+      self::$account_id = 0;
+      self::$entity_id = 0;
+      self::$comp_id = 0;
+      self::$comp_branch_id = 0;
+  }
+
   private array $data = [];      # Datos procesados
   private array $data_raw = [];  # Datos sin procesar de la DB
 

@@ -36,6 +36,7 @@ use bX\Cache\SwooleTableBackend;
 use bX\Async\TaskRouter;
 use bX\Async\SwooleResponseBus;
 use bX\Async\SwooleAsyncBusAdapter;
+use bX\ChannelContext;
 
 class ChannelServer
 {
@@ -80,6 +81,7 @@ class ChannelServer
         $this->authTable->column('account_id', \Swoole\Table::TYPE_INT);
         $this->authTable->column('profile_id', \Swoole\Table::TYPE_INT);
         $this->authTable->column('token', \Swoole\Table::TYPE_STRING, 512);
+        $this->authTable->column('device_hash', \Swoole\Table::TYPE_STRING, 32); # xxh128 = 32 hex chars
         $this->authTable->create();
 
         # Cache compartido entre workers (GeoService, FeePolicyRepository, EDC, HolidayProvider)
@@ -136,43 +138,115 @@ class ChannelServer
         $this->info("Hot reload: kill -USR1 \$(pgrep -f 'bintelx-channel-master')");
     }
 
-    # Endpoint HTTP interno para invalidación de cache desde FPM/CLI
-    # Solo accesible desde 127.0.0.1 (no expuesto por Nginx)
+    # HTTP gateway: todo pasa por Router (mismos endpoints que WS)
+    # _internal/* protegido por ROUTER_SCOPE_SYSTEM (X-System-Key o localhost)
     public function onRequest(Swoole\Http\Request $request, Swoole\Http\Response $response): void
     {
         $uri = $request->server['request_uri'] ?? '';
         $method = $request->server['request_method'] ?? 'GET';
-        $remoteAddr = $request->server['remote_addr'] ?? '';
 
-        # Endpoints internos solo accesibles desde localhost
-        if (str_starts_with($uri, '/_internal/') && !in_array($remoteAddr, ['127.0.0.1', '::1'], true)) {
-            $response->status(403);
-            $response->end('Forbidden');
-            Log::logWarning("Channel: Blocked internal endpoint access from {$remoteAddr}: {$uri}");
-            return;
-        }
+        # CORS headers — misma config que api.php via .env
+        $corsOrigin = Config::get('CORS_ALLOWED_ORIGINS', 'https://dev.local');
+        $corsMethods = Config::get('CORS_ALLOWED_METHODS', 'GET,POST,PATCH,DELETE,OPTIONS');
+        $corsHeaders = Config::get('CORS_ALLOWED_HEADERS', 'Origin,X-Auth-Token,X-Requested-With,Content-Type,Accept,Authorization');
 
-        if ($uri === '/_internal/cache/flush' && $method === 'POST') {
-            $body = json_decode($request->rawContent(), true);
-            $ns = $body['namespace'] ?? '';
-            if ($ns) {
-                Cache::flush($ns);
-                Log::logInfo("Channel: Cache namespace '{$ns}' flushed via internal HTTP");
+        $response->header('Access-Control-Allow-Origin', $corsOrigin);
+        $response->header('Access-Control-Allow-Methods', $corsMethods);
+        $response->header('Access-Control-Allow-Headers', $corsHeaders);
+        $response->header('Access-Control-Allow-Credentials', 'true');
+        $response->header('Access-Control-Max-Age', '3600');
+
+        # Preflight — responder y cortar
+        if ($method === 'OPTIONS') {
+            $reqHeaders = $request->header['access-control-request-headers'] ?? '';
+            if ($reqHeaders) {
+                $response->header('Access-Control-Allow-Headers', $reqHeaders);
             }
-            $response->header('Content-Type', 'application/json');
-            $response->end(json_encode(['flushed' => $ns]));
+            $response->status(204);
+            $response->end();
             return;
         }
 
-        # Health check
-        if ($uri === '/_internal/health') {
-            $response->header('Content-Type', 'application/json');
-            $response->end(json_encode(['status' => 'ok', 'workers' => $this->server->setting['worker_num']]));
-            return;
-        }
+        $this->executeHttpRoute($request, $response, $uri, $method);
+    }
 
-        $response->status(404);
-        $response->end('Not Found');
+    # Despacha requests HTTP al Router unificado (mismos endpoints que WS)
+    private function executeHttpRoute(
+        Swoole\Http\Request $request,
+        Swoole\Http\Response $response,
+        string $uri,
+        string $method
+    ): void {
+        $snapshot = SuperGlobalHydrator::snapshot();
+        try {
+            Profile::resetStaticProfileData();
+            Router::$currentUserPermissions = [];
+
+            $body = json_decode($request->rawContent() ?: '{}', true) ?: [];
+            $query = $request->get ?? [];
+            $headers = [];
+
+            # JWT desde header Authorization o cookie bnxt
+            $authHeader = $request->header['authorization'] ?? '';
+            if ($authHeader) {
+                $headers['Authorization'] = $authHeader;
+            } elseif (isset($request->cookie['bnxt'])) {
+                $headers['Authorization'] = 'Bearer ' . $request->cookie['bnxt'];
+            }
+
+            # X-System-Key para ROUTER_SCOPE_SYSTEM (swoole headers son lowercase)
+            $systemKey = $request->header['x-system-key'] ?? '';
+            if ($systemKey) {
+                $headers['X-System-Key'] = $systemKey;
+            }
+
+            SuperGlobalHydrator::hydrate([
+                'method' => $method,
+                'uri' => $uri,
+                'headers' => $headers,
+                'body' => $body,
+                'query' => $query,
+                'remote_addr' => $request->server['remote_addr'] ?? '127.0.0.1'
+            ]);
+            SuperGlobalHydrator::hydrateArgs($method, $body, $query);
+
+            # Auth
+            $token = str_replace('Bearer ', '', $headers['Authorization'] ?? '');
+            if ($token) {
+                $jwtSecret = Config::get('JWT_SECRET');
+                $jwtXorKey = Config::get('JWT_XOR_KEY', '');
+                $account = new \bX\Account($jwtSecret, $jwtXorKey);
+                $accountId = $account->verifyToken($token, $request->server['remote_addr'] ?? '');
+                if ($accountId) {
+                    $jwt = new JWT($jwtSecret, $token);
+                    $payload = $jwt->getPayload();
+                    $userPayload = $payload[1] ?? [];
+                    $profile = new Profile();
+                    $profile->load(['account_id' => $accountId]);
+                    Profile::$scope_entity_id = (int)($userPayload['scope_entity_id'] ?? 0);
+                    Router::$currentUserPermissions = Profile::getRoutePermissions();
+                }
+            }
+
+            ob_start();
+            $route = new Router($uri, '/api');
+            Router::dispatch($method, $uri);
+            $output = ob_get_clean();
+
+            # Enviar respuesta HTTP
+            $response->header('Content-Type', 'application/json; charset=utf-8');
+            $response->end($output);
+
+        } catch (\Exception $e) {
+            if (ob_get_level() > 0) ob_end_clean();
+            $response->status(500);
+            $response->header('Content-Type', 'application/json');
+            $response->end(json_encode(['error' => $e->getMessage()]));
+            Log::logError("Channel HTTP route error", ['uri' => $uri, 'error' => $e->getMessage()]);
+        } finally {
+            SuperGlobalHydrator::restore($snapshot);
+            Profile::resetStaticProfileData();
+        }
     }
 
     public function onWorkerStart(Swoole\WebSocket\Server $server, int $workerId): void
@@ -194,6 +268,11 @@ class ChannelServer
                 ],
                 'pattern' => '{*/,}*.endpoint.php'
             ]);
+
+            # ChannelContext: estado de worker disponible para todos los endpoints (WS + HTTP)
+            ChannelContext::$server = $server;
+            ChannelContext::$channelsTable = $this->channelsTable;
+            ChannelContext::$authTable = $this->authTable;
 
             $this->info("Worker #{$workerId} started with AsyncBus and Routes loaded (package + custom cascade)");
         }
@@ -319,11 +398,9 @@ class ChannelServer
             # No usar base path - dejar que Router extraiga módulo de la URI completa
             $route = new Router($uri, '/api');  // Set apiBasePath
 
-            # Inyectar contexto WS (tablas compartidas entre workers)
-            $_SERVER['WS_SERVER'] = $server;
+            # FD es per-request (cada mensaje WS tiene su propia conexión)
+            # Server + tables viven en ChannelContext (set en onWorkerStart)
             $_SERVER['WS_FD'] = $fd;
-            $_SERVER['WS_CHANNELS_TABLE'] = $this->channelsTable;
-            $_SERVER['WS_AUTH_TABLE'] = $this->authTable;
 
             Router::dispatch($method, $uri);
 
@@ -358,7 +435,7 @@ class ChannelServer
             # 7. RESTORE superglobales
             SuperGlobalHydrator::restore($snapshot);
 
-            unset($_SERVER['WS_SERVER'], $_SERVER['WS_FD'], $_SERVER['WS_CHANNELS_TABLE'], $_SERVER['WS_AUTH_TABLE']);
+            unset($_SERVER['WS_FD']);
 
             # 8. CLEANUP estado
             Profile::resetStaticProfileData();
@@ -378,15 +455,17 @@ class ChannelServer
             $accountId = $account->verifyToken($token, $_SERVER['REMOTE_ADDR']);
 
             if ($accountId) {
-                # Extract scope_entity_id from JWT payload
+                # Extraer claims del JWT (scope, device_hash)
                 $scopeEntityId = 0;
+                $deviceHash = '';
                 try {
                     $jwt = new JWT($jwtSecret, $token);
-                    $payload = $jwt->getPayload(); // [METADATA, {id, profile_id, scope_entity_id}]
+                    $payload = $jwt->getPayload(); # [METADATA, {id, profile_id, scope_entity_id, device_hash}]
                     $userPayload = $payload[1] ?? [];
                     $scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
+                    $deviceHash = $userPayload['device_hash'] ?? '';
                 } catch (\Exception $e) {
-                    Log::logWarning("Channel: Failed to extract scope from JWT: " . $e->getMessage());
+                    Log::logWarning("Channel: Failed to extract JWT claims: " . $e->getMessage());
                 }
 
                 $profile = new Profile();
@@ -395,18 +474,19 @@ class ChannelServer
                 # Set scope from JWT (signed, trusted)
                 Profile::$scope_entity_id = $scopeEntityId;
 
-                # Guardar token en sesión WS (array + Swoole\Table)
+                # Guardar sesión WS (array + Swoole\Table)
                 $this->authenticatedConnections[$fd]['token'] = $token;
                 $this->authenticatedConnections[$fd]['account_id'] = $accountId;
                 $this->authenticatedConnections[$fd]['profile_id'] = Profile::$profile_id;
                 $this->authenticatedConnections[$fd]['scope_entity_id'] = $scopeEntityId;
+                $this->authenticatedConnections[$fd]['device_hash'] = $deviceHash;
 
                 if ($this->authTable) {
                     $this->authTable->set((string)$fd, [
                         'token' => $token,
-                        'account_id' => $accountId,
+                        'account_id' => (int)$accountId,
                         'profile_id' => Profile::$profile_id,
-                        'scope_entity_id' => $scopeEntityId
+                        'device_hash' => $deviceHash
                     ]);
                 }
 

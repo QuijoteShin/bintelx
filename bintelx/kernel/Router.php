@@ -13,6 +13,7 @@ define('ROUTER_SCOPE_READ', 'read');             # User requires at least 'read'
 define('ROUTER_SCOPE_WRITE', 'write');           # User requires 'write' privileges.
 define('ROUTER_SCOPE_PUBLIC', 'public');         # Open to everyone, no authentication needed.
 define('ROUTER_SCOPE_PUBLIC_WRITE', 'public-write'); # Publicly writable, use with extreme caution.
+define('ROUTER_SCOPE_SYSTEM', 'system');             # Server-to-server: X-System-Key header o localhost
 # ROUTER_ENDPOINT_PREFIX: A regex defining the base for API endpoints, typically capturing a 'module_id'.
 # Example from your setup: define('ROUTER_ENDPOINT_PREFIX', '\/api\/(?P<module_id>\w+)\/');
 #define('ROUTER_ENDPOINT_PREFIX', '/api/(?P<module_id>\w+)/*');
@@ -144,7 +145,7 @@ class Router
       Log::logWarning("Router::register - Module key not determined from CurrentRouteFileContext for regex '$regexPattern'. Using '$moduleKey'. Ensure Cardex returns 'module' array.");
     }
 
-    $validScopes = [ROUTER_SCOPE_PRIVATE, ROUTER_SCOPE_READ, ROUTER_SCOPE_WRITE, ROUTER_SCOPE_PUBLIC, ROUTER_SCOPE_PUBLIC_WRITE];
+    $validScopes = [ROUTER_SCOPE_PRIVATE, ROUTER_SCOPE_READ, ROUTER_SCOPE_WRITE, ROUTER_SCOPE_PUBLIC, ROUTER_SCOPE_PUBLIC_WRITE, ROUTER_SCOPE_SYSTEM];
     if (!in_array($scope, $validScopes)) {
       Log::logError("Router::register - Invalid scope '$scope' for regex '$regexPattern' (module: '$moduleKey'). Defaulting to 'ROUTER_SCOPE_PRIVATE'.");
       $scope = ROUTER_SCOPE_PRIVATE;
@@ -169,6 +170,21 @@ class Router
    */
   private static function hasPermission(string $requiredScope, string $pathAfterPrefix): bool
   {
+    # SYSTEM scope: solo Channel Server — X-System-Key header O localhost
+    # En FPM no existe ChannelContext → denegar siempre (dev.local no accede _internal)
+    if ($requiredScope === ROUTER_SCOPE_SYSTEM) {
+      if (!ChannelContext::isChannel()) {
+        return false;
+      }
+      $systemKey = $_SERVER['HTTP_X_SYSTEM_KEY'] ?? '';
+      $expectedKey = Config::get('SYSTEM_SECRET', '');
+      if ($expectedKey !== '' && $systemKey !== '' && hash_equals($expectedKey, $systemKey)) {
+        return true;
+      }
+      $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
+      return in_array($remoteAddr, ['127.0.0.1', '::1'], true);
+    }
+
     if ($requiredScope === ROUTER_SCOPE_PUBLIC || $requiredScope === ROUTER_SCOPE_PUBLIC_WRITE) {
       return true;
     }

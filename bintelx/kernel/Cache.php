@@ -67,18 +67,25 @@ class Cache {
 
     # Notifica al Channel Server para invalidar cache desde FPM/CLI
     # Fire-and-forget: si el Channel no está corriendo, falla silenciosamente
+    # Usa ROUTER_SCOPE_SYSTEM: auth vía X-System-Key header
     public static function notifyChannel(string $ns): void {
         if (self::$backend instanceof \bX\Cache\SwooleTableBackend) return;
 
         $channelHost = getenv('CHANNEL_HOST') ?: '127.0.0.1';
         $channelPort = getenv('CHANNEL_PORT') ?: '8000';
-        $url = "http://{$channelHost}:{$channelPort}/_internal/cache/flush";
+        $url = "http://{$channelHost}:{$channelPort}/api/_internal/flush";
         $payload = json_encode(['namespace' => $ns]);
+
+        $headers = "Content-Type: application/json\r\n";
+        $systemSecret = Config::get('SYSTEM_SECRET', '');
+        if ($systemSecret) {
+            $headers .= "X-System-Key: {$systemSecret}\r\n";
+        }
 
         @file_get_contents($url, false, stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => "Content-Type: application/json\r\n",
+                'header' => $headers,
                 'content' => $payload,
                 'timeout' => 1,
             ]

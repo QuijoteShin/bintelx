@@ -50,6 +50,17 @@ class CONN {
     # Credenciales para reconnect (Swoole long-running)
     private static ?array $primaryCredentials = null;
 
+    # Opciones PDO centralizadas — se aplican a TODA nueva conexión (pool, coroutine, reconnect)
+    # MYSQL_ATTR_INIT_COMMAND ejecuta SQL al conectar: collation + timezone en un solo round-trip
+    private static function pdoOptions(): array {
+        $collation = Config::get('DB_COLLATION', 'utf8mb4_unicode_520_ci');
+        $tz = $_SERVER['HTTP_X_USER_TIMEZONE'] ?? Config::get('DEFAULT_TIMEZONE', 'UTC');
+        return [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE {$collation}, time_zone = '{$tz}'"
+        ];
+    }
+
     /**
      * Establishes the primary database connection.
      * @param string $dsn The Data Source Name.
@@ -61,8 +72,7 @@ class CONN {
         # Guardar credenciales para reconnect (Swoole long-running)
         self::$primaryCredentials = compact('dsn', 'username', 'password');
 
-        self::$link = new PDO($dsn, $username, $password);
-        self::$link->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        self::$link = new PDO($dsn, $username, $password, self::pdoOptions());
         return self::$link;
     }
 
@@ -81,24 +91,28 @@ class CONN {
      * @throws Exception If no database connection is available.
      */
     private static function getConnection(): PDO {
-        # Transacción activa tiene prioridad absoluta
+        # SWOOLE COROUTINE: Conexión y transacción aislada por coroutine
+        if (class_exists('Swoole\Coroutine') && \Swoole\Coroutine::getCid() > 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if (isset($ctx->transaction_conn)) {
+                return $ctx->transaction_conn;
+            }
+            return self::getCoroutineConnection();
+        }
+
+        # PHP-FPM / CLI: Transacción estática tiene prioridad
         if (self::$transactionConnection !== null) {
             return self::$transactionConnection;
         }
 
-        # SWOOLE COROUTINE: Conexión aislada por coroutine
-        if (class_exists('Swoole\Coroutine') && \Swoole\Coroutine::getCid() > 0) {
-            return self::getCoroutineConnection();
-        }
-
-        # PHP-FPM / CLI: Comportamiento legacy
         $connection = self::get();
         if ($connection === null) {
             Log::logError("CONN::getConnection - No database connection available (link or pool is empty).");
             throw new Exception("Database connection not available.");
         }
 
-        # Ping para verificar conexión viva (Swoole long-running)
+        # MySQL wait_timeout (default 8h): conexión muere si no hay queries
+        # ping() detecta "MySQL server has gone away" y reconnect() crea nueva conexión
         if (!self::ping($connection)) {
             Log::logWarning("CONN::getConnection - Connection dead, attempting reconnect...");
             $connection = self::reconnect();
@@ -121,7 +135,7 @@ class CONN {
     private static function getCoroutineConnection(): PDO {
         $ctx = \Swoole\Coroutine::getContext();
 
-        # Si ya existe conexión en este contexto, verificar que esté viva
+        # Conexión por coroutine: sobrevive wait_timeout via ping+reconnect
         if (isset($ctx->pdo_conn)) {
             if (self::ping($ctx->pdo_conn)) {
                 return $ctx->pdo_conn;
@@ -138,8 +152,7 @@ class CONN {
         }
 
         $creds = self::$primaryCredentials;
-        $ctx->pdo_conn = new PDO($creds['dsn'], $creds['username'], $creds['password']);
-        $ctx->pdo_conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $ctx->pdo_conn = new PDO($creds['dsn'], $creds['username'], $creds['password'], self::pdoOptions());
 
         Log::logDebug("CONN: New coroutine connection created for Cid=" . \Swoole\Coroutine::getCid());
 
@@ -172,8 +185,7 @@ class CONN {
 
         try {
             $creds = self::$primaryCredentials;
-            self::$link = new PDO($creds['dsn'], $creds['username'], $creds['password']);
-            self::$link->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            self::$link = new PDO($creds['dsn'], $creds['username'], $creds['password'], self::pdoOptions());
             Log::logInfo("CONN::reconnect - Successfully reconnected to database.");
             return self::$link;
         } catch (PDOException $e) {
@@ -190,15 +202,15 @@ class CONN {
      * @return PDO The newly added PDO connection object.
      */
     public static function add(string $dsn, string $username, string $password): PDO {
-        #error_log("[CONN] add DSN={$dsn} user={$username}");
-        $pdo = new PDO($dsn, $username, $password, [
-            // PDO::ATTR_TIMEOUT => 30, // This is driver-specific, not a general PDO attribute
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-        ]);
-        // The setAttribute after new PDO is redundant if passed in options array
-        // $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo = new PDO($dsn, $username, $password, self::pdoOptions());
         self::$pool[] = $pdo;
-        return $pdo; // Return the connection that was just added
+
+        # Guardar credenciales para coroutine connections (Swoole)
+        if (self::$primaryCredentials === null) {
+            self::$primaryCredentials = compact('dsn', 'username', 'password');
+        }
+
+        return $pdo;
     }
 
     /**
@@ -232,14 +244,36 @@ class CONN {
     }
 
     /**
+     * Detecta si estamos en contexto coroutine de Swoole.
+     */
+    private static function inCoroutine(): bool {
+        return class_exists('Swoole\Coroutine') && \Swoole\Coroutine::getCid() > 0;
+    }
+
+    /**
      * Begins a database transaction.
+     * En Swoole: almacena la conexión de transacción en el contexto de la coroutine.
+     * En FPM/CLI: usa la propiedad estática $transactionConnection.
      * @throws Exception If a transaction is already active or no connection is available.
      */
     public static function begin(): void {
+        if (self::inCoroutine()) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if (isset($ctx->transaction_conn)) {
+                throw new Exception("CONN::begin - A transaction is already active in this coroutine.");
+            }
+            $conn = self::getCoroutineConnection();
+            $conn->beginTransaction();
+            $ctx->transaction_conn = $conn;
+            Log::logDebug("CONN: Transaction started (coroutine Cid=" . \Swoole\Coroutine::getCid() . ").");
+            return;
+        }
+
+        # FPM/CLI
         if (self::$transactionConnection !== null) {
             throw new Exception("CONN::begin - A transaction is already active on the current connection.");
         }
-        self::$transactionConnection = self::get(); // Get a connection (pool or primary)
+        self::$transactionConnection = self::get();
         if (self::$transactionConnection === null) {
             throw new Exception("CONN::begin - Cannot start transaction, no database connection available.");
         }
@@ -252,39 +286,92 @@ class CONN {
      * @throws Exception If no transaction is active.
      */
     public static function commit(): void {
+        if (self::inCoroutine()) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if (!isset($ctx->transaction_conn)) {
+                throw new Exception("CONN::commit - No active transaction in this coroutine.");
+            }
+            # try/finally: si commit() lanza excepción, limpiar estado para que begin() funcione después
+            try {
+                $ctx->transaction_conn->commit();
+            } finally {
+                unset($ctx->transaction_conn);
+            }
+            Log::logDebug("CONN: Transaction committed (coroutine Cid=" . \Swoole\Coroutine::getCid() . ").");
+            return;
+        }
+
+        # FPM/CLI
         if (self::$transactionConnection === null) {
             throw new Exception("CONN::commit - No active transaction to commit.");
         }
-        self::$transactionConnection->commit();
-        self::$transactionConnection = null; // Release the dedicated transaction connection
+        try {
+            self::$transactionConnection->commit();
+        } finally {
+            self::$transactionConnection = null;
+        }
         Log::logDebug("CONN: Transaction committed.");
     }
 
     /**
      * Rolls back the current active database transaction.
-     * @throws Exception If no transaction is active.
      */
     public static function rollback(): void {
-        if (self::$transactionConnection === null) {
-            // It's possible a transaction was attempted but failed before full begin, or already rolled back.
-            // Avoid throwing an exception if there's nothing to roll back, to simplify catch blocks.
-            Log::logWarning("CONN::rollback - No active transaction to roll back, or already rolled back.");
+        if (self::inCoroutine()) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if (!isset($ctx->transaction_conn)) {
+                Log::logWarning("CONN::rollback - No active transaction in this coroutine.");
+                return;
+            }
+            if ($ctx->transaction_conn->inTransaction()) {
+                $ctx->transaction_conn->rollBack();
+                Log::logDebug("CONN: Transaction rolled back (coroutine Cid=" . \Swoole\Coroutine::getCid() . ").");
+            }
+            unset($ctx->transaction_conn);
             return;
         }
-        if (self::$transactionConnection->inTransaction()) { // Check if PDO object itself thinks it's in a transaction
+
+        # FPM/CLI
+        if (self::$transactionConnection === null) {
+            Log::logWarning("CONN::rollback - No active transaction to roll back.");
+            return;
+        }
+        if (self::$transactionConnection->inTransaction()) {
             self::$transactionConnection->rollBack();
             Log::logDebug("CONN: Transaction rolled back.");
         } else {
-            Log::logWarning("CONN::rollback - PDO object reports no active transaction, though transactionConnection was set.");
+            Log::logWarning("CONN::rollback - PDO reports no active transaction.");
         }
-        self::$transactionConnection = null; // Release the dedicated transaction connection
+        self::$transactionConnection = null;
     }
 
     /**
-     * Checks if a transaction is currently active on the dedicated transaction connection.
+     * Executes a callable within a transaction with auto-commit/rollback.
+     * @param callable $fn The function to execute inside the transaction.
+     * @return mixed The return value of the callable.
+     * @throws \Throwable Re-throws any exception after rollback.
+     */
+    public static function transaction(callable $fn): mixed {
+        self::begin();
+        try {
+            $result = $fn();
+            self::commit();
+            return $result;
+        } catch (\Throwable $e) {
+            self::rollback();
+            throw $e;
+        }
+    }
+
+    /**
+     * Checks if a transaction is currently active.
      * @return bool True if a transaction is active, false otherwise.
      */
     public static function isInTransaction(): bool {
+        if (self::inCoroutine()) {
+            $ctx = \Swoole\Coroutine::getContext();
+            return isset($ctx->transaction_conn) && $ctx->transaction_conn->inTransaction();
+        }
         if (self::$transactionConnection instanceof PDO) {
             return self::$transactionConnection->inTransaction();
         }
@@ -356,14 +443,12 @@ class CONN {
      * @return string|false The ID of the last inserted row, or false on failure.
      */
     public static function getLastInsertId(): false|string {
-        // This should ideally use the same connection that performed the last insert.
-        // If a transaction is active, it's self::$transactionConnection.
-        // Otherwise, it's ambiguous if there's a pool and no transaction.
-        $connectionToQuery = self::$transactionConnection ?? self::$link;
-        if ($connectionToQuery) {
-            return $connectionToQuery->lastInsertId();
+        try {
+            $connection = self::getConnection();
+            return $connection->lastInsertId();
+        } catch (Exception $e) {
+            Log::logWarning("CONN::getLastInsertId - " . $e->getMessage());
+            return false;
         }
-        Log::logWarning("CONN::getLastInsertId - No specific connection determined for lastInsertId call.");
-        return false;
     }
 }
