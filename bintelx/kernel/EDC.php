@@ -9,6 +9,9 @@
  * - Multi-tenant support (scope_entity_id)
  * - Complete audit trail
  *
+ * SCOPE: scope_entity_id = NULL significa formulario global/público (no "sin acceso").
+ * NO usa Tenant:: (que trata null como AND 1=0). Usa nullableWhere() propio.
+ *
  * This class is domain-agnostic and can be used for:
  * - Clinical data capture (CRF)
  * - Surveys and questionnaires
@@ -26,12 +29,9 @@ use Exception;
 
 class EDC {
 
-    /**
-     * In-memory cache for form schemas
-     * Key: "{scope_entity_id}:{form_name}"
-     * @var array
-     */
-    private static array $formSchemaCache = [];
+    # Cache namespace (transparente: Swoole\Table o static array via bX\Cache)
+    private const CACHE_NS = 'edc:schema';
+    private const CACHE_TTL = 1800; # 30min
 
     // ==================== FORM DEFINITIONS ====================
 
@@ -61,23 +61,20 @@ class EDC {
                 throw new Exception($validationResult['message']);
             }
 
-            // Desactivar versión actual
+            # Desactivar versión actual
+            $sw = self::nullableWhere('scope_entity_id', $scopeEntityId, ':scope');
             $sqlDeactivate = "UPDATE edc_form_definitions
                               SET is_active = FALSE
-                              WHERE form_name = :name
-                                AND " . ($scopeEntityId ? "scope_entity_id = :scope" : "scope_entity_id IS NULL") . "
+                              WHERE form_name = :name" . $sw['sql'] . "
                                 AND is_active = TRUE";
 
-            $params = [':name' => $formName];
-            if ($scopeEntityId) $params[':scope'] = $scopeEntityId;
-
+            $params = array_merge([':name' => $formName], $sw['params']);
             CONN::nodml($sqlDeactivate, $params);
 
-            // Obtener siguiente versión
+            # Obtener siguiente versión
             $sqlVersion = "SELECT COALESCE(MAX(version_number), 0) + 1 as next_version
                            FROM edc_form_definitions
-                           WHERE form_name = :name
-                             AND " . ($scopeEntityId ? "scope_entity_id = :scope" : "scope_entity_id IS NULL");
+                           WHERE form_name = :name" . $sw['sql'];
 
             $versionRow = CONN::dml($sqlVersion, $params)[0] ?? null;
             $nextVersion = (int)($versionRow['next_version'] ?? 1);
@@ -118,7 +115,8 @@ class EDC {
 
             // Invalidar cache
             $cacheKey = self::getCacheKey($formName, $scopeEntityId);
-            unset(self::$formSchemaCache[$cacheKey]);
+            Cache::delete(self::CACHE_NS, $cacheKey);
+            Cache::notifyChannel(self::CACHE_NS);
 
             Log::logInfo('EDC.defineForm', [
                 'form_name' => $formName,
@@ -157,48 +155,36 @@ class EDC {
         ?int $scopeEntityId = null,
         bool $includePublic = true
     ): ?array {
-        // Check memory cache
         $cacheKey = self::getCacheKey($formName, $scopeEntityId);
-        if (isset(self::$formSchemaCache[$cacheKey])) {
-            return self::$formSchemaCache[$cacheKey];
-        }
+        return Cache::getOrSet(self::CACHE_NS, $cacheKey, self::CACHE_TTL, function() use ($formName, $scopeEntityId, $includePublic) {
+            $sql = "SELECT form_definition_id, form_name, form_title, form_description,
+                           version_number, status, scope_entity_id,
+                           created_at, created_by_profile_id
+                    FROM edc_form_definitions
+                    WHERE form_name = :name
+                      AND is_active = TRUE";
 
-        // Get form metadata (without TEXT fields)
-        $sql = "SELECT form_definition_id, form_name, form_title, form_description,
-                       version_number, status, scope_entity_id,
-                       created_at, created_by_profile_id
-                FROM edc_form_definitions
-                WHERE form_name = :name
-                  AND is_active = TRUE";
+            $params = [':name' => $formName];
 
-        $params = [':name' => $formName];
-
-        if ($scopeEntityId !== null) {
-            if ($includePublic) {
+            if ($scopeEntityId !== null && $includePublic) {
+                # Caso especial: tenant + forms globales visibles
                 $sql .= " AND (scope_entity_id = :scope OR scope_entity_id IS NULL)";
                 $params[':scope'] = $scopeEntityId;
             } else {
-                $sql .= " AND scope_entity_id = :scope";
-                $params[':scope'] = $scopeEntityId;
+                $sw = self::nullableWhere('scope_entity_id', $scopeEntityId, ':scope');
+                $sql .= $sw['sql'];
+                $params = array_merge($params, $sw['params']);
             }
-        } else {
-            $sql .= " AND scope_entity_id IS NULL";
-        }
 
-        $sql .= " LIMIT 1";
+            $sql .= " LIMIT 1";
 
-        $rows = CONN::dml($sql, $params);
-        if (empty($rows)) return null;
+            $rows = CONN::dml($sql, $params);
+            if (empty($rows)) return null;
 
-        $form = $rows[0];
-
-        // Build schema from relational tables
-        $form['schema'] = self::buildSchemaFromRelational($form['form_definition_id']);
-
-        // Cache in memory
-        self::$formSchemaCache[$cacheKey] = $form;
-
-        return $form;
+            $form = $rows[0];
+            $form['schema'] = self::buildSchemaFromRelational($form['form_definition_id']);
+            return $form;
+        });
     }
 
     /**
@@ -247,16 +233,13 @@ class EDC {
 
             $params = [];
 
-            if ($scopeEntityId !== null) {
-                if ($includePublic) {
-                    $sql .= " AND (scope_entity_id = :scope OR scope_entity_id IS NULL)";
-                    $params[':scope'] = $scopeEntityId;
-                } else {
-                    $sql .= " AND scope_entity_id = :scope";
-                    $params[':scope'] = $scopeEntityId;
-                }
+            if ($scopeEntityId !== null && $includePublic) {
+                $sql .= " AND (scope_entity_id = :scope OR scope_entity_id IS NULL)";
+                $params[':scope'] = $scopeEntityId;
             } else {
-                $sql .= " AND scope_entity_id IS NULL";
+                $sw = self::nullableWhere('scope_entity_id', $scopeEntityId, ':scope');
+                $sql .= $sw['sql'];
+                $params = array_merge($params, $sw['params']);
             }
 
             if ($status !== null) {
@@ -667,7 +650,7 @@ class EDC {
     /**
      * Gets audit trail for a specific field in a response
      *
-     * @param int $formResponseId Response ID
+     * @param int $formResponseId Response ID (entity_id en EAV)
      * @param string $fieldId Field identifier
      * @param string|null $macroContext Optional macro context filter
      * @param string|null $eventContext Optional event context filter
@@ -749,16 +732,14 @@ class EDC {
                 $params[':status'] = $filters['status'];
             }
 
-            if (isset($filters['scope_entity_id'])) {
-                if ($filters['scope_entity_id'] === null) {
-                    $sql .= " AND r.scope_entity_id IS NULL";
-                } else {
-                    $sql .= " AND r.scope_entity_id = :scope";
-                    $params[':scope'] = $filters['scope_entity_id'];
-                }
+            if (array_key_exists('scope_entity_id', $filters)) {
+                $sw = self::nullableWhere('r.scope_entity_id', $filters['scope_entity_id'], ':scope');
+                $sql .= $sw['sql'];
+                $params = array_merge($params, $sw['params']);
             }
 
-            $sql .= " ORDER BY r.created_at DESC";
+            # Responses con datos primero, luego por fecha DESC
+            $sql .= " ORDER BY (r.data_capture_context_group_id IS NOT NULL) DESC, r.created_at DESC";
 
             $rows = CONN::dml($sql, $params);
 
@@ -1123,5 +1104,15 @@ class EDC {
      */
     private static function getCacheKey(string $formName, ?int $scopeEntityId): string {
         return ($scopeEntityId ?? 'null') . ':' . $formName;
+    }
+
+    # WHERE clause para scope nullable donde NULL = global/público (no "sin acceso")
+    # Distinto de Tenant:: donde null scope = AND 1=0
+    private static function nullableWhere(string $column, $value, string $paramName = ':_scope'): array
+    {
+        if ($value !== null) {
+            return ['sql' => " AND {$column} = {$paramName}", 'params' => [$paramName => $value]];
+        }
+        return ['sql' => " AND {$column} IS NULL", 'params' => []];
     }
 }

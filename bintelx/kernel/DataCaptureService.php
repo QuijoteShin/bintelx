@@ -7,7 +7,8 @@
  * Purpose: Servicio centralizado para captura de datos usando modelo EAV versionado
  * con soporte completo para:
  * - ALCOA+ (Attributable, Legible, Contemporaneous, Original, Accurate)
- * - Multi-tenant (scope_entity_id)
+ * - Multi-tenant (scope_entity_id) — NULL = dato personal/global, no "sin acceso"
+ *   NO usa Tenant:: (que trata null como AND 1=0). Usa nullableWhere() propio.
  * - Multi-source (source_system, device_id)
  * - Versionado atómico (is_active)
  *
@@ -152,6 +153,12 @@ class DataCaptureService {
      * Guarda datos con versionado atómico y contexto completo
      *
      * Esta es la función principal de persistencia EAV con ALCOA+
+     *
+     * Versionado inteligente: antes de crear una nueva versión, compara el valor
+     * actual vs el nuevo mediante valueHasChanged() (type-aware: tolerancia numérica
+     * para DECIMAL, normalización de booleans, comparación de IDs para ENTITY_REF).
+     * Solo versiona cuando hay un cambio real — esto produce audit trails limpios
+     * donde cada versión representa una mutación efectiva del dato.
      *
      * @param int $actorProfileId Quién registra (ALCOA: Attributable)
      * @param int $subjectEntityId De quién es el dato (paciente, cliente, activo)
@@ -418,19 +425,23 @@ class DataCaptureService {
     }
 
     /**
-     * Lee el historial completo de una variable (audit trail)
+     * Lee el historial de una variable (audit trail vertical)
      *
-     * Retorna TODAS las versiones (activas e inactivas) para auditoría ALCOA+
+     * Lectura VERTICAL: una variable, sus versiones ordenadas por version DESC
      *
      * @param int $entityId Sujeto
      * @param string $variableName Nombre único de la variable
-     * @return array ['success', 'trail' => [['version', 'value', 'timestamp', 'profile_id', ...]]]
+     * @param string|null $macroContext Filtro por macro_context
+     * @param string|null $eventContext Filtro por event_context
+     * @param array $options Opciones: 'limit' (int), 'offset' (int), 'from' (datetime), 'to' (datetime)
+     * @return array ['success', 'trail' => [...]]
      */
     public static function getAuditTrailForVariable(
         int $entityId,
         string $variableName,
         ?string $macroContext = null,
-        ?string $eventContext = null
+        ?string $eventContext = null,
+        array $options = []
     ): array {
         try {
             $def = self::getVariableDefinition($variableName);
@@ -465,8 +476,23 @@ class DataCaptureService {
                 $sql .= " AND cg.event_context = :evt";
                 $params[':evt'] = $eventContext;
             }
+            if (!empty($options['from'])) {
+                $sql .= " AND h.timestamp >= :from_ts";
+                $params[':from_ts'] = $options['from'];
+            }
+            if (!empty($options['to'])) {
+                $sql .= " AND h.timestamp <= :to_ts";
+                $params[':to_ts'] = $options['to'];
+            }
 
             $sql .= " ORDER BY h.version DESC";
+
+            if (!empty($options['limit'])) {
+                $limit = min((int)$options['limit'], 500);
+                $offset = (int)($options['offset'] ?? 0);
+                $sql .= " LIMIT {$limit} OFFSET {$offset}";
+            }
+
             $rows = CONN::dml($sql, $params);
 
             $trail = [];
@@ -498,6 +524,231 @@ class DataCaptureService {
                 'var' => $variableName
             ]);
             return ['success' => false, 'trail' => null, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Audit trail unificado — eventos horizontales con trail de versiones
+     *
+     * Combina lectura horizontal (context_group = evento con variables pivoteadas)
+     * con trail de versiones (cada variable muestra su historial dentro del evento).
+     *
+     * Modos de uso:
+     *   - Sin variable_name: eventos completos con todas las variables del contexto
+     *   - Con variable_name(s): trail de versiones filtrado, con contexto completo
+     *
+     * @param int $entityId Sujeto (engagement, customer, unit, etc.)
+     * @param array $options Filtros y paginación:
+     *   - 'variable_name'  => string    Una variable (trail de versiones)
+     *   - 'variable_names' => string[]  Varias variables a incluir en el pivot
+     *   - 'macro_context'  => string    Nivel 1 (ej: 'engagement', 'units')
+     *   - 'event_context'  => string    Nivel 2 (ej: 'activity_stream', 'pvp_change')
+     *   - 'sub_context'    => string    Nivel 3 (ej: 'created', 'sla_started')
+     *   - 'context_type'   => string    Tipo de evento (ej: 'activity_log', 'alcoa_audit')
+     *   - 'scope_entity_id'=> int       Filtro tenant
+     *   - 'from'           => string    Fecha inicio (YYYY-MM-DD HH:MM:SS)
+     *   - 'to'             => string    Fecha fin
+     *   - 'limit'          => int       Máximo de eventos (default 50)
+     *   - 'offset'         => int       Offset para paginación (default 0)
+     *   - 'order'          => string    'DESC' (default) o 'ASC'
+     * @param callable|null $callback Streaming por evento horizontal
+     * @return array ['success', 'events' => [...], 'total' => int]
+     */
+    public static function getAuditTrail(
+        int $entityId,
+        array $options = [],
+        ?callable $callback = null
+    ): array {
+        try {
+            $limit = min((int)($options['limit'] ?? 50), 500);
+            $offset = (int)($options['offset'] ?? 0);
+            $order = strtoupper($options['order'] ?? 'DESC') === 'ASC' ? 'ASC' : 'DESC';
+
+            # Normalizar variable_name (string) → variable_names (array)
+            $variableNames = $options['variable_names'] ?? null;
+            if (!empty($options['variable_name']) && is_string($options['variable_name'])) {
+                $variableNames = [$options['variable_name']];
+            }
+
+            # 1. Construir WHERE para context_groups
+            $cgWhere = ['cg.subject_entity_id = :eid'];
+            $cgParams = [':eid' => $entityId];
+
+            if (!empty($options['macro_context'])) {
+                $cgWhere[] = 'cg.macro_context = :macro';
+                $cgParams[':macro'] = $options['macro_context'];
+            }
+            if (!empty($options['event_context'])) {
+                $cgWhere[] = 'cg.event_context = :event';
+                $cgParams[':event'] = $options['event_context'];
+            }
+            if (!empty($options['sub_context'])) {
+                $cgWhere[] = 'cg.sub_context = :sub';
+                $cgParams[':sub'] = $options['sub_context'];
+            }
+            if (!empty($options['context_type'])) {
+                $cgWhere[] = 'cg.context_type = :ctype';
+                $cgParams[':ctype'] = $options['context_type'];
+            }
+            if (array_key_exists('scope_entity_id', $options)) {
+                $sw = self::nullableWhere('cg.scope_entity_id', $options['scope_entity_id'], ':scope');
+                $cgWhere[] = $sw['sql'];
+                $cgParams = array_merge($cgParams, $sw['params']);
+            }
+            if (!empty($options['from'])) {
+                $cgWhere[] = 'cg.timestamp >= :from_ts';
+                $cgParams[':from_ts'] = $options['from'];
+            }
+            if (!empty($options['to'])) {
+                $cgWhere[] = 'cg.timestamp <= :to_ts';
+                $cgParams[':to_ts'] = $options['to'];
+            }
+
+            # Si hay filtro de variables, solo context_groups que tengan esas variables
+            if ($variableNames) {
+                $vnJoinPlaceholders = [];
+                foreach ($variableNames as $vi => $vn) {
+                    $key = ":vnj{$vi}";
+                    $vnJoinPlaceholders[] = $key;
+                    $cgParams[$key] = $vn;
+                }
+                $cgWhere[] = "EXISTS (
+                    SELECT 1 FROM data_values_history hf
+                    JOIN data_dictionary ddf ON hf.variable_id = ddf.variable_id
+                    WHERE hf.context_group_id = cg.context_group_id
+                    AND ddf.unique_name IN (" . implode(',', $vnJoinPlaceholders) . ")
+                )";
+            }
+
+            $whereClause = implode(' AND ', $cgWhere);
+
+            # Count total para paginación
+            $countRows = CONN::dml(
+                "SELECT COUNT(*) as total FROM context_groups cg WHERE {$whereClause}",
+                $cgParams
+            );
+            $total = (int)($countRows[0]['total'] ?? 0);
+
+            if ($total === 0) {
+                return ['success' => true, 'events' => [], 'total' => 0];
+            }
+
+            # Obtener context_groups paginados
+            $contextGroups = CONN::dml(
+                "SELECT cg.context_group_id, cg.timestamp, cg.profile_id,
+                        cg.macro_context, cg.event_context, cg.sub_context,
+                        cg.context_type, cg.scope_entity_id
+                 FROM context_groups cg
+                 WHERE {$whereClause}
+                 ORDER BY cg.timestamp {$order}
+                 LIMIT {$limit} OFFSET {$offset}",
+                $cgParams
+            );
+
+            if (empty($contextGroups)) {
+                return ['success' => true, 'events' => [], 'total' => $total];
+            }
+
+            # 2. Obtener valores con trail de versiones
+            $cgIds = array_column($contextGroups, 'context_group_id');
+            $valParams = [];
+            $cgPlaceholders = [];
+            foreach ($cgIds as $i => $cgId) {
+                $key = ":cg{$i}";
+                $cgPlaceholders[] = $key;
+                $valParams[$key] = $cgId;
+            }
+
+            $valSql = "SELECT h.context_group_id, h.value_id,
+                              dd.unique_name, dd.data_type,
+                              h.value_string, h.value_decimal, h.value_datetime,
+                              h.value_boolean, h.value_entity_ref,
+                              h.version, h.timestamp as value_timestamp,
+                              h.profile_id as value_profile_id,
+                              h.reason_for_change, h.source_system, h.device_id
+                       FROM data_values_history h
+                       JOIN data_dictionary dd ON h.variable_id = dd.variable_id
+                       WHERE h.context_group_id IN (" . implode(',', $cgPlaceholders) . ")";
+
+            # Filtrar variables
+            if ($variableNames) {
+                $vnPlaceholders = [];
+                foreach ($variableNames as $vi => $vn) {
+                    $key = ":vn{$vi}";
+                    $vnPlaceholders[] = $key;
+                    $valParams[$key] = $vn;
+                }
+                $valSql .= " AND dd.unique_name IN (" . implode(',', $vnPlaceholders) . ")";
+            }
+
+            $valSql .= " ORDER BY h.version ASC";
+
+            # Agrupar por context_group, cada variable con su trail de versiones
+            $valuesByGroup = [];
+            CONN::dml($valSql, $valParams, function($row) use (&$valuesByGroup) {
+                $cgId = (int)$row['context_group_id'];
+                $varName = $row['unique_name'];
+
+                $versionEntry = [
+                    'value' => self::mapValueFromDbColumn($row['data_type'], $row),
+                    'version' => (int)$row['version'],
+                    'value_id' => (int)$row['value_id'],
+                    'timestamp' => $row['value_timestamp'],
+                    'profile_id' => (int)$row['value_profile_id'],
+                    'reason' => $row['reason_for_change'],
+                    'source_system' => $row['source_system'],
+                    'device_id' => $row['device_id']
+                ];
+
+                if (!isset($valuesByGroup[$cgId][$varName])) {
+                    # Primera versión de esta variable en este context_group
+                    $valuesByGroup[$cgId][$varName] = $versionEntry;
+                    $valuesByGroup[$cgId][$varName]['trail'] = [$versionEntry];
+                } else {
+                    # Versión adicional — actualizar valor actual y agregar al trail
+                    $valuesByGroup[$cgId][$varName]['value'] = $versionEntry['value'];
+                    $valuesByGroup[$cgId][$varName]['version'] = $versionEntry['version'];
+                    $valuesByGroup[$cgId][$varName]['timestamp'] = $versionEntry['timestamp'];
+                    $valuesByGroup[$cgId][$varName]['profile_id'] = $versionEntry['profile_id'];
+                    $valuesByGroup[$cgId][$varName]['reason'] = $versionEntry['reason'];
+                    $valuesByGroup[$cgId][$varName]['trail'][] = $versionEntry;
+                }
+            });
+
+            # 3. Construir eventos horizontales
+            $events = [];
+            foreach ($contextGroups as $cg) {
+                $cgId = (int)$cg['context_group_id'];
+                $event = [
+                    'context_group_id' => $cgId,
+                    'timestamp' => $cg['timestamp'],
+                    'profile_id' => (int)$cg['profile_id'],
+                    'macro_context' => $cg['macro_context'],
+                    'event_context' => $cg['event_context'],
+                    'sub_context' => $cg['sub_context'],
+                    'context_type' => $cg['context_type'],
+                    'scope_entity_id' => $cg['scope_entity_id'] !== null ? (int)$cg['scope_entity_id'] : null,
+                    'data' => $valuesByGroup[$cgId] ?? []
+                ];
+
+                if ($callback) {
+                    $result = $callback($event);
+                    if ($result === false) break;
+                } else {
+                    $events[] = $event;
+                }
+            }
+
+            return $callback
+                ? ['success' => true, 'total' => $total]
+                : ['success' => true, 'events' => $events, 'total' => $total];
+
+        } catch (Exception $e) {
+            Log::logError("getAuditTrail Exception: " . $e->getMessage(), [
+                'entity' => $entityId,
+                'options' => $options
+            ]);
+            return ['success' => false, 'events' => null, 'message' => $e->getMessage()];
         }
     }
 
@@ -604,7 +855,16 @@ class DataCaptureService {
     /**
      * Obtiene o crea un ContextGroup (ticket/hito)
      *
-     * IMPORTANTE: Usa subject_entity_id y scope_entity_id
+     * El context_group es el eje HORIZONTAL del EAV: agrupa múltiples
+     * variables que pertenecen al mismo evento. Estructura jerárquica:
+     *   - macro_context  → dominio/app (ej: 'engagement', 'units')
+     *   - event_context  → función/flujo (ej: 'activity_stream', 'pvp_change')
+     *   - sub_context    → acción específica (ej: 'created', 'sla_started')
+     *   - parent_context_id → jerarquía entre context_groups
+     *
+     * IDEMPOTENTE por combinación completa: subject+profile+type+macro+event+sub+parent.
+     * Si todos coinciden, reusa el context_group existente (las variables se versionan
+     * dentro del mismo grupo). Si alguno difiere, crea uno nuevo.
      *
      * @param int $actorProfileId Quién crea el contexto
      * @param int $subjectEntityId De quién es el evento (paciente, cliente)
@@ -627,16 +887,21 @@ class DataCaptureService {
         $sub = $contextPayload['sub_context'] ?? null;
         $parentContextId = $contextPayload['parent_context_id'] ?? null;
 
-        // Construir consulta para buscar contexto existente
+        # Construir consulta para buscar contexto existente
+        # nullableWhere: columnas donde NULL es valor legítimo de identidad (no "sin dato")
+        $nw = [
+            self::nullableWhere('scope_entity_id', $scopeEntityId, ':scope_eid'),
+            self::nullableWhere('macro_context', $macro, ':macro'),
+            self::nullableWhere('event_context', $event, ':event'),
+            self::nullableWhere('sub_context', $sub, ':sub'),
+            self::nullableWhere('parent_context_id', $parentContextId, ':parent'),
+        ];
+
         $sqlFind = "SELECT context_group_id FROM context_groups
                     WHERE subject_entity_id = :subject_eid
                       AND profile_id = :pid
                       AND context_type = :type
-                      AND " . ($scopeEntityId ? "scope_entity_id = :scope_eid" : "scope_entity_id IS NULL") . "
-                      AND " . ($macro ? "macro_context = :macro" : "macro_context IS NULL") . "
-                      AND " . ($event ? "event_context = :event" : "event_context IS NULL") . "
-                      AND " . ($sub ? "sub_context = :sub" : "sub_context IS NULL") . "
-                      AND " . ($parentContextId ? "parent_context_id = :parent" : "parent_context_id IS NULL") . "
+                      AND " . implode(' AND ', array_column($nw, 'sql')) . "
                     LIMIT 1";
 
         $paramsFind = [
@@ -644,11 +909,9 @@ class DataCaptureService {
             ':pid' => $actorProfileId,
             ':type' => $contextType
         ];
-        if ($scopeEntityId) $paramsFind[':scope_eid'] = $scopeEntityId;
-        if ($macro) $paramsFind[':macro'] = $macro;
-        if ($event) $paramsFind[':event'] = $event;
-        if ($sub) $paramsFind[':sub'] = $sub;
-        if ($parentContextId) $paramsFind[':parent'] = $parentContextId;
+        foreach ($nw as $w) {
+            $paramsFind = array_merge($paramsFind, $w['params']);
+        }
 
         $existing = CONN::dml($sqlFind, $paramsFind)[0] ?? null;
 
@@ -815,6 +1078,17 @@ class DataCaptureService {
         }
     }
 
+    # WHERE clause para columna nullable donde NULL es valor legítimo (no "sin acceso")
+    # Distinto de Tenant:: donde null scope = AND 1=0
+    # Usado en context_groups donde scope_entity_id NULL = dato personal/global
+    private static function nullableWhere(string $column, $value, string $paramName): array
+    {
+        if ($value !== null) {
+            return ['sql' => "{$column} = {$paramName}", 'params' => [$paramName => $value]];
+        }
+        return ['sql' => "{$column} IS NULL", 'params' => []];
+    }
+
     /**
      * Obtiene datos EAV en formato horizontal (array PHP)
      *
@@ -839,6 +1113,16 @@ class DataCaptureService {
      *   - O retornar valor para acumular
      *   - Si retorna false, detiene procesamiento (early exit)
      *
+     * Lectura HORIZONTAL: pivotea datos EAV verticales a filas planas.
+     * El context_group es el eje de agrupación — cada context_group_id
+     * representa un ticket/evento que agrupa múltiples variables.
+     * Los 3 niveles de contexto (macro, event, sub) + parent_context_id
+     * actúan como dimensiones jerárquicas para filtrar.
+     *
+     * Actualmente agrupa por entity_id. Para event streams donde un mismo
+     * entity_id tiene múltiples context_groups (ej: activity log), se
+     * necesitaría pivotar por context_group_id.
+     *
      * @return array|null Array de filas si no hay callback, null si hay callback
      */
     public static function getHorizontalData(array $filters = [], ?callable $callback = null): ?array
@@ -847,9 +1131,10 @@ class DataCaptureService {
         $whereConditions = ['h.is_active = 1'];
         $params = [];
 
-        if (!empty($filters['scope_entity_id'])) {
-            $whereConditions[] = 'cg.scope_entity_id = :scope_entity_id';
-            $params[':scope_entity_id'] = $filters['scope_entity_id'];
+        if (array_key_exists('scope_entity_id', $filters)) {
+            $sw = self::nullableWhere('cg.scope_entity_id', $filters['scope_entity_id'], ':scope_entity_id');
+            $whereConditions[] = $sw['sql'];
+            $params = array_merge($params, $sw['params']);
         }
 
         if (!empty($filters['subject_entity_ids']) && is_array($filters['subject_entity_ids'])) {
