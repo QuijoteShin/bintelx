@@ -64,11 +64,15 @@ Router::register(['POST'], 'auth', function(...$params) {
             });
         }
 
+        # Preservar device_hash del JWT (source of truth para fingerprint)
+        $deviceHash = $payload[1]['device_hash'] ?? '';
+
         # Guardar en Swoole\Table (compartida entre workers)
         $authTable->set((string)$fd, [
             'token' => $token,
             'account_id' => $accountId,
-            'profile_id' => $profileId
+            'profile_id' => $profileId,
+            'device_hash' => $deviceHash
         ]);
 
         Log::logInfo("WebSocket: User authenticated", ['fd' => $fd, 'account_id' => $accountId, 'profile_id' => $profileId]);

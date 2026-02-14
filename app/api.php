@@ -100,6 +100,9 @@ try {
 
   \bX\Router::dispatch($method, $uri);
 
-} catch (\ErrorException $e) {
+} catch (\Throwable $e) {
     \bX\Log::logError($e->getMessage(), $e->getTrace());
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'error' => 'Server error. Check logs for details.']);
 }

@@ -339,6 +339,14 @@ Router::register(['POST'], 'scope/switch.json', function() {
     return Response::json(['success' => false, 'message' => $e->getMessage()], 403);
   }
 
+  # Preservar device_hash del JWT actual antes de regenerar
+  $currentToken = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  if (str_starts_with($currentToken, 'Bearer ')) {
+    $currentToken = substr($currentToken, 7);
+  }
+  $currentPayload = \bX\JWT::decode($currentToken);
+  $deviceHash = $currentPayload[1]['device_hash'] ?? null;
+
   # Generate new JWT with new scope
   $jwtSecret = \bX\Config::get('JWT_SECRET', 'woz.min..');
   $jwtXorKey = \bX\Config::get('JWT_XOR_KEY', 'XOR_KEY_2o25');
@@ -349,7 +357,8 @@ Router::register(['POST'], 'scope/switch.json', function() {
     null,
     null,
     Profile::$profile_id,
-    $requestedScope  // New scope
+    $requestedScope,
+    $deviceHash
   );
 
   if (!$token) {

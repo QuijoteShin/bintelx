@@ -66,13 +66,15 @@ class AuthHandler
             $scopeEntityId = $entityId;
           }
 
-          # Regenerate token with complete payload
+          # Regenerate token with complete payload (preservar device_hash del primer token)
+          $deviceHash = $payload[1]['device_hash'] ?? ($inputData['device_hash'] ?? null);
           $token = $accountService->generateToken(
             (string)$accountId,
             null,
             null,
             $profileId,
-            $scopeEntityId
+            $scopeEntityId,
+            $deviceHash
           );
         }
       }
@@ -574,7 +576,8 @@ class AuthHandler
         null,
         null,
         $profileId,
-        $companyEntityId # scope_entity_id = la empresa
+        $companyEntityId,
+        $inputData['device_hash'] ?? null
       );
 
       \bX\Log::logInfo("Company registered: account_id=$accountId, person_entity=$personEntityId, company_entity=$companyEntityId, profile=$profileId");

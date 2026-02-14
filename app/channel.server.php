@@ -392,6 +392,9 @@ class ChannelServer
                 $this->loadProfile($token, $fd);
             }
 
+            # Verificar fingerprint del dispositivo contra JWT device_hash
+            $this->verifyDeviceFingerprint($fd, $data);
+
             # 6. EJECUTAR Router
             ob_start();
 
@@ -495,6 +498,48 @@ class ChannelServer
             }
         } catch (\Exception $e) {
             Log::logWarning("Profile load failed", ['error' => $e->getMessage()]);
+        }
+    }
+
+    # Compara device_hash del JWT (source of truth) contra meta.fingerprint del mensaje
+    # Configurable via DEVICE_FINGERPRINT_MODE: off | log | strict
+    private function verifyDeviceFingerprint(int $fd, array $data): void
+    {
+        $mode = Config::get('DEVICE_FINGERPRINT_MODE', 'log');
+        if ($mode === 'off') return;
+
+        # device_hash del JWT almacenado en auth
+        $storedHash = '';
+        if (isset($this->authenticatedConnections[$fd]['device_hash'])) {
+            $storedHash = $this->authenticatedConnections[$fd]['device_hash'];
+        } elseif ($this->authTable && $this->authTable->exists((string)$fd)) {
+            $storedHash = $this->authTable->get((string)$fd)['device_hash'] ?? '';
+        }
+
+        # Token legacy sin device_hash → skip
+        if (empty($storedHash)) return;
+
+        $clientFingerprint = $data['meta']['fingerprint'] ?? '';
+        if (empty($clientFingerprint)) return;
+
+        if ($storedHash !== $clientFingerprint) {
+            Log::logWarning('Device fingerprint mismatch', [
+                'fd' => $fd,
+                'stored' => $storedHash,
+                'received' => $clientFingerprint,
+                'account_id' => $this->authenticatedConnections[$fd]['account_id'] ?? 0,
+                'mode' => $mode
+            ]);
+
+            if ($mode === 'strict') {
+                $this->server->push($fd, json_encode([
+                    'type' => 'error',
+                    'event' => 'device_mismatch',
+                    'message' => 'Device fingerprint mismatch',
+                    'timestamp' => time()
+                ]));
+                $this->server->close($fd);
+            }
         }
     }
 

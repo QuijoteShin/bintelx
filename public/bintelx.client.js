@@ -1,202 +1,123 @@
 'use strict';
 
+// Device fingerprint collector — matches server-side fingerprint.endpoint.php
+// No client-side hashing: components sent to server for deterministic xxh128
 class BintelxFingerprint {
-    constructor() {
-        this.components = {};
-        this.componentStrings = [];
-    }
+    constructor() { this.components = {}; }
 
     static async generate() {
         const instance = new BintelxFingerprint();
-
-        instance.addComponent('canvas', instance.getCanvasFingerprint());
-        instance.addComponent('webgl', instance.getWebGLInfo());
-        instance.addComponent('hardware', instance.getHardwareInfo());
-        instance.addComponent('screen', instance.getScreenInfo());
-        instance.addComponent('math', instance.getMathFingerprint());
-        instance.addComponent('fonts', instance.getFontFingerprint());
-
-        const mediaInfo = await instance.getMediaDevicesInfo();
-        instance.addComponent('media', mediaInfo);
-
-        const audio = await instance.getAudioFingerprint();
-        instance.addComponent('audio', audio);
-
-        const hash = await instance.hashString(instance.componentStrings.join('||'));
-
-        return {
-            hash,
-            components: instance.components
-        };
+        return { components: await instance.collect() };
     }
 
-    addComponent(name, value) {
-        if (value === undefined || value === null) return;
-        this.components[name] = value;
-        this.componentStrings.push(`${name}:${typeof value === 'string' ? value : JSON.stringify(value)}`);
+    async collect() {
+        this.components = {};
+        this.add('canvas', this.canvas());
+        this.add('webgl', this.webgl());
+        this.add('hardware', this.hardware());
+        this.add('screen', this.screenInfo());
+        this.add('math', this.math());
+        this.add('fonts', this.fonts());
+        this.add('media', await this.media());
+        this.add('audio', await this.audio());
+        return this.components;
     }
 
-    getCanvasFingerprint() {
+    add(name, value) { if (value != null) this.components[name] = value; }
+
+    canvas() {
         try {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            ctx.textBaseline = 'top';
-            ctx.font = "16px 'Arial'";
+            const c = document.createElement('canvas');
+            const ctx = c.getContext('2d');
             ctx.textBaseline = 'alphabetic';
+            ctx.font = "16px 'Arial'";
             ctx.fillStyle = '#f60';
             ctx.fillRect(125, 1, 62, 20);
             ctx.fillStyle = '#069';
-            ctx.fillText('Bintelx-Fingerprint', 2, 15);
+            ctx.fillText('Bintelx-FP', 2, 15);
             ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-            ctx.fillText('Bintelx-Fingerprint', 4, 17);
-            return canvas.toDataURL();
-        } catch (e) {
-            return 'canvas-unavailable';
-        }
+            ctx.fillText('Bintelx-FP', 4, 17);
+            return c.toDataURL();
+        } catch { return 'canvas-unavailable'; }
     }
 
-    getWebGLInfo() {
+    webgl() {
         try {
-            const canvas = document.createElement('canvas');
-            const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            const c = document.createElement('canvas');
+            const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
             if (!gl) return 'webgl-unavailable';
             const ext = gl.getExtension('WEBGL_debug_renderer_info');
-            const vendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : 'unknown';
-            const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'unknown';
-            const extensions = gl.getSupportedExtensions()?.join(',') || '';
-            return `${vendor}::${renderer}::${extensions}`;
-        } catch (e) {
-            return 'webgl-error';
-        }
+            const v = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : 'unknown';
+            const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'unknown';
+            return `${v}::${r}`;
+        } catch { return 'webgl-error'; }
     }
 
-    async getAudioFingerprint() {
-        try {
-            const AudioContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-            if (!AudioContext) return 'audio-unavailable';
-            const context = new AudioContext(1, 44100, 44100);
-            const oscillator = context.createOscillator();
-            oscillator.type = 'triangle';
-            oscillator.frequency.value = 10000;
-
-            const compressor = context.createDynamicsCompressor();
-            compressor.threshold.value = -50;
-            compressor.knee.value = 40;
-            compressor.ratio.value = 12;
-            compressor.attack.value = 0;
-            compressor.release.value = 0.25;
-
-            oscillator.connect(compressor);
-            compressor.connect(context.destination);
-            oscillator.start(0);
-
-            const buffer = await context.startRendering();
-            const channelData = buffer.getChannelData(0);
-            let sum = 0;
-            for (let i = 0; i < channelData.length; i++) {
-                sum += Math.abs(channelData[i]);
-            }
-            return `audio-${sum.toString()}`;
-        } catch (e) {
-            return 'audio-error';
-        }
+    hardware() {
+        return [navigator.hardwareConcurrency || 0, navigator.deviceMemory || 0, navigator.language || 'unknown'].join('|');
     }
 
-    getHardwareInfo() {
-        return [
-            navigator.hardwareConcurrency || 0,
-            navigator.deviceMemory || 0,
-            navigator.language || 'unknown'
-        ].join('|');
-    }
-
-    getScreenInfo() {
+    screenInfo() {
         const s = window.screen || {};
-        return [
-            s.width || 0,
-            s.height || 0,
-            s.colorDepth || 0,
-            window.devicePixelRatio || 1,
-            navigator.maxTouchPoints || 0
-        ].join('|');
+        return [s.width || 0, s.height || 0, s.colorDepth || 0, window.devicePixelRatio || 1, navigator.maxTouchPoints || 0].join('|');
     }
 
-    async getMediaDevicesInfo() {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-            return 'media-unavailable';
-        }
-        try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const summary = devices.reduce((acc, device) => {
-                acc[device.kind] = (acc[device.kind] || 0) + 1;
-                return acc;
-            }, {});
-            return JSON.stringify(summary);
-        } catch (e) {
-            return 'media-error';
-        }
-    }
-
-    getMathFingerprint() {
-        const results = [];
-        const values = [Math.PI, Math.E, Math.LN2, Math.SQRT2];
-
-        values.forEach((v, idx) => {
-            results.push(Math.sin(v + idx).toFixed(15));
-            results.push(Math.cos(v * idx + 0.123).toFixed(15));
-            results.push(Math.tan(v / (idx + 1)).toFixed(15));
+    math() {
+        const r = [];
+        [Math.PI, Math.E, Math.LN2, Math.SQRT2].forEach((v, i) => {
+            r.push(Math.sin(v + i).toFixed(15));
+            r.push(Math.cos(v * i + 0.123).toFixed(15));
+            r.push(Math.tan(v / (i + 1)).toFixed(15));
         });
-
-        return results.join('|');
+        return r.join('|');
     }
 
-    getFontFingerprint() {
+    fonts() {
         if (typeof document === 'undefined') return 'fonts-unavailable';
-        const baseFonts = ['monospace', 'sans-serif', 'serif'];
-        const testFonts = [
-            'Arial Black', 'Comic Sans MS', 'Courier New', 'Georgia',
-            'Impact', 'Lucida Console', 'Tahoma', 'Times New Roman',
-            'Trebuchet MS', 'Verdana'
-        ];
-
+        const bases = ['monospace', 'sans-serif', 'serif'];
+        const tests = ['Arial Black', 'Comic Sans MS', 'Courier New', 'Georgia', 'Impact', 'Lucida Console', 'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana'];
         const span = document.createElement('span');
-        span.style.position = 'absolute';
-        span.style.left = '-9999px';
-        span.style.fontSize = '72px';
+        span.style.cssText = 'position:absolute;left:-9999px;font-size:72px';
         span.innerHTML = 'mmmmmmmmmmlli';
         document.body.appendChild(span);
-
-        const defaultWidths = {};
-        baseFonts.forEach(font => {
-            span.style.fontFamily = font;
-            defaultWidths[font] = span.offsetWidth;
-        });
-
-        const results = [];
-        testFonts.forEach(font => {
-            baseFonts.forEach(base => {
-                span.style.fontFamily = `${font},${base}`;
-                const width = span.offsetWidth;
-                if (width !== defaultWidths[base]) {
-                    results.push(`${font}:${base}:${width}`);
-                }
-            });
-        });
-
+        const dw = {};
+        bases.forEach(f => { span.style.fontFamily = f; dw[f] = span.offsetWidth; });
+        const r = [];
+        tests.forEach(f => bases.forEach(b => {
+            span.style.fontFamily = `${f},${b}`;
+            if (span.offsetWidth !== dw[b]) r.push(`${f}:${b}:${span.offsetWidth}`);
+        }));
         document.body.removeChild(span);
-        return results.join('|') || 'fonts-none';
+        return r.join('|') || 'fonts-none';
     }
 
-    async hashString(str) {
+    async media() {
+        if (!navigator.mediaDevices?.enumerateDevices) return 'media-unavailable';
         try {
-            const encoder = new TextEncoder();
-            const data = encoder.encode(str);
-            const digest = await crypto.subtle.digest('SHA-256', data);
-            return Array.from(new Uint8Array(digest))
-                .map(b => b.toString(16).padStart(2, '0')).join('');
-        } catch (e) {
-            return btoa(str).substring(0, 32);
-        }
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const s = {};
+            devices.forEach(d => s[d.kind] = (s[d.kind] || 0) + 1);
+            return JSON.stringify(s);
+        } catch { return 'media-error'; }
+    }
+
+    async audio() {
+        try {
+            const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+            if (!AC) return 'audio-unavailable';
+            const ctx = new AC(1, 44100, 44100);
+            const osc = ctx.createOscillator();
+            osc.type = 'triangle'; osc.frequency.value = 10000;
+            const comp = ctx.createDynamicsCompressor();
+            comp.threshold.value = -50; comp.knee.value = 40;
+            comp.ratio.value = 12; comp.attack.value = 0; comp.release.value = 0.25;
+            osc.connect(comp); comp.connect(ctx.destination); osc.start(0);
+            const buf = await ctx.startRendering();
+            const data = buf.getChannelData(0);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += Math.abs(data[i]);
+            return `audio-${sum}`;
+        } catch { return 'audio-error'; }
     }
 }
 
@@ -259,6 +180,7 @@ class BintelxClient {
         this.correlationPrefix = `client_${Date.now()}`;
         this.correlationCounter = 0;
         this.deviceId = null;
+        this.serverFingerprint = null;
 
         this.connect();
 
@@ -266,12 +188,10 @@ class BintelxClient {
         this.fingerprintPromise = BintelxFingerprint.generate()
             .then(data => {
                 this.fingerprintData = data;
-                this.deviceId = this.computeDeviceId(data.hash);
                 this.emit('fingerprint', data);
                 return data;
             })
             .catch(err => {
-                this.deviceId = this.computeDeviceId(null);
                 this.emit('warn', err);
                 return null;
             });
@@ -417,13 +337,31 @@ class BintelxClient {
 
     async authenticate() {
         const token = await this.resolveToken();
+        const fp = await this.getFingerprint();
+
+        // Get server-computed xxh128 hash (deterministic, 32 hex)
+        if (fp?.components) {
+            try {
+                const fpRes = await this.request('/api/ws/fingerprint', {
+                    components: fp.components
+                }, { method: 'POST', correlationId: 'fingerprint' });
+                if (fpRes?.data?.hash) {
+                    this.serverFingerprint = fpRes.data.hash;
+                    this.deviceId = fpRes.data.hash;
+                }
+            } catch (e) { /* best-effort: server fingerprint unavailable */ }
+        }
+
         if (!token) {
             this.emit('warn', new Error('No token available, skipping handshake.'));
             this.transitionToReady();
             return;
         }
 
-        return this.request(this.handshakeRoute, { token }, {
+        return this.request(this.handshakeRoute, {
+            token,
+            device_hash: this.serverFingerprint || null
+        }, {
             method: this.handshakeMethod,
             correlationId: 'handshake'
         }).then((response) => {
@@ -531,8 +469,8 @@ class BintelxClient {
             payload.token = token;
         }
         const meta = Object.assign({}, reqOptions.meta || {});
-        if (this.fingerprintData?.hash) {
-            meta.fingerprint = this.fingerprintData.hash;
+        if (this.serverFingerprint) {
+            meta.fingerprint = this.serverFingerprint;
         }
         if (this.deviceId) {
             meta.device_id = this.deviceId;
@@ -571,23 +509,8 @@ class BintelxClient {
 
     async getDeviceId() {
         if (this.deviceId) return this.deviceId;
-        await this.getFingerprint();
-        return this.deviceId || this.computeDeviceId(null);
-    }
-
-    computeDeviceId(fingerprintHash) {
-        // Prefer fingerprint hash; fallback to UA hash; truncate to 100 chars
-        const source = fingerprintHash || (typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown');
-        const maxLen = 100;
-        if (!source) return 'unknown';
-        if (source.length <= maxLen) return source;
-        // Simple hash to keep deterministic and short
-        let hash = 0;
-        for (let i = 0; i < source.length; i++) {
-            hash = ((hash << 5) - hash) + source.charCodeAt(i);
-            hash |= 0;
-        }
-        return `h${Math.abs(hash)}`.slice(0, maxLen);
+        // deviceId set during authenticate() from server fingerprint
+        return this.deviceId || null;
     }
 
     /* ------------------------------------------------------------------ */
@@ -616,6 +539,9 @@ class BintelxClient {
         if (payload.type === 'system') {
             this.handleSystemMessage(payload);
         } else if (payload.type === 'error') {
+            if (payload.event === 'device_mismatch') {
+                this.emit('device:mismatch', payload);
+            }
             this.emit('error', payload);
         }
 
