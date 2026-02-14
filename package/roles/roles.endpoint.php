@@ -1,12 +1,13 @@
 <?php
-# custom/roles/roles.endpoint.php
+# package/roles/roles.endpoint.php
 # Role management endpoints
 #
 # Endpoints:
-#   GET  /api/roles/list.json         - List all roles
-#   GET  /api/roles/my-roles.json     - Get current user roles
-#   POST /api/roles/assign.json       - Assign role to profile
-#   POST /api/roles/revoke.json       - Revoke role from profile
+#   GET  /api/roles/list.json              - List visible roles (is_hidden=0)
+#   GET  /api/roles/list-all.json          - List ALL roles (admin only, includes hidden)
+#   GET  /api/roles/my-roles.json          - Get current user roles
+#   POST /api/roles/assign.json            - Assign role to profile (EAV audited)
+#   POST /api/roles/revoke.json            - Revoke role from profile (EAV audited)
 
 namespace bX;
 
@@ -17,21 +18,47 @@ use bX\CONN;
 use bX\Log;
 use bX\Args;
 use bX\RoleTemplateService;
+use bX\DataCaptureService;
+
+# ============================================
+# EAV variable definitions (idempotent UPSERT)
+# ============================================
+DataCaptureService::defineCaptureField([
+    'unique_name' => 'profile.role_code',
+    'label' => 'Rol asignado',
+    'data_type' => 'STRING',
+    'is_pii' => false
+], Profile::$profile_id ?: 0);
+
+DataCaptureService::defineCaptureField([
+    'unique_name' => 'profile.role_action',
+    'label' => 'Accion sobre rol',
+    'data_type' => 'STRING',
+    'is_pii' => false
+], Profile::$profile_id ?: 0);
+
+DataCaptureService::defineCaptureField([
+    'unique_name' => 'profile.role_scope',
+    'label' => 'Scope del rol',
+    'data_type' => 'DECIMAL',
+    'is_pii' => false
+], Profile::$profile_id ?: 0);
 
 /**
  * @endpoint   /api/roles/list.json
  * @method     GET
  * @scope      ROUTER_SCOPE_READ
- * @purpose    List all available roles
+ * @purpose    List visible roles (excludes is_hidden=1)
  */
 Router::register(['GET'], 'list\.json', function() {
     $roles = [];
 
     CONN::dml(
-        "SELECT role_code, role_label, description, scope_type, permissions_json, status
+        "SELECT role_code, role_label, description, scope_type, role_group, permissions_json, status
          FROM roles
          WHERE status = 'active'
-         ORDER BY scope_type, role_label",
+           AND is_hidden = 0
+         ORDER BY role_group, scope_type, role_label",
         [],
         function($row) use (&$roles) {
             $roles[] = [
@@ -39,6 +66,7 @@ Router::register(['GET'], 'list\.json', function() {
                 'role_label' => $row['role_label'],
                 'description' => $row['description'],
                 'scope_type' => $row['scope_type'],
+                'role_group' => $row['role_group'],
                 'permissions' => $row['permissions_json'] ? json_decode($row['permissions_json'], true) : null
             ];
         }
@@ -46,6 +74,42 @@ Router::register(['GET'], 'list\.json', function() {
 
     return Response::json(['success' => true, 'roles' => $roles]);
 }, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   /api/roles/list-all.json
+ * @method     GET
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    List ALL roles including hidden (admin only)
+ */
+Router::register(['GET'], 'list-all\.json', function() {
+    if (!Profile::hasRole(roleCode: 'system.admin')) {
+        return Response::json(['success' => false, 'message' => 'Forbidden'], 403);
+    }
+
+    $roles = [];
+
+    CONN::dml(
+        "SELECT role_code, role_label, description, scope_type, role_group,
+                is_hidden, permissions_json, status
+         FROM roles
+         ORDER BY role_group, scope_type, role_label",
+        [],
+        function($row) use (&$roles) {
+            $roles[] = [
+                'role_code' => $row['role_code'],
+                'role_label' => $row['role_label'],
+                'description' => $row['description'],
+                'scope_type' => $row['scope_type'],
+                'role_group' => $row['role_group'],
+                'is_hidden' => (int)$row['is_hidden'],
+                'status' => $row['status'],
+                'permissions' => $row['permissions_json'] ? json_decode($row['permissions_json'], true) : null
+            ];
+        }
+    );
+
+    return Response::json(['success' => true, 'roles' => $roles]);
+}, ROUTER_SCOPE_WRITE);
 
 /**
  * @endpoint   /api/roles/my-roles.json
@@ -101,7 +165,7 @@ Router::register(['GET'], 'my-roles\.json', function() {
  * @endpoint   /api/roles/assign.json
  * @method     POST
  * @scope      ROUTER_SCOPE_WRITE
- * @purpose    Assign role to a profile
+ * @purpose    Assign role to a profile (EAV audited)
  * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int|null }
  */
 Router::register(['POST'], 'assign\.json', function() {
@@ -150,6 +214,9 @@ Router::register(['POST'], 'assign\.json', function() {
             [':id' => $existingId, ':actor' => Profile::$profile_id]
         );
 
+        # EAV audit: reactivation
+        _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'reactivate');
+
         return Response::json([
             'success' => true,
             'message' => 'Role already assigned, reactivated',
@@ -173,6 +240,9 @@ Router::register(['POST'], 'assign\.json', function() {
         return Response::json(['success' => false, 'message' => 'Failed to assign role'], 500);
     }
 
+    # EAV audit: assign
+    _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'assign');
+
     Log::logInfo("Role assigned", [
         'target_profile_id' => $targetProfileId,
         'role_code' => $roleCode,
@@ -191,7 +261,7 @@ Router::register(['POST'], 'assign\.json', function() {
  * @endpoint   /api/roles/revoke.json
  * @method     POST
  * @scope      ROUTER_SCOPE_WRITE
- * @purpose    Revoke role from a profile
+ * @purpose    Revoke role from a profile (EAV audited)
  * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int|null }
  */
 Router::register(['POST'], 'revoke\.json', function() {
@@ -218,6 +288,9 @@ Router::register(['POST'], 'revoke\.json', function() {
         return Response::json(['success' => false, 'message' => 'Role assignment not found'], 404);
     }
 
+    # EAV audit: revoke
+    _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'revoke');
+
     Log::logInfo("Role revoked", [
         'target_profile_id' => $targetProfileId,
         'role_code' => $roleCode,
@@ -232,7 +305,7 @@ Router::register(['POST'], 'revoke\.json', function() {
  * @endpoint   /api/roles/profile/<id>.json
  * @method     GET
  * @scope      ROUTER_SCOPE_READ
- * @purpose    Get roles for specific profile
+ * @purpose    Get roles for specific profile (includes hidden)
  */
 Router::register(['GET'], 'profile/(?P<profileId>\d+)\.json', function($profileId) {
     $profileId = (int)$profileId;
@@ -241,7 +314,7 @@ Router::register(['GET'], 'profile/(?P<profileId>\d+)\.json', function($profileI
 
     CONN::dml(
         "SELECT pr.profile_role_id, pr.scope_entity_id, pr.role_code,
-                r.role_label, r.scope_type,
+                r.role_label, r.scope_type, r.role_group, r.is_hidden,
                 e.primary_name as scope_name
          FROM profile_roles pr
          JOIN roles r ON r.role_code = pr.role_code
@@ -257,7 +330,9 @@ Router::register(['GET'], 'profile/(?P<profileId>\d+)\.json', function($profileI
                 'scope_name' => $row['scope_name'],
                 'role_code' => $row['role_code'],
                 'role_label' => $row['role_label'],
-                'scope_type' => $row['scope_type']
+                'scope_type' => $row['scope_type'],
+                'role_group' => $row['role_group'],
+                'is_hidden' => (int)$row['is_hidden']
             ];
         }
     );
@@ -266,7 +341,7 @@ Router::register(['GET'], 'profile/(?P<profileId>\d+)\.json', function($profileI
 }, ROUTER_SCOPE_READ);
 
 # ============================================
-# ROLE TEMPLATES - Auto-asignación por relation_kind
+# ROLE TEMPLATES - Auto-asignacion por relation_kind
 # ============================================
 
 /**
@@ -325,11 +400,11 @@ Router::register(['POST'], 'templates/create\.json', function() {
         return Response::json(['success' => false, 'message' => 'relation_kind and role_code required'], 400);
     }
 
-    # Determine scope (global → GLOBAL_TENANT_ID)
+    # Determine scope (global -> GLOBAL_TENANT_ID)
     $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::$scope_entity_id ?: null);
 
     # Only system.admin can create global templates
-    if ($isGlobal && !isSysAdmin()) {
+    if ($isGlobal && !Profile::hasRole(roleCode: 'system.admin')) {
         return Response::json(['success' => false, 'message' => 'Only system admin can create global templates'], 403);
     }
 
@@ -374,7 +449,7 @@ Router::register(['POST'], 'templates/delete\.json', function() {
     $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::$scope_entity_id ?: null);
 
     # Only system.admin can delete global templates
-    if ($isGlobal && !isSysAdmin()) {
+    if ($isGlobal && !Profile::hasRole(roleCode: 'system.admin')) {
         return Response::json(['success' => false, 'message' => 'Only system admin can delete global templates'], 403);
     }
 
@@ -412,10 +487,41 @@ Router::register(['GET'], 'templates/preview/(?P<relationKind>[a-z_]+)', functio
     ]);
 }, ROUTER_SCOPE_READ);
 
-# Helper function
-function isSysAdmin(): bool {
-    foreach (Profile::$roles['assignments'] ?? [] as $assign) {
-        if (($assign['roleCode'] ?? null) === 'system.admin') return true;
+# ============================================
+# Internal: EAV audit for role changes
+# ============================================
+
+function _auditRoleChange(int $targetProfileId, string $roleCode, ?int $scopeEntityId, string $action): void {
+    # Resolve subject entity_id from target profile
+    $subjectEntityId = 0;
+    CONN::dml(
+        "SELECT primary_entity_id FROM profiles WHERE profile_id = :pid LIMIT 1",
+        [':pid' => $targetProfileId],
+        function($row) use (&$subjectEntityId) {
+            $subjectEntityId = (int)$row['primary_entity_id'];
+            return false;
+        }
+    );
+
+    if ($subjectEntityId <= 0) {
+        Log::logWarning("_auditRoleChange: no entity found for profile $targetProfileId");
+        return;
     }
-    return false;
+
+    DataCaptureService::saveData(
+        Profile::$profile_id,
+        $subjectEntityId,
+        Profile::$scope_entity_id ?: null,
+        [
+            'macro_context' => 'profile',
+            'event_context' => 'role_assignment',
+            'sub_context' => $roleCode
+        ],
+        [
+            ['variable_name' => 'profile.role_code', 'value' => $roleCode],
+            ['variable_name' => 'profile.role_action', 'value' => $action],
+            ['variable_name' => 'profile.role_scope', 'value' => (string)($scopeEntityId ?? 0)],
+        ],
+        'role_change'
+    );
 }

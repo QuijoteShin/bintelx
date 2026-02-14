@@ -231,9 +231,14 @@ class Profile {
 
     /**
      * Checks whether a profile has the requested role for a given scope entity.
+     * All params optional — defaults to current user context.
+     * Usage: Profile::hasRole(roleCode: 'finance.all')
      */
-    public static function hasRole(int $profileId, ?int $scopeEntityId, string $roleCode, bool $includePassive = true): bool
+    public static function hasRole(?int $profileId = null, ?int $scopeEntityId = null, string $roleCode = '', bool $includePassive = true): bool
     {
+        $profileId = $profileId ?? self::$profile_id;
+        $scopeEntityId = $scopeEntityId ?? (self::$scope_entity_id > 0 ? self::$scope_entity_id : null);
+
         $roleCode = trim($roleCode);
         if ($roleCode === '') {
             return false;

@@ -212,7 +212,7 @@ Router::register(['POST'], 'exchange-rate\.json', function () {
     $scopeEntityId = $isGlobal ? null : (Profile::$scope_entity_id ?? null);
 
     # Only admins can write global rates
-    if ($isGlobal && !Profile::hasRole('system.admin')) {
+    if ($isGlobal && !Profile::hasRole(roleCode: 'system.admin')) {
         return Response::json(['data' => [
             'success' => false,
             'error' => 'FORBIDDEN',
