@@ -55,6 +55,12 @@ class CONN {
     private static function pdoOptions(): array {
         $collation = Config::get('DB_COLLATION', 'utf8mb4_unicode_520_ci');
         $tz = $_SERVER['HTTP_X_USER_TIMEZONE'] ?? Config::get('DEFAULT_TIMEZONE', 'UTC');
+
+        # Whitelist: solo IANA timezone names válidos (previene SQL injection via header)
+        if (!in_array($tz, \DateTimeZone::listIdentifiers(), true)) {
+            $tz = Config::get('DEFAULT_TIMEZONE', 'UTC');
+        }
+
         return [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE {$collation}, time_zone = '{$tz}'"
@@ -378,6 +384,25 @@ class CONN {
         return false;
     }
 
+    # Enmascara valores sensibles en params antes de loggear
+    # Previene que passwords, tokens, secrets aparezcan en log files
+    private static function sanitizeForLog(array $data): array {
+        $sensitiveKeys = ['password', 'token', 'secret', 'hash', 'credential', 'jwt', 'xor_key'];
+        $sanitized = [];
+        foreach ($data as $key => $value) {
+            $keyLower = strtolower($key);
+            $isSensitive = false;
+            foreach ($sensitiveKeys as $sk) {
+                if (str_contains($keyLower, $sk)) {
+                    $isSensitive = true;
+                    break;
+                }
+            }
+            $sanitized[$key] = $isSensitive ? '***REDACTED***' : $value;
+        }
+        return $sanitized;
+    }
+
     /**
      * Executes a query that does not return a result set (e.g., INSERT, UPDATE, DELETE).
      * @param string $query The SQL query string.
@@ -396,7 +421,7 @@ class CONN {
             $rowCount = $stmt->rowCount();
             return ['success' => $success, 'last_id' => $lastId, 'rowCount' => $rowCount];
         } catch (PDOException $e) {
-            Log::logError("CONN::nodml PDOException: " . $e->getMessage() . " | Query: " . $query . " | Data: " . json_encode($data));
+            Log::logError("CONN::nodml PDOException: " . $e->getMessage() . " | Query: " . $query . " | Data: " . json_encode(self::sanitizeForLog($data)));
             return ['success' => false, 'last_id' => false, 'rowCount' => 0, 'error' => 'Database operation failed. Check logs for details.'];
         }
     }
@@ -429,7 +454,7 @@ class CONN {
             }
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (PDOException $e) {
-            Log::logError("CONN::dml PDOException: " . $e->getMessage() . " | Query: " . $query . " | Data: " . json_encode($data));
+            Log::logError("CONN::dml PDOException: " . $e->getMessage() . " | Query: " . $query . " | Data: " . json_encode(self::sanitizeForLog($data)));
             return null;
         }
     }

@@ -104,7 +104,7 @@ class TaskRouter
                 'trace' => $e->getTraceAsString()
             ]);
             if ($jobId) {
-                $this->updateJobStatus($jobId, 'FAILED', ['error' => $e->getMessage()]);
+                $this->updateJobStatus($jobId, 'FAILED', ['error' => 'Task execution failed. Check logs.']);
             }
         } finally {
             # 2. RESTORE (Forensic Cleanup)
@@ -143,8 +143,7 @@ class TaskRouter
         # Hidratación de Args
         SuperGlobalHydrator::hydrateArgs($method, $data, $data);
 
-        // Set timezone for DB
-        CONN::nodml("SET time_zone = '" . $_SERVER["HTTP_X_USER_TIMEZONE"] . "'");
+        # Timezone ya aplicado via CONN::pdoOptions() al conectar
 
         // JWT Authentication (como api.php)
         $token = $headers['Authorization'] ?? $headers['authorization'] ?? '';

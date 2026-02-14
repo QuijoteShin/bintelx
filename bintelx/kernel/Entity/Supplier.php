@@ -111,7 +111,8 @@ class Supplier
             if (CONN::isInTransaction()) {
                 CONN::rollback();
             }
-            return ['success' => false, 'message' => $e->getMessage()];
+            \bX\Log::logError("Supplier::create Exception: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Failed to create supplier. Check logs for details.'];
         }
     }
 

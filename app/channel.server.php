@@ -241,7 +241,7 @@ class ChannelServer
             if (ob_get_level() > 0) ob_end_clean();
             $response->status(500);
             $response->header('Content-Type', 'application/json');
-            $response->end(json_encode(['error' => $e->getMessage()]));
+            $response->end(json_encode(['error' => 'Internal server error. Check logs for details.']));
             Log::logError("Channel HTTP route error", ['uri' => $uri, 'error' => $e->getMessage()]);
         } finally {
             SuperGlobalHydrator::restore($snapshot);
@@ -429,7 +429,7 @@ class ChannelServer
             $server->push($fd, json_encode([
                 'type' => 'api_error',
                 'correlation_id' => $correlationId,
-                'message' => $e->getMessage(),
+                'message' => 'Request failed. Check server logs for details.',
                 'timestamp' => time()
             ]));
 

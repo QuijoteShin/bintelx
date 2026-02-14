@@ -111,7 +111,8 @@ class Customer
             if (CONN::isInTransaction()) {
                 CONN::rollback();
             }
-            return ['success' => false, 'message' => $e->getMessage()];
+            \bX\Log::logError("Customer::create Exception: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Failed to create customer. Check logs for details.'];
         }
     }
 

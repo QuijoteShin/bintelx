@@ -312,10 +312,7 @@ class Router
 
         echo json_encode([
           'status' => 'error',
-          'message' => 'Server error during request execution.',
-          'error' => $e->getMessage(),
-          'file' => $e->getFile(),
-          'line' => $e->getLine()
+          'message' => 'Server error during request execution. Check logs for details.'
         ]);
         return;
       }

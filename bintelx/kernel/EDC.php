@@ -138,7 +138,7 @@ class EDC {
         } catch (Exception $e) {
             if (CONN::isInTransaction()) CONN::rollback();
             Log::logError('EDC.defineForm: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -244,7 +244,7 @@ class EDC {
 
         } catch (Exception $e) {
             Log::logError('EDC.listForms: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -278,7 +278,7 @@ class EDC {
 
         } catch (Exception $e) {
             Log::logError('EDC.publishForm: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -356,7 +356,7 @@ class EDC {
         } catch (Exception $e) {
             if (CONN::isInTransaction()) CONN::rollback();
             Log::logError('EDC.createResponse: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -513,7 +513,7 @@ class EDC {
         } catch (Exception $e) {
             if (CONN::isInTransaction()) CONN::rollback();
             Log::logError('EDC.saveResponseData: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -598,7 +598,7 @@ class EDC {
 
         } catch (Exception $e) {
             Log::logError('EDC.getResponseData: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -632,7 +632,7 @@ class EDC {
 
         } catch (Exception $e) {
             Log::logError('EDC.lockResponse: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -685,7 +685,7 @@ class EDC {
 
         } catch (Exception $e) {
             Log::logError('EDC.getFieldAuditTrail: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -741,7 +741,7 @@ class EDC {
 
         } catch (Exception $e) {
             Log::logError('EDC.listResponses: ' . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 

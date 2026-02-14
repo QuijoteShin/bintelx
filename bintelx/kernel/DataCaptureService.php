@@ -145,7 +145,7 @@ class DataCaptureService {
         } catch (Exception $e) {
             if ($ownTransaction && CONN::isInTransaction()) CONN::rollback();
             Log::logError("defineCaptureField Exception: " . $e->getMessage(), ['def' => $fieldDefinition]);
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Operation failed. Check logs for details.'];
         }
     }
 
@@ -354,7 +354,7 @@ class DataCaptureService {
                 'scope_entity' => $scopeEntityId,
                 'context' => $contextPayload
             ]);
-            return ['success' => false, 'message' => "Error saving data: " . $e->getMessage()];
+            return ['success' => false, 'message' => 'Error saving data. Check logs for details.'];
         }
     }
 
@@ -420,7 +420,7 @@ class DataCaptureService {
 
         } catch (Exception $e) {
             Log::logError("getHotData Exception: " . $e->getMessage(), ['entity' => $entityId]);
-            return ['success' => false, 'data' => null, 'message' => $e->getMessage()];
+            return ['success' => false, 'data' => null, 'message' => 'Failed to retrieve data. Check logs for details.'];
         }
     }
 
@@ -523,7 +523,7 @@ class DataCaptureService {
                 'entity' => $entityId,
                 'var' => $variableName
             ]);
-            return ['success' => false, 'trail' => null, 'message' => $e->getMessage()];
+            return ['success' => false, 'trail' => null, 'message' => 'Failed to retrieve audit trail. Check logs for details.'];
         }
     }
 
@@ -751,7 +751,7 @@ class DataCaptureService {
                 'entity' => $entityId,
                 'options' => $options
             ]);
-            return ['success' => false, 'events' => null, 'message' => $e->getMessage()];
+            return ['success' => false, 'events' => null, 'message' => 'Failed to retrieve audit trail. Check logs for details.'];
         }
     }
 
@@ -830,7 +830,7 @@ class DataCaptureService {
                 'entity' => $entityId,
                 'var' => $variableName
             ]);
-            return ['success' => false, 'timeline' => null, 'message' => $e->getMessage()];
+            return ['success' => false, 'timeline' => null, 'message' => 'Failed to retrieve timeline. Check logs for details.'];
         }
     }
 

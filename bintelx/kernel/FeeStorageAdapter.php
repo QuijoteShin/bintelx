@@ -103,7 +103,7 @@ final class FeeStorageAdapter
             return [
                 'success' => false,
                 'fee_entry_id' => null,
-                'error' => $e->getMessage()
+                'error' => 'Persistence failed. Check logs for details.'
             ];
         }
     }
@@ -171,7 +171,7 @@ final class FeeStorageAdapter
             return [
                 'success' => false,
                 'fee_entry_id' => null,
-                'error' => $e->getMessage()
+                'error' => 'Persistence failed. Check logs for details.'
             ];
         }
     }

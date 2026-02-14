@@ -399,10 +399,13 @@ class DirtyPeriods
                     'result' => $result,
                 ];
             } catch (\Exception $e) {
+                Log::logError("DirtyPeriods::processAll Exception: " . $e->getMessage(), [
+                    'employee_id' => $employeeId, 'period' => $period
+                ]);
                 $this->markError($employeeId, $period, $e->getMessage());
                 $results[$period] = [
                     'success' => false,
-                    'error' => $e->getMessage(),
+                    'error' => 'Period processing failed. Check logs for details.',
                 ];
             }
         }
@@ -699,8 +702,11 @@ class RecalcQueue
                 $results[$period] = ['success' => true, 'result' => $result];
                 $this->stats['succeeded']++;
             } catch (\Exception $e) {
+                Log::logError("RecalcQueue::processEmployee Exception: " . $e->getMessage(), [
+                    'employee_id' => $employeeId, 'period' => $period
+                ]);
                 $this->dirtyPeriods->markError($employeeId, $period, $e->getMessage());
-                $results[$period] = ['success' => false, 'error' => $e->getMessage()];
+                $results[$period] = ['success' => false, 'error' => 'Period processing failed. Check logs for details.'];
                 $this->stats['failed']++;
             }
 
@@ -758,8 +764,11 @@ class RecalcQueue
                 $allResults[$employeeId][$period] = ['success' => true];
                 $this->stats['succeeded']++;
             } catch (\Exception $e) {
+                Log::logError("RecalcQueue::processAll Exception: " . $e->getMessage(), [
+                    'employee_id' => $employeeId, 'period' => $period
+                ]);
                 $this->dirtyPeriods->markError($employeeId, $period, $e->getMessage());
-                $allResults[$employeeId][$period] = ['success' => false, 'error' => $e->getMessage()];
+                $allResults[$employeeId][$period] = ['success' => false, 'error' => 'Period processing failed. Check logs for details.'];
                 $this->stats['failed']++;
             }
 
