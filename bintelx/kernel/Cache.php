@@ -15,10 +15,11 @@ class Cache {
         self::$backend = $backend;
     }
 
-    # Auto-init con ArrayBackend si no se llamó init()
+    # Auto-init: Swoole ya llamó init() con SwooleTableBackend
+    # FPM/CLI usa ChannelCacheBackend (circuit breaker maneja indisponibilidad)
     private static function ensureBackend(): CacheBackend {
         if (self::$backend === null) {
-            self::$backend = new ArrayBackend();
+            self::$backend = new \bX\Cache\ChannelCacheBackend();
         }
         return self::$backend;
     }
@@ -90,6 +91,24 @@ class Cache {
                 'timeout' => 1,
             ]
         ]));
+    }
+
+    # Acceso directo al backend con key completa (para endpoints _internal)
+    # Bypass makeKey() — la key ya viene con namespace prefix
+    public static function get_raw(string $fullKey): mixed {
+        return self::ensureBackend()->get($fullKey);
+    }
+
+    public static function set_raw(string $fullKey, mixed $value, int $ttl = 0): void {
+        self::ensureBackend()->set($fullKey, $value, $ttl);
+    }
+
+    public static function has_raw(string $fullKey): bool {
+        return self::ensureBackend()->has($fullKey);
+    }
+
+    public static function delete_raw(string $fullKey): void {
+        self::ensureBackend()->delete($fullKey);
     }
 
     # Reset backend (testing / shutdown)
