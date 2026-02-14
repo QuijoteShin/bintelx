@@ -84,4 +84,26 @@ class SwooleTableBackend implements CacheBackend {
             }
         }
     }
+
+    # Stats: entries activas, memoria reservada, distribución por namespace
+    public function stats(): array {
+        $count = $this->table->count();
+        $memorySize = $this->table->getMemorySize();
+        $namespaces = [];
+        $totalDataBytes = 0;
+
+        foreach ($this->table as $key => $row) {
+            $ns = explode(':', $key, 2)[0] ?? 'unknown';
+            $namespaces[$ns] = ($namespaces[$ns] ?? 0) + 1;
+            $totalDataBytes += strlen($row['data'] ?? '');
+        }
+
+        return [
+            'entries' => $count,
+            'max_entries' => 65536,
+            'memory_allocated_mb' => round($memorySize / 1048576, 1),
+            'data_stored_bytes' => $totalDataBytes,
+            'namespaces' => $namespaces,
+        ];
+    }
 }

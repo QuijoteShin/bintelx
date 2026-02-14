@@ -26,10 +26,18 @@ Router::register(['GET'], 'metrics', function() {
         }
     }
 
+    # Cache table stats
+    try {
+        $cacheStats = \bX\Cache::stats();
+    } catch (\Throwable $e) {
+        $cacheStats = ['error' => $e->getMessage(), 'file' => $e->getFile(), 'line' => $e->getLine()];
+    }
+
     return Response::json([
         'swoole' => $stats,
         'auth_connections' => $authCount,
         'channels' => $channels,
+        'cache' => $cacheStats,
         'memory_usage' => memory_get_usage(true),
         'memory_peak' => memory_get_peak_usage(true),
     ]);
