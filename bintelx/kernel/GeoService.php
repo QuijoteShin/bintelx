@@ -71,7 +71,7 @@ class GeoService
         $date = $date ?? date('Y-m-d');
         $scopeEntityId = $scopeEntityId ?? Profile::$scope_entity_id;
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $cacheKey = "{$base}|{$target}|{$date}|" . (Tenant::resolve($opts) ?? 0);
@@ -244,7 +244,7 @@ class GeoService
             return [];
         }
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         # Normalize and dedupe
@@ -319,7 +319,7 @@ class GeoService
         $scopeEntityId = Profile::$scope_entity_id;
         $baseCurrency = strtoupper($baseCurrency);
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT target_currency_code, rate
@@ -468,7 +468,7 @@ class GeoService
         $date = $date ?? date('Y-m-d');
         $scopeEntityId = Profile::$scope_entity_id;
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $cacheKey = "{$country}|{$code}|{$date}|" . (Tenant::resolve($opts) ?? 0);
@@ -507,7 +507,7 @@ class GeoService
         $date = $date ?? date('Y-m-d');
         $scopeEntityId = Profile::$scope_entity_id;
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT tax_code, rate FROM geo_tax_rates
@@ -547,7 +547,7 @@ class GeoService
         $date = $date ?? date('Y-m-d');
         $scopeEntityId = Profile::$scope_entity_id;
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT * FROM geo_tax_rates
@@ -588,7 +588,7 @@ class GeoService
         $date = $date ?? date('Y-m-d');
         $scopeEntityId = Profile::$scope_entity_id;
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $cacheKey = "{$country}|{$key}|{$date}|" . (Tenant::resolve($opts) ?? 0);
@@ -651,7 +651,7 @@ class GeoService
         $date = $date ?? date('Y-m-d');
         $scopeEntityId = Profile::$scope_entity_id;
 
-        $opts = ['force_scope' => true];
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT * FROM geo_labor_policies
