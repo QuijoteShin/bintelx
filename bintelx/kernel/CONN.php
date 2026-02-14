@@ -397,11 +397,7 @@ class CONN {
             return ['success' => $success, 'last_id' => $lastId, 'rowCount' => $rowCount];
         } catch (PDOException $e) {
             Log::logError("CONN::nodml PDOException: " . $e->getMessage() . " | Query: " . $query . " | Data: " . json_encode($data));
-            if (defined('ENVIRONMENT') && ENVIRONMENT === 'development') {
-                // Avoid echoing directly in a library class, prefer logging or throwing
-                // Consider re-throwing a custom exception or returning a detailed error array
-            }
-            return ['success' => false, 'last_id' => false, 'rowCount' => 0, 'error' => $e->getMessage()];
+            return ['success' => false, 'last_id' => false, 'rowCount' => 0, 'error' => 'Database operation failed. Check logs for details.'];
         }
     }
 
