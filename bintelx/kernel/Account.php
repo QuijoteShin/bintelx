@@ -1,4 +1,4 @@
-<?php
+<?php # bintelx/kernel/Account.php
 namespace bX;
 
 use Exception;
@@ -11,6 +11,7 @@ class Account {
     public function __construct(string $jwtSecret, string $xorKey = '') {
         $this->jwtSecret = $jwtSecret;
         $this->xorKey = $xorKey;
+        $this->tokenExpiration = (int)Config::get('JWT_TOKEN_TTL', 86400);
     }
 
   /**
@@ -249,34 +250,19 @@ class Account {
             $userPayload["device_hash"] = $deviceHash;
         }
 
+        # Token timing claims
+        $userPayload["iat"] = time();
+        $userPayload["exp"] = time() + ($expiresIn ?? $this->tokenExpiration);
+
         $payloadStructure = [
             $actualMetadata,
             $userPayload
         ];
 
-        // Standard JWT claims like 'exp', 'iat', 'sub' are not part of this custom structure's top level.
-        // If expiration needs to be part of the token and verifiable by `verifyToken` using standard means,
-        // the payload structure or JWT class would need to accommodate it.
-        // For now, adhering strictly to the user's example for setPayload.
-        // Expiration can be handled by `verifyToken` if it's part of `metadataElement` or if the JWT class adds it.
-
-        // The `bX\JWT` class should be initialized with the payload for standard claims if they are needed.
-        // The user's example `setPayload($payload)` overrides any previous payload.
-        // Let's assume standard claims like 'exp' are NOT part of this specific structure unless manually added to $metadataElement or the second array.
-        // However, a common practice is to include 'exp'. If your JWT class does not add it automatically based on $expiresIn,
-        // you might need to embed it within your custom payload structure, e.g., in $metadataElement.
-        // For simplicity here, following user's direct example for payload content.
-
         try {
             $jwt = new JWT($this->jwtSecret);
             $jwt->setHeader(['alg' => 'HS256', 'typ' => 'JWT']);
-            $jwt->setPayload($payloadStructure); // Sets the payload to the custom structure
-
-            // Note: If token expiration is desired *within the JWT standard claims*,
-            // the payload needs to be an associative array with an 'exp' key.
-            // E.g., $payloadForStdClaims = ['exp' => time() + ($expiresIn ?? $this->tokenExpiration), 'data' => $payloadStructure];
-            // $jwt->setPayload($payloadForStdClaims);
-            // But sticking to user example for now: $jwt->setPayload($payloadStructure);
+            $jwt->setPayload($payloadStructure);
 
             return $jwt->generateJWT();
         } catch (Exception $e) {
@@ -303,35 +289,43 @@ class Account {
 
         try {
             $jwt = new JWT($this->jwtSecret, $token);
-            // The validateSignature method in your JWT class should verify the signature based on
-            // its current header and payload.
             if (!$jwt->validateSignature()) {
-                Log::logWarning("Account::verifyToken - Invalid JWT signature.");
+                Log::logWarning("Account::verifyToken - Invalid JWT signature");
                 return false;
             }
 
-            $payload = $jwt->getPayload(); // Expecting: [ 0 => "somedate", 1 => ["id" => $accountId] ]
-            // Validate the structure and extract account_id
-            if (( is_array($payload) && count($payload) >= 2 ) &&
-                ( is_array($payload[1]) ) &&
-                isset($payload[1]['id']) && !empty(trim((string)$payload[1]['id']))) {
+            $payload = $jwt->getPayload(); # [METADATA, {id, profile_id, scope_entity_id, device_hash, iat, exp}]
 
-                $accountIdFromToken = (string)$payload[1]['id'];
-
-                // Note: Expiration check. If 'exp' is not a standard top-level claim due to the custom payload,
-                // you'd need to have embedded it within your payload structure (e.g., in $payload[0] or $payload[1])
-                // and check it manually here. For example:
-                // if (isset($payload[0]['exp']) && time() > $payload[0]['exp']) {
-                //     Log::logWarning("Account::verifyToken - Token expired based on custom payload data.");
-                //     return false;
-                // }
-
-                Log::logInfo("Account::verifyToken - Token verified successfully. Account ID: " . $accountIdFromToken);
-                return $accountIdFromToken;
-            } else {
-                Log::logWarning("Account::verifyToken - Payload structure is not as expected or 'id' is missing/empty.", ['payload_received' => $payload]);
+            # Validate structure
+            if (!is_array($payload) || count($payload) < 2 || !is_array($payload[1])
+                || !isset($payload[1]['id']) || empty(trim((string)$payload[1]['id']))) {
+                Log::logWarning("Account::verifyToken - Payload structure invalid or 'id' missing");
                 return false;
             }
+
+            $userPayload = $payload[1];
+            $accountIdFromToken = (string)$userPayload['id'];
+            $deviceHash = $userPayload['device_hash'] ?? '';
+
+            # Expiration — mandatory
+            if (!isset($userPayload['exp'])) {
+                Log::logWarning("Account::verifyToken - Token without exp (legacy), rejected", [
+                    'account_id' => $accountIdFromToken,
+                    'device_hash' => $deviceHash
+                ]);
+                return false;
+            }
+            if (time() > (int)$userPayload['exp']) {
+                Log::logWarning("Account::verifyToken - Token expired", [
+                    'account_id' => $accountIdFromToken,
+                    'device_hash' => $deviceHash,
+                    'expired_at' => date('Y-m-d H:i:s', $userPayload['exp'])
+                ]);
+                return false;
+            }
+
+            Log::logInfo("Account::verifyToken - Token verified. Account ID: " . $accountIdFromToken);
+            return $accountIdFromToken;
 
         } catch (Exception $e) {
             Log::logError("Account::verifyToken - Exception: " . $e->getMessage(), ['token_prefix' => substr($token, 0, 10)]);

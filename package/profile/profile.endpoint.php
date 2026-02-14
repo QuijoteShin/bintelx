@@ -348,8 +348,8 @@ Router::register(['POST'], 'scope/switch.json', function() {
   $deviceHash = $currentPayload[1]['device_hash'] ?? null;
 
   # Generate new JWT with new scope
-  $jwtSecret = \bX\Config::get('JWT_SECRET', 'woz.min..');
-  $jwtXorKey = \bX\Config::get('JWT_XOR_KEY', 'XOR_KEY_2o25');
+  $jwtSecret = \bX\Config::required('JWT_SECRET');
+  $jwtXorKey = \bX\Config::required('JWT_XOR_KEY');
 
   $account = new \bX\Account($jwtSecret, $jwtXorKey);
   $token = $account->generateToken(

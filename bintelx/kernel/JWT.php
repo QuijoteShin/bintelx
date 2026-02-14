@@ -1,26 +1,5 @@
-<?php
-
+<?php # bintelx/kernel/JWT.php
 namespace bX;
-/**
- *
-
-
-// usage
-$jwt = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjEyMyJ9.0Z1gAaVvgQiB_e0z0WbOvDvB7sU6pHXsKsUgCvU6aJ0";
-$secretKey = "secretkey";
-$jwtObject = new JWT($jwt, $secretKey);
-$payload = $jwtObject->getPayload();
-$isSignatureValid = $jwtObject->validateSignature();
-
-if ($isSignatureValid) {
-echo "User ID: " . $payload->id;
-} else {
-echo "Invalid signature";
-}
-
- *
- *
- */
 
 class JWT {
   private $header;
@@ -110,13 +89,12 @@ class JWT {
             return [];
         }
 
-        $secret = $secretKey ?? Config::get('JWT_SECRET', '');
+        $secret = $secretKey ?? ($validateSignature ? Config::required('JWT_SECRET') : Config::get('JWT_SECRET', ''));
         $jwt = new self($secret, $token);
         $payload = $jwt->getPayload() ?? [];
 
-        if ($validateSignature && !empty($secret)) {
-            $isValid = $jwt->validateSignature();
-            if (!$isValid) {
+        if ($validateSignature) {
+            if (!$jwt->validateSignature()) {
                 Log::logWarning('JWT::decode signature validation failed');
                 return [];
             }

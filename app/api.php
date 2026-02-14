@@ -52,26 +52,38 @@ try {
     if(empty($token) && !empty($_COOKIE["bnxt"])) $token = $_COOKIE["bnxt"];
     if(!empty($token)) {
         // JWT Configuration from environment
-        $jwtSecret = \bX\Config::get('JWT_SECRET', 'woz.min..');
-        $jwtXorKey = \bX\Config::get('JWT_XOR_KEY', 'XOR_KEY_2o25');
+        $jwtSecret = \bX\Config::required('JWT_SECRET');
+        $jwtXorKey = \bX\Config::required('JWT_XOR_KEY');
 
         $account = new \bX\Account($jwtSecret, $jwtXorKey);
         $account_id = $account->verifyToken($token, $_SERVER["REMOTE_ADDR"]);
         if($account_id) {
-            # Extract scope_entity_id from JWT payload
+            # Extract claims from JWT payload
+            $scopeEntityId = 0;
+            $deviceHash = '';
             try {
                 $jwt = new \bX\JWT($jwtSecret, $token);
-                $payload = $jwt->getPayload(); // [METADATA, {id, profile_id, scope_entity_id}]
+                $payload = $jwt->getPayload(); # [METADATA, {id, profile_id, scope_entity_id, device_hash, iat, exp}]
                 $userPayload = $payload[1] ?? [];
                 $scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
+                $deviceHash = $userPayload['device_hash'] ?? '';
             } catch (\Exception $e) {
-                \bX\Log::logWarning("Failed to extract scope from JWT: " . $e->getMessage());
-                $scopeEntityId = 0;
+                \bX\Log::logWarning("Failed to extract JWT claims: " . $e->getMessage());
             }
 
             $profile = new \bX\Profile();
             if ($profile->load(['account_id' => $account_id])) {
-                # Set scope from JWT (signed, trusted)
+                # Validate scope from JWT against ACL
+                if ($scopeEntityId > 0 && !\bX\Profile::canAccessScope($scopeEntityId)) {
+                    \bX\Log::logError('SECURITY: JWT_SCOPE_MISMATCH', [
+                        'account_id' => $account_id,
+                        'profile_id' => \bX\Profile::$profile_id,
+                        'jwt_scope' => $scopeEntityId,
+                        'device_hash' => $deviceHash,
+                        'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+                    ]);
+                    $scopeEntityId = \bX\Profile::$entity_id;
+                }
                 \bX\Profile::$scope_entity_id = $scopeEntityId;
 
                 \bX\Router::$currentUserPermissions = \bX\Profile::getRoutePermissions();

@@ -451,8 +451,8 @@ class ChannelServer
     private function loadProfile(string $token, int $fd): void
     {
         try {
-            $jwtSecret = Config::get('JWT_SECRET');
-            $jwtXorKey = Config::get('JWT_XOR_KEY', '');
+            $jwtSecret = Config::required('JWT_SECRET');
+            $jwtXorKey = Config::required('JWT_XOR_KEY');
 
             $account = new \bX\Account($jwtSecret, $jwtXorKey);
             $accountId = $account->verifyToken($token, $_SERVER['REMOTE_ADDR']);
@@ -474,7 +474,17 @@ class ChannelServer
                 $profile = new Profile();
                 $profile->load(['account_id' => $accountId]);
 
-                # Set scope from JWT (signed, trusted)
+                # Validate scope from JWT against ACL
+                if ($scopeEntityId > 0 && !Profile::canAccessScope($scopeEntityId)) {
+                    Log::logError('SECURITY: JWT_SCOPE_MISMATCH', [
+                        'account_id' => $accountId,
+                        'profile_id' => Profile::$profile_id,
+                        'jwt_scope' => $scopeEntityId,
+                        'device_hash' => $deviceHash,
+                        'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+                    ]);
+                    $scopeEntityId = Profile::$entity_id;
+                }
                 Profile::$scope_entity_id = $scopeEntityId;
 
                 # Guardar sesión WS (array + Swoole\Table)
