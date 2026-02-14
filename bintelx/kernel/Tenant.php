@@ -247,6 +247,15 @@ class Tenant
             ];
         }
 
+        # Non-admin cannot write to global tenant scope
+        if (in_array($scope, self::globalIds(), true)) {
+            return [
+                'valid' => false,
+                'scope' => null,
+                'error' => 'Global tenant scope requires admin'
+            ];
+        }
+
         return [
             'valid' => true,
             'scope' => $scope,

@@ -135,8 +135,8 @@ Router::register(['POST'], 'assign\.json', function() {
     CONN::dml(
         "SELECT profile_role_id FROM profile_roles
          WHERE profile_id = :pid AND role_code = :role
-           AND (scope_entity_id = :scope OR (scope_entity_id IS NULL AND :scope2 IS NULL))",
-        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':scope2' => $scopeEntityId],
+           AND scope_entity_id = :scope",
+        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId],
         function($row) use (&$existingId) {
             $existingId = (int)$row['profile_role_id'];
             return false;
@@ -209,9 +209,9 @@ Router::register(['POST'], 'revoke\.json', function() {
         "UPDATE profile_roles
          SET status = 'inactive', updated_by_profile_id = :actor
          WHERE profile_id = :pid AND role_code = :role
-           AND (scope_entity_id = :scope OR (scope_entity_id IS NULL AND :scope2 IS NULL))
+           AND scope_entity_id = :scope
            AND status = 'active'",
-        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':scope2' => $scopeEntityId, ':actor' => Profile::$profile_id]
+        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':actor' => Profile::$profile_id]
     );
 
     if (($result['rowCount'] ?? 0) === 0) {
@@ -295,7 +295,7 @@ Router::register(['GET'], 'templates/list\.json', function() {
             'role_label' => $t['role_label'],
             'scope_entity_id' => $t['scope_entity_id'],
             'priority' => (int)$t['priority'],
-            'is_global' => $t['scope_entity_id'] === null
+            'is_global' => in_array((int)$t['scope_entity_id'], Tenant::globalIds(), true)
         ];
     }
 
@@ -325,8 +325,8 @@ Router::register(['POST'], 'templates/create\.json', function() {
         return Response::json(['success' => false, 'message' => 'relation_kind and role_code required'], 400);
     }
 
-    # Determine scope
-    $scopeId = $isGlobal ? null : (Profile::$scope_entity_id ?: null);
+    # Determine scope (global → GLOBAL_TENANT_ID)
+    $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::$scope_entity_id ?: null);
 
     # Only system.admin can create global templates
     if ($isGlobal && !isSysAdmin()) {
@@ -371,7 +371,7 @@ Router::register(['POST'], 'templates/delete\.json', function() {
         return Response::json(['success' => false, 'message' => 'relation_kind and role_code required'], 400);
     }
 
-    $scopeId = $isGlobal ? null : (Profile::$scope_entity_id ?: null);
+    $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::$scope_entity_id ?: null);
 
     # Only system.admin can delete global templates
     if ($isGlobal && !isSysAdmin()) {

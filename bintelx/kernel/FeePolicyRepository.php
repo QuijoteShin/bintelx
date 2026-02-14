@@ -45,12 +45,14 @@ final class FeePolicyRepository
         return Cache::getOrSet(self::CACHE_NS, $cacheKey, self::CACHE_TTL, function() use ($channelKey, $asOf, $scopeId) {
             $policy = null;
 
+            # Tenant-specific policy first
             if ($scopeId !== null) {
                 $policy = self::findPolicy($channelKey, $asOf, $scopeId);
             }
 
-            if (!$policy) {
-                $policy = self::findPolicy($channelKey, $asOf, null);
+            # Fallback to global tenant policy
+            if (!$policy && !empty(Tenant::globalIds())) {
+                $policy = self::findPolicy($channelKey, $asOf, Tenant::globalIds()[0]);
             }
 
             if (!$policy) {
@@ -95,7 +97,7 @@ final class FeePolicyRepository
     public static function listActive(?string $channelKey = null): array
     {
         $policies = [];
-        $query = "SELECT fee_policy_id, policy_key, channel_key, version, name, valid_from, valid_to
+        $query = "SELECT fee_policy_id, policy_key, channel_key, version, name, valid_from, valid_to, scope_entity_id
                   FROM fee_policies
                   WHERE is_active = 1
                     AND valid_from <= CURDATE()
@@ -106,6 +108,9 @@ final class FeePolicyRepository
             $query .= " AND channel_key = :channel";
             $params[':channel'] = $channelKey;
         }
+
+        # Tenant scope filter (admin sees all, non-admin sees own + global)
+        $query = Tenant::applySql($query, 'scope_entity_id', [], $params);
 
         $query .= " ORDER BY channel_key, valid_from DESC";
 
@@ -185,7 +190,7 @@ final class FeePolicyRepository
     /**
      * Find policy matching criteria
      */
-    private static function findPolicy(string $channelKey, string $asOf, ?int $scopeId): ?array
+    private static function findPolicy(string $channelKey, string $asOf, int $scopeId): ?array
     {
         $policy = null;
 
@@ -193,15 +198,9 @@ final class FeePolicyRepository
                   WHERE channel_key = :channel
                     AND is_active = 1
                     AND valid_from <= :as_of
-                    AND (valid_to IS NULL OR valid_to >= :as_of)";
-        $params = [':channel' => $channelKey, ':as_of' => $asOf];
-
-        if ($scopeId !== null) {
-            $query .= " AND scope_entity_id = :scope";
-            $params[':scope'] = $scopeId;
-        } else {
-            $query .= " AND scope_entity_id IS NULL";
-        }
+                    AND (valid_to IS NULL OR valid_to >= :as_of)
+                    AND scope_entity_id = :scope";
+        $params = [':channel' => $channelKey, ':as_of' => $asOf, ':scope' => $scopeId];
 
         $query .= " ORDER BY version DESC LIMIT 1";
 
@@ -500,7 +499,7 @@ final class FeePolicyRepository
      */
     public static function validateNoOverlap(
         string $channelKey,
-        ?int $scopeId,
+        int $scopeId,
         string $validFrom,
         ?string $validTo,
         ?int $excludePolicyId = null
@@ -511,6 +510,7 @@ final class FeePolicyRepository
                   FROM fee_policies
                   WHERE channel_key = :channel
                     AND is_active = 1
+                    AND scope_entity_id = :scope
                     AND (
                         (valid_from <= :from AND (valid_to IS NULL OR valid_to >= :from))
                         OR (valid_from <= :to_check AND (valid_to IS NULL OR valid_to >= :to_check))
@@ -519,16 +519,10 @@ final class FeePolicyRepository
 
         $params = [
             ':channel' => $channelKey,
+            ':scope' => $scopeId,
             ':from' => $validFrom,
             ':to_check' => $validTo ?? '9999-12-31'
         ];
-
-        if ($scopeId !== null) {
-            $query .= " AND scope_entity_id = :scope";
-            $params[':scope'] = $scopeId;
-        } else {
-            $query .= " AND scope_entity_id IS NULL";
-        }
 
         if ($excludePolicyId !== null) {
             $query .= " AND fee_policy_id != :exclude";
@@ -556,11 +550,15 @@ final class FeePolicyRepository
         $channelKey = $policyData['channel_key'] ?? null;
         $validFrom = $policyData['valid_from'] ?? date('Y-m-d');
         $validTo = $policyData['valid_to'] ?? null;
-        $scopeId = $policyData['scope_entity_id'] ?? null;
+        $scopeId = (int)($policyData['scope_entity_id'] ?? 0);
         $policyId = $policyData['fee_policy_id'] ?? null;
 
         if (!$channelKey) {
             return ['success' => false, 'fee_policy_id' => null, 'error' => 'channel_key required'];
+        }
+
+        if ($scopeId <= 0) {
+            return ['success' => false, 'fee_policy_id' => null, 'error' => 'scope_entity_id required'];
         }
 
         # Validate no overlap

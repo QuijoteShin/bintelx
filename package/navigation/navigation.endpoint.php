@@ -3,7 +3,7 @@
 # Navigation endpoint con lógica de coexistencia routes.json + DB
 #
 # MULTI-TENANT:
-#   - scope_entity_id = NULL → ruta global (kernel)
+#   - scope_entity_id = GLOBAL_TENANT_ID → ruta global (kernel)
 #   - scope_entity_id = X → ruta específica del tenant X
 #   - Prioridad: rutas del scope > rutas globales (mismo path)
 #
@@ -13,13 +13,14 @@
 #   - Herencia ACL: ruta padre configura → hijos heredan salvo config explícita
 #
 # SAVE OPTIONS:
-#   - global: true → guarda como ruta global (scope_entity_id = NULL)
+#   - global: true → guarda como ruta global (scope = GLOBAL_TENANT_ID)
 #   - scope_entity_id: X → guarda para scope específico
 #   - (default) → usa Profile::$scope_entity_id
 
 use bX\Router;
 use bX\Response;
 use bX\Profile;
+use bX\Tenant;
 use bX\Log;
 use bX\CONN;
 
@@ -323,34 +324,28 @@ function ensureNavigationTable(): void {
 
 function loadDbNavigationConfig(): array {
     $scopeId = Profile::$scope_entity_id ?? null;
+    $params = [];
 
-    # Traer rutas globales (scope_entity_id IS NULL) + rutas del scope actual
-    if ($scopeId) {
-        $rows = CONN::dml(
-            "SELECT path, label, hidden, route_group, required_roles_json, order_index, scope_entity_id
-             FROM navigation_routes
-             WHERE is_active = 1
-               AND (scope_entity_id IS NULL OR scope_entity_id = :scope)
-             ORDER BY scope_entity_id IS NULL ASC, path",
-            [':scope' => $scopeId]
-        );
-    } else {
-        # Sin scope, solo rutas globales
-        $rows = CONN::dml(
-            "SELECT path, label, hidden, route_group, required_roles_json, order_index, scope_entity_id
-             FROM navigation_routes
-             WHERE is_active = 1
-               AND scope_entity_id IS NULL"
-        );
-    }
+    $sql = "SELECT path, label, hidden, route_group, required_roles_json, order_index, scope_entity_id
+            FROM navigation_routes
+            WHERE is_active = 1";
+
+    $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
+    if ($scopeId > 0) $opts['scope_entity_id'] = $scopeId;
+
+    $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+    $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", path";
+
+    $rows = CONN::dml($sql, $params);
 
     if (empty($rows)) return [];
 
+    $globalIds = Tenant::globalIds();
     $config = [];
     foreach ($rows as $r) {
         $path = $r['path'];
         # Rutas del scope tienen prioridad sobre globales (mismo path)
-        if (isset($config[$path]) && $r['scope_entity_id'] === null) {
+        if (isset($config[$path]) && in_array((int)$r['scope_entity_id'], $globalIds, true)) {
             continue; # Ya hay config del scope, ignorar global
         }
         $config[$path] = [
@@ -373,9 +368,9 @@ function upsertNavigationRoutes(array $routes, bool $replace): int {
     $scopeId = \bX\Args::$OPT['scope_entity_id'] ?? null;
     $isGlobal = isset(\bX\Args::$OPT['global']) && \bX\Args::$OPT['global'] === true;
 
-    # Si es global explícito, scope = NULL; si no, usar scope del perfil
+    # Global explícito → GLOBAL_TENANT_ID; sino usar scope del perfil
     if ($isGlobal) {
-        $scopeId = null;
+        $scopeId = Tenant::globalIds()[0] ?? null;
     } elseif ($scopeId === null) {
         $scopeId = Profile::$scope_entity_id ?? null;
     }
@@ -413,19 +408,11 @@ function upsertNavigationRoutes(array $routes, bool $replace): int {
     if ($replace && !empty($pathsSeen)) {
         # Solo desactivar rutas del mismo scope
         $placeholders = implode(',', array_fill(0, count($pathsSeen), '?'));
-        if ($scopeId) {
-            CONN::nodml(
-                "UPDATE navigation_routes SET is_active = 0
-                 WHERE scope_entity_id = ? AND path NOT IN ($placeholders)",
-                array_merge([$scopeId], $pathsSeen)
-            );
-        } else {
-            CONN::nodml(
-                "UPDATE navigation_routes SET is_active = 0
-                 WHERE scope_entity_id IS NULL AND path NOT IN ($placeholders)",
-                $pathsSeen
-            );
-        }
+        CONN::nodml(
+            "UPDATE navigation_routes SET is_active = 0
+             WHERE scope_entity_id = ? AND path NOT IN ($placeholders)",
+            array_merge([$scopeId], $pathsSeen)
+        );
     }
 
     return $saved;

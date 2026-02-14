@@ -254,8 +254,13 @@ class Profile {
         ];
 
         if ($scopeEntityId !== null) {
-            # Check for specific scope OR global (NULL scope)
-            $sql .= " AND (scope_entity_id = :scope_id OR scope_entity_id IS NULL)";
+            # Check for specific scope OR global tenant roles
+            $globalIn = implode(',', Tenant::globalIds());
+            if ($globalIn !== '') {
+                $sql .= " AND (scope_entity_id = :scope_id OR scope_entity_id IN ({$globalIn}))";
+            } else {
+                $sql .= " AND scope_entity_id = :scope_id";
+            }
             $params[':scope_id'] = $scopeEntityId;
         }
 
@@ -649,10 +654,11 @@ class Profile {
             return false;
         }
 
+        $globalIds = Tenant::globalIds();
         foreach (self::$roles['by_role'][$roleCode] as $assignment) {
             $assignmentScope = $assignment['scopeEntityId'] ?? null;
-            # Match if: no scope requested, or scope matches, or assignment is global (null scope)
-            if ($scopeEntityId === null || $assignmentScope === null || $assignmentScope === $scopeEntityId) {
+            # Match if: no scope requested, scope matches, or assignment is global
+            if ($scopeEntityId === null || $assignmentScope === $scopeEntityId || in_array($assignmentScope, $globalIds, true)) {
                 return true;
             }
         }
@@ -692,13 +698,19 @@ class Profile {
 
         # Query ACL from entity_relationships
         # Get DISTINCT scope_entity_id values (tenant IDs) for this profile
-        # Excludes NULL scopes - those are internal/system relationships
+        # Excludes NULL scopes (internal/system) and GLOBAL_TENANT (not switchable)
+        $globalIn = implode(',', Tenant::globalIds());
+        $excludeClause = "AND scope_entity_id IS NOT NULL";
+        if ($globalIn !== '') {
+            $excludeClause .= " AND scope_entity_id NOT IN ({$globalIn})";
+        }
+
         CONN::dml(
             "SELECT DISTINCT scope_entity_id
              FROM entity_relationships
              WHERE profile_id = :profile_id
                AND status = 'active'
-               AND scope_entity_id IS NOT NULL",
+               {$excludeClause}",
             [':profile_id' => self::$profile_id],
             function(array $row) use (&$scopes) {
                 $scopes[] = (int)$row['scope_entity_id'];

@@ -10,7 +10,7 @@ namespace bX;
  *
  * Prioridad de templates:
  *   1. scope_entity_id específico (template de la empresa)
- *   2. scope_entity_id = NULL (template global del sistema)
+ *   2. scope_entity_id = GLOBAL_TENANT_ID (template global del sistema)
  *
  * Uso:
  *   # Al crear una relación owner, auto-asignar roles configurados
@@ -33,25 +33,16 @@ class RoleTemplateService
         $roles = [];
         $params = [':kind' => $relationKind];
 
-        # Build query based on scope
-        if ($scopeEntityId) {
-            # Get scope-specific templates first, then global as fallback
-            $sql = "SELECT role_code, scope_entity_id
-                    FROM role_templates
-                    WHERE relation_kind = :kind
-                      AND is_active = 1
-                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                    ORDER BY scope_entity_id IS NULL ASC, priority DESC";
-            $params[':scope'] = $scopeEntityId;
-        } else {
-            # Only global templates
-            $sql = "SELECT role_code, scope_entity_id
-                    FROM role_templates
-                    WHERE relation_kind = :kind
-                      AND is_active = 1
-                      AND scope_entity_id IS NULL
-                    ORDER BY priority DESC";
-        }
+        $sql = "SELECT role_code, scope_entity_id
+                FROM role_templates
+                WHERE relation_kind = :kind
+                  AND is_active = 1";
+
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", priority DESC";
 
         $rows = CONN::dml($sql, $params);
 
@@ -59,19 +50,18 @@ class RoleTemplateService
             return [];
         }
 
-        # If we have scope-specific templates, use only those
-        # Otherwise fall back to global templates
+        # If scope-specific templates exist, use only those (skip global)
+        $globalIds = Tenant::globalIds();
         $hasSpecificScope = false;
         foreach ($rows as $row) {
-            if ($row['scope_entity_id'] !== null) {
+            if (!in_array((int)$row['scope_entity_id'], $globalIds, true)) {
                 $hasSpecificScope = true;
                 break;
             }
         }
 
         foreach ($rows as $row) {
-            # If scope-specific exists, skip global templates
-            if ($hasSpecificScope && $row['scope_entity_id'] === null) {
+            if ($hasSpecificScope && in_array((int)$row['scope_entity_id'], $globalIds, true)) {
                 continue;
             }
             $roles[] = $row['role_code'];
@@ -114,10 +104,10 @@ class RoleTemplateService
                 "SELECT 1 FROM profile_roles
                  WHERE profile_id = :pid
                    AND role_code = :role
-                   AND (scope_entity_id = :scope OR (scope_entity_id IS NULL AND :scope2 IS NULL))
+                   AND scope_entity_id = :scope
                    AND status = 'active'
                  LIMIT 1",
-                [':pid' => $profileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':scope2' => $scopeEntityId]
+                [':pid' => $profileId, ':role' => $roleCode, ':scope' => $scopeEntityId]
             );
 
             if (!empty($exists)) {
@@ -223,19 +213,14 @@ class RoleTemplateService
         $sql = "UPDATE role_templates
                 SET is_active = 0, updated_by_profile_id = :actor
                 WHERE relation_kind = :kind
-                  AND role_code = :role";
+                  AND role_code = :role
+                  AND scope_entity_id = :scope";
         $params = [
             ':kind' => $relationKind,
             ':role' => $roleCode,
+            ':scope' => $scopeEntityId,
             ':actor' => Profile::$profile_id
         ];
-
-        if ($scopeEntityId === null) {
-            $sql .= " AND scope_entity_id IS NULL";
-        } else {
-            $sql .= " AND scope_entity_id = :scope";
-            $params[':scope'] = $scopeEntityId;
-        }
 
         $result = CONN::nodml($sql, $params);
 
@@ -255,22 +240,16 @@ class RoleTemplateService
     {
         $params = [];
 
-        if ($scopeEntityId) {
-            $sql = "SELECT rt.*, r.role_label
-                    FROM role_templates rt
-                    LEFT JOIN roles r ON r.role_code = rt.role_code
-                    WHERE rt.is_active = 1
-                      AND (rt.scope_entity_id = :scope OR rt.scope_entity_id IS NULL)
-                    ORDER BY rt.relation_kind, rt.scope_entity_id IS NULL, rt.priority DESC";
-            $params[':scope'] = $scopeEntityId;
-        } else {
-            $sql = "SELECT rt.*, r.role_label
-                    FROM role_templates rt
-                    LEFT JOIN roles r ON r.role_code = rt.role_code
-                    WHERE rt.is_active = 1
-                      AND rt.scope_entity_id IS NULL
-                    ORDER BY rt.relation_kind, rt.priority DESC";
-        }
+        $sql = "SELECT rt.*, r.role_label
+                FROM role_templates rt
+                LEFT JOIN roles r ON r.role_code = rt.role_code
+                WHERE rt.is_active = 1";
+
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $sql = Tenant::applySql($sql, 'rt.scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY rt.relation_kind, " . Tenant::priorityOrderBy('rt.scope_entity_id', $opts) . ", rt.priority DESC";
 
         return CONN::dml($sql, $params) ?? [];
     }
