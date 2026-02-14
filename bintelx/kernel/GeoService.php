@@ -8,7 +8,7 @@
 #   - Exchange rates with effective dating
 #   - Tax rates by country with effective dating
 #   - Labor policies by country with effective dating
-#   - Multi-tenant support via scope_entity_id
+#   - Multi-tenant via Tenant:: (force_scope + priorityOrderBy)
 #   - ALCOA+ audit logging
 #
 # Usage:
@@ -69,26 +69,29 @@ class GeoService
         ?int $scopeEntityId = null
     ): ?array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = $scopeEntityId ?? (Profile::$scope_entity_id ?? null);
+        $scopeEntityId = $scopeEntityId ?? Profile::$scope_entity_id;
 
-        $cacheKey = "{$base}|{$target}|{$date}|{$scopeEntityId}";
-        return Cache::getOrSet(self::CACHE_RATES, $cacheKey, self::TTL_SCOPED, function() use ($base, $target, $date, $scopeEntityId) {
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $cacheKey = "{$base}|{$target}|{$date}|" . (Tenant::resolve($opts) ?? 0);
+        return Cache::getOrSet(self::CACHE_RATES, $cacheKey, self::TTL_SCOPED, function() use ($base, $target, $date, $opts) {
             $sql = "SELECT * FROM geo_exchange_rates
                     WHERE base_currency_code = :base
                       AND target_currency_code = :target
                       AND effective_from <= :date
-                      AND effective_to >= :date
-                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                    ORDER BY scope_entity_id DESC, effective_from DESC
-                    LIMIT 1";
+                      AND effective_to >= :date";
 
-            $rows = CONN::dml($sql, [
+            $params = [
                 ':base' => strtoupper($base),
                 ':target' => strtoupper($target),
                 ':date' => $date,
-                ':scope' => $scopeEntityId
-            ]);
+            ];
 
+            $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+            $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC LIMIT 1";
+
+            $rows = CONN::dml($sql, $params);
             return !empty($rows) ? $rows[0] : null;
         });
     }
@@ -234,19 +237,22 @@ class GeoService
         ?string $date = null
     ): array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
         $baseCurrency = strtoupper($baseCurrency);
 
         if (empty($currencies)) {
             return [];
         }
 
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
         # Normalize and dedupe
         $currencies = array_unique(array_map('strtoupper', $currencies));
 
         # Build placeholders for IN clause
         $placeholders = [];
-        $params = [':base' => $baseCurrency, ':date' => $date, ':scope' => $scopeEntityId];
+        $params = [':base' => $baseCurrency, ':date' => $date];
         foreach ($currencies as $i => $code) {
             $key = ":curr{$i}";
             $placeholders[] = $key;
@@ -260,37 +266,33 @@ class GeoService
                 WHERE ((base_currency_code = :base AND target_currency_code IN ({$inClause}))
                     OR (target_currency_code = :base AND base_currency_code IN ({$inClause})))
                   AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC";
+                  AND effective_to >= :date";
+
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC";
 
         $rows = CONN::dml($sql, $params);
 
         # Build map with priority: tenant-specific > global, direct > inverse
-        $map = [$baseCurrency => '1']; # Base currency = 1
+        # ORDER BY already puts tenant rows first → first-seen wins
+        $map = [$baseCurrency => '1'];
         $seen = [];
 
         foreach ($rows as $row) {
             $base = $row['base_currency_code'];
             $target = $row['target_currency_code'];
             $rate = $row['rate'];
-            $isScoped = $row['scope_entity_id'] !== null;
 
             if ($base === $baseCurrency) {
-                # Direct rate: CLP -> UF means 1 UF = rate CLP
                 $key = "{$target}|direct";
-                if (!isset($seen[$key]) || $isScoped) {
+                if (!isset($seen[$key])) {
                     $map[$target] = $rate;
                     $seen[$key] = true;
                 }
             } else {
-                # Inverse rate: UF -> CLP means 1 CLP = 1/rate UF
                 $key = "{$base}|inverse";
-                if (!isset($seen[$key]) || $isScoped) {
-                    # Only set if no direct rate exists
-                    if (!isset($map[$base])) {
-                        $map[$base] = Math::div('1', $rate, 8);
-                    }
+                if (!isset($seen[$key]) && !isset($map[$base])) {
+                    $map[$base] = Math::div('1', $rate, 8);
                     $seen[$key] = true;
                 }
             }
@@ -314,36 +316,33 @@ class GeoService
         ?string $date = null
     ): array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
         $baseCurrency = strtoupper($baseCurrency);
 
-        $sql = "SELECT target_currency_code, rate, scope_entity_id
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $sql = "SELECT target_currency_code, rate
                 FROM geo_exchange_rates
                 WHERE base_currency_code = :base
                   AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC";
+                  AND effective_to >= :date";
 
         $params = [
             ':base' => $baseCurrency,
             ':date' => $date,
-            ':scope' => $scopeEntityId
         ];
 
-        # Build map with priority: tenant-specific > global
-        # Using callback for memory efficiency (streaming rows)
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC";
+
+        # Build map — ORDER BY puts tenant first → first-seen wins
         $map = [];
-        $seen = [];
 
-        CONN::dml($sql, $params, function($row) use (&$map, &$seen) {
+        CONN::dml($sql, $params, function($row) use (&$map) {
             $target = $row['target_currency_code'];
-            $isScoped = $row['scope_entity_id'] !== null;
-
-            # Priorizar rate del tenant sobre global
-            if (!isset($seen[$target]) || $isScoped) {
+            if (!isset($map[$target])) {
                 $map[$target] = (float)$row['rate'];
-                $seen[$target] = true;
             }
         });
 
@@ -353,13 +352,15 @@ class GeoService
     /**
      * Save exchange rate with ALCOA+ audit
      *
+     * Global rates: admin enters global workspace (scope=GLOBAL_TENANT_ID) to save
+     *
      * @param string $base Base currency code
      * @param string $target Target currency code
      * @param string $rate Rate value
      * @param string $effectiveFrom Effective from date
      * @param string|null $effectiveTo Effective to date (default: 9999-12-31)
      * @param string|null $sourceReference Source reference (SII, BCCH, manual)
-     * @param int|null $scopeEntityId Tenant scope (null = global)
+     * @param int|null $scopeEntityId Tenant scope (from Profile if not provided)
      * @return array Result with success status
      */
     public static function saveExchangeRate(
@@ -372,19 +373,21 @@ class GeoService
         ?int $scopeEntityId = null
     ): array {
         $profileId = Profile::$profile_id ?? 0;
+        $scopeEntityId = $scopeEntityId ?? Profile::$scope_entity_id;
+        if ($scopeEntityId <= 0) $scopeEntityId = null;
 
         # Validate rate
         if (Math::lte($rate, '0')) {
             return ['success' => false, 'error' => 'INVALID_RATE', 'message' => 'Rate must be positive'];
         }
 
-        # Close previous period if exists
+        # Close previous period if exists (exact scope match)
         $sqlUpdate = "UPDATE geo_exchange_rates
                       SET effective_to = DATE_SUB(:effective_from, INTERVAL 1 DAY)
                       WHERE base_currency_code = :base
                         AND target_currency_code = :target
                         AND effective_to = '9999-12-31'
-                        AND (scope_entity_id = :scope OR (scope_entity_id IS NULL AND :scope IS NULL))";
+                        AND scope_entity_id = :scope";
 
         CONN::nodml($sqlUpdate, [
             ':base' => strtoupper($base),
@@ -463,26 +466,29 @@ class GeoService
         ?string $date = null
     ): ?array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
 
-        $cacheKey = "{$country}|{$code}|{$date}|{$scopeEntityId}";
-        return Cache::getOrSet(self::CACHE_TAX, $cacheKey, self::TTL_SCOPED, function() use ($country, $code, $date, $scopeEntityId) {
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $cacheKey = "{$country}|{$code}|{$date}|" . (Tenant::resolve($opts) ?? 0);
+        return Cache::getOrSet(self::CACHE_TAX, $cacheKey, self::TTL_SCOPED, function() use ($country, $code, $date, $opts) {
             $sql = "SELECT * FROM geo_tax_rates
                     WHERE country_code = :country
                       AND tax_code = :code
                       AND effective_from <= :date
-                      AND effective_to >= :date
-                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                    ORDER BY scope_entity_id DESC, effective_from DESC
-                    LIMIT 1";
+                      AND effective_to >= :date";
 
-            $rows = CONN::dml($sql, [
+            $params = [
                 ':country' => strtoupper($country),
                 ':code' => $code,
                 ':date' => $date,
-                ':scope' => $scopeEntityId
-            ]);
+            ];
 
+            $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+            $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC LIMIT 1";
+
+            $rows = CONN::dml($sql, $params);
             return !empty($rows) ? $rows[0] : null;
         });
     }
@@ -499,23 +505,28 @@ class GeoService
     public static function getTaxRatesMap(string $country, ?string $date = null): array
     {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
+
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT tax_code, rate FROM geo_tax_rates
                 WHERE country_code = :country
                   AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC";
+                  AND effective_to >= :date";
+
+        $params = [
+            ':country' => strtoupper($country),
+            ':date' => $date,
+        ];
+
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC";
 
         $map = [];
 
-        CONN::dml($sql, [
-            ':country' => strtoupper($country),
-            ':date' => $date,
-            ':scope' => $scopeEntityId
-        ], function($row) use (&$map) {
-            # First occurrence wins (tenant > global due to ORDER BY)
+        CONN::dml($sql, $params, function($row) use (&$map) {
+            # First occurrence wins (tenant > global via ORDER BY priority)
             if (!isset($map[$row['tax_code']])) {
                 $map[$row['tax_code']] = Math::round($row['rate'], 2);
             }
@@ -534,23 +545,26 @@ class GeoService
     public static function getDefaultTaxRate(string $country, ?string $date = null): ?array
     {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
+
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT * FROM geo_tax_rates
                 WHERE country_code = :country
                   AND is_default = 1
                   AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY scope_entity_id DESC, effective_from DESC
-                LIMIT 1";
+                  AND effective_to >= :date";
 
-        $rows = CONN::dml($sql, [
+        $params = [
             ':country' => strtoupper($country),
             ':date' => $date,
-            ':scope' => $scopeEntityId
-        ]);
+        ];
 
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC LIMIT 1";
+
+        $rows = CONN::dml($sql, $params);
         return !empty($rows) ? $rows[0] : null;
     }
 
@@ -572,26 +586,29 @@ class GeoService
         ?string $date = null
     ): ?array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
 
-        $cacheKey = "{$country}|{$key}|{$date}|{$scopeEntityId}";
-        return Cache::getOrSet(self::CACHE_POLICY, $cacheKey, self::TTL_SCOPED, function() use ($country, $key, $date, $scopeEntityId) {
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $cacheKey = "{$country}|{$key}|{$date}|" . (Tenant::resolve($opts) ?? 0);
+        return Cache::getOrSet(self::CACHE_POLICY, $cacheKey, self::TTL_SCOPED, function() use ($country, $key, $date, $opts) {
             $sql = "SELECT * FROM geo_labor_policies
                     WHERE country_code = :country
                       AND policy_key = :key
                       AND effective_from <= :date
-                      AND effective_to >= :date
-                      AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                    ORDER BY scope_entity_id DESC, effective_from DESC
-                    LIMIT 1";
+                      AND effective_to >= :date";
 
-            $rows = CONN::dml($sql, [
+            $params = [
                 ':country' => strtoupper($country),
                 ':key' => $key,
                 ':date' => $date,
-                ':scope' => $scopeEntityId
-            ]);
+            ];
 
+            $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+            $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC LIMIT 1";
+
+            $rows = CONN::dml($sql, $params);
             return !empty($rows) ? $rows[0] : null;
         });
     }
@@ -632,22 +649,27 @@ class GeoService
     public static function getAllLaborPolicies(string $country, ?string $date = null): array
     {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id ?? null;
+        $scopeEntityId = Profile::$scope_entity_id;
+
+        $opts = ['force_scope' => true];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
 
         $sql = "SELECT * FROM geo_labor_policies
                 WHERE country_code = :country
                   AND effective_from <= :date
-                  AND effective_to >= :date
-                  AND (scope_entity_id = :scope OR scope_entity_id IS NULL)
-                ORDER BY policy_key, scope_entity_id DESC, effective_from DESC";
+                  AND effective_to >= :date";
 
-        $rows = CONN::dml($sql, [
+        $params = [
             ':country' => strtoupper($country),
             ':date' => $date,
-            ':scope' => $scopeEntityId
-        ]);
+        ];
 
-        # Dedupe by policy_key (first = most specific)
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+        $sql .= " ORDER BY policy_key, " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC";
+
+        $rows = CONN::dml($sql, $params);
+
+        # Dedupe by policy_key (first per key = tenant-specific via ORDER BY)
         $policies = [];
         foreach ($rows as $row) {
             if (!isset($policies[$row['policy_key']])) {
