@@ -111,6 +111,15 @@ class Cache {
         self::ensureBackend()->delete($fullKey);
     }
 
+    # Stats de la tabla (solo SwooleTableBackend expone count/memory)
+    public static function stats(): array {
+        $backend = self::ensureBackend();
+        if ($backend instanceof \bX\Cache\SwooleTableBackend) {
+            return $backend->stats();
+        }
+        return ['backend' => get_class($backend), 'note' => 'stats only available on SwooleTableBackend'];
+    }
+
     # Reset backend (testing / shutdown)
     public static function reset(): void {
         self::$backend = null;
