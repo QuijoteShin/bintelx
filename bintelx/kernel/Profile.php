@@ -230,33 +230,51 @@ class Profile {
     }
 
     /**
-     * Checks whether a profile has the requested role for a given scope entity.
+     * Checks whether a profile has the requested role(s) for a given scope entity.
      * All params optional — defaults to current user context.
-     * Usage: Profile::hasRole(roleCode: 'finance.all')
+     * Accepts single role or array (OR logic: true if ANY matches).
+     *
+     * Usage:
+     *   Profile::hasRole(roleCode: 'finance.all')
+     *   Profile::hasRole(roleCode: ['finance.all', 'finance.summary.all'])
      */
-    public static function hasRole(?int $profileId = null, ?int $scopeEntityId = null, string $roleCode = '', bool $includePassive = true): bool
+    public static function hasRole(?int $profileId = null, ?int $scopeEntityId = null, string|array $roleCode = '', bool $includePassive = true): bool
     {
         $profileId = $profileId ?? self::$profile_id;
         $scopeEntityId = $scopeEntityId ?? (self::$scope_entity_id > 0 ? self::$scope_entity_id : null);
 
-        $roleCode = trim($roleCode);
-        if ($roleCode === '') {
+        # Normalize to array
+        $roleCodes = is_array($roleCode) ? $roleCode : [$roleCode];
+        $roleCodes = array_filter(array_map('trim', $roleCodes));
+        if (empty($roleCodes)) {
             return false;
         }
 
+        # Cache path: check each role (ANY match = true)
         if ($profileId === self::$profile_id && !empty(self::$roles['by_role'])) {
-            return self::hasRoleInCache($scopeEntityId, $roleCode, $includePassive);
+            foreach ($roleCodes as $code) {
+                if (self::hasRoleInCache($scopeEntityId, $code, $includePassive)) {
+                    return true;
+                }
+            }
+            return false;
         }
+
+        # DB path: use IN() for efficient single query
+        $placeholders = [];
+        $params = [':profile_id' => $profileId];
+        foreach (array_values($roleCodes) as $i => $code) {
+            $key = ":role_{$i}";
+            $placeholders[] = $key;
+            $params[$key] = $code;
+        }
+        $inClause = implode(',', $placeholders);
 
         $sql = "SELECT COUNT(*) AS total
                 FROM profile_roles
                 WHERE profile_id = :profile_id
                   AND status = 'active'
-                  AND role_code = :role_code";
-        $params = [
-            ':profile_id' => $profileId,
-            ':role_code' => $roleCode
-        ];
+                  AND role_code IN ({$inClause})";
 
         if ($scopeEntityId !== null) {
             # Check for specific scope OR global tenant roles
