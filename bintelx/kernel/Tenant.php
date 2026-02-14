@@ -6,18 +6,22 @@ namespace bX;
  * Tenant - Multi-tenant helper
  *
  * Centralizes tenant logic for queries and security.
- * - Users with system.admin: access all tenants
- * - Users with tenant: access only their tenant
+ * - Users with system.admin: access all tenants (unless force_scope)
+ * - Users with tenant: access their tenant + global tenants (if configured)
  * - Users without tenant: NO ACCESS (returns empty, not NULL records)
  *
- * SECURITY: scope_entity_id = NULL significa NO VER NADA, no "ver datos NULL".
- * Esto previene que usuarios sin tenant vean datos de otros tenants.
+ * Global Tenant IDs (GLOBAL_TENANT_IDS in .env):
+ * - Comma-separated positive entity IDs visible to all tenants
+ * - Automatically included in WHERE via OR IN() when configured
+ * - Opt-out per query: $options['exclude_global'] = true
+ * - force_scope: skips admin bypass (for lookups like GeoService)
  *
+ * SECURITY: scope_entity_id = NULL significa NO VER NADA, no "ver datos NULL".
  *
  * Usage:
- *   $scope = Tenant::resolve($options);
- *   $sql .= Tenant::whereClause('er.scope_entity_id', $options);
+ *   $sql .= Tenant::whereClause('scope_entity_id', $options);
  *   $params = array_merge($params, Tenant::params($options));
+ *   $sql .= Tenant::priorityOrderBy('scope_entity_id', $options);
  *
  * @package bX
  */
@@ -28,6 +32,42 @@ class Tenant
 
     # Cache for admin check
     private static ?bool $isAdminCache = null;
+
+    # Global tenant IDs from .env (immutable config, safe as static in Swoole)
+    private static ?array $globalIds = null;
+
+    /**
+     * Get global tenant IDs from GLOBAL_TENANT_IDS env var
+     * Config de servidor — no necesita reset en Swoole (inmutable)
+     *
+     * @return int[] Positive entity IDs configured as global tenants
+     */
+    public static function globalIds(): array
+    {
+        if (self::$globalIds !== null) return self::$globalIds;
+
+        $raw = $_ENV['GLOBAL_TENANT_IDS'] ?? '';
+        if ($raw === '') {
+            self::$globalIds = [];
+            return [];
+        }
+
+        self::$globalIds = array_filter(
+            array_map('intval', explode(',', $raw)),
+            fn(int $id) => $id > 0
+        );
+        return self::$globalIds;
+    }
+
+    /**
+     * Build SQL IN clause with global tenant IDs (inlined, not parameterized)
+     * IDs come from .env (server config), not user input — safe to inline
+     */
+    private static function globalInClause(): string
+    {
+        $ids = self::globalIds();
+        return empty($ids) ? '' : implode(',', $ids);
+    }
 
     /**
      * Check if current user is system.admin (bypass tenant restrictions)
@@ -105,12 +145,18 @@ class Tenant
             return false;
         }
 
-        # User with tenant can only access their tenant data
-        return $targetScope === $userScope;
+        # User with tenant can access their tenant data + global tenants
+        return $targetScope === $userScope
+            || in_array($targetScope, self::globalIds(), true);
     }
 
     /**
      * Generate WHERE clause for tenant filtering
+     *
+     * Options:
+     *   scope_entity_id  - Override scope (int)
+     *   force_scope      - Skip admin bypass (for lookups like GeoService)
+     *   exclude_global   - Don't include global tenant IDs
      *
      * @param string $column Column name (e.g., 'er.scope_entity_id')
      * @param array $options Options with optional scope_entity_id
@@ -122,27 +168,36 @@ class Tenant
         array $options = [],
         string $paramName = ':_tenant_scope'
     ): string {
-        # Admin bypass - no restriction
-        if (self::isAdmin()) {
+        # Admin bypass (unless force_scope for lookups)
+        if (self::isAdmin() && empty($options['force_scope'])) {
             return '';
         }
 
         $scope = self::resolve($options);
+        $globalIn = self::globalInClause();
+        $excludeGlobal = !empty($options['exclude_global']);
 
-        # SECURITY: User without tenant cannot see anything
-        # Retorna condición imposible para bloquear acceso
         if ($scope === null) {
+            # Admin+force_scope without own scope: show only global records
+            if (self::isAdmin() && $globalIn !== '' && !$excludeGlobal) {
+                return " AND {$column} IN ({$globalIn})";
+            }
+            # SECURITY: no scope = no access
             return " AND 1=0";
         }
 
-        # User with tenant: can see their tenant data
+        # User with scope + global configured
+        if ($globalIn !== '' && !$excludeGlobal) {
+            return " AND ({$column} = {$paramName} OR {$column} IN ({$globalIn}))";
+        }
+
         return " AND {$column} = {$paramName}";
     }
 
     /**
      * Generate parameters for tenant filtering
      *
-     * @param array $options Options with optional scope_entity_id
+     * @param array $options Options with optional scope_entity_id, force_scope
      * @param string $paramName Parameter name (default: ':_tenant_scope')
      * @return array Parameters to merge into query params
      */
@@ -150,8 +205,8 @@ class Tenant
         array $options = [],
         string $paramName = ':_tenant_scope'
     ): array {
-        # Admin bypass or NULL scope - no params needed
-        if (self::isAdmin()) {
+        # Admin bypass (unless force_scope)
+        if (self::isAdmin() && empty($options['force_scope'])) {
             return [];
         }
 
@@ -244,5 +299,34 @@ class Tenant
             'sql' => self::whereClause($column, $options),
             'params' => self::params($options)
         ];
+    }
+
+    /**
+     * ORDER BY expression to prioritize tenant-specific over global records
+     *
+     * Returns just the expression "(column = N) DESC" — caller adds ORDER BY.
+     * Without scope: returns "(0) DESC" (neutral, secondary ORDER decides).
+     *
+     * Patrón completo para servicios de lookup (GeoService, FeePolicyRepository):
+     *
+     *   $opts = ['force_scope' => true];
+     *   if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+     *   $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+     *   $sql .= " ORDER BY " . Tenant::priorityOrderBy('scope_entity_id', $opts) . ", effective_from DESC";
+     *
+     * @param string $column Column name (e.g., 'scope_entity_id')
+     * @param array $options Same options as whereClause
+     * @return string SQL expression: "(col = N) DESC" or "(0) DESC"
+     */
+    public static function priorityOrderBy(string $column, array $options = []): string
+    {
+        $scope = self::resolve($options);
+
+        if ($scope === null) {
+            # No scope — neutral priority (secondary ORDER decides)
+            return '(0) DESC';
+        }
+
+        return "({$column} = {$scope}) DESC";
     }
 }
