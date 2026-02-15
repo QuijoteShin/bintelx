@@ -201,8 +201,11 @@ class Encoder {
         $length = count($array);
 
         if ($length === 0) {
-            $header = $this->formatHeader(0, $key);
-            yield $this->indentedLine($depth, $header);
+            if ($key !== null) {
+                yield $this->indentedLine($depth, $this->encodeKey($key) . ': []');
+            } else {
+                yield $this->indentedLine($depth, '[]');
+            }
             return;
         }
 
@@ -275,6 +278,8 @@ class Encoder {
 
         if ($this->isPrimitive($firstVal)) {
             yield $this->indentedListItem($depth, "$encodedKey: " . $this->encodePrimitive($firstVal));
+        } elseif (is_array($firstVal) && $this->isSequentialArray($firstVal) && empty($firstVal)) {
+            yield $this->indentedListItem($depth, "$encodedKey: []");
         } elseif (is_array($firstVal) && $this->isSequentialArray($firstVal) && $this->isArrayOfPrimitives($firstVal)) {
             $hdr = $this->formatHeader(count($firstVal), null);
             $vals = $this->encodeAndJoinPrimitives($firstVal);
@@ -416,7 +421,7 @@ class Encoder {
         if (in_array($value, [self::TRUE_LITERAL, self::FALSE_LITERAL, self::NULL_LITERAL], true)) return false;
         if (is_numeric($value)) return false;
         if (strpos($value, $this->delimiter) !== false) return false;
-        if (preg_match('/[\s:"\\\\;@]/', $value)) return false;
+        if (preg_match('/[\s:"\\\\;@#]/', $value)) return false;
         return true;
     }
 

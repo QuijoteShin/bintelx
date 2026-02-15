@@ -194,7 +194,7 @@ class Decoder {
 
         # Array
         if ($input[0] === self::OPEN_BRACKET) {
-            $close = strpos($input, self::CLOSE_BRACKET);
+            $close = $this->findMatchingBracket($input, 0);
             if ($close !== false) {
                 $inner = substr($input, 1, $close - 1);
                 $items = $this->splitTopLevel($inner, self::COMMA);
@@ -526,25 +526,27 @@ class Decoder {
         $rest = trim(substr($itemContent, $keyData['end']));
 
         $result = [];
+        $contDepth = $baseDepth + 2; # continuation fields are 2 levels deeper than array header
 
         if ($rest !== '' && str_starts_with($rest, '@')) {
             $result[$key] = $this->resolveReference($rest);
         } elseif ($rest !== '') {
             $result[$key] = $this->parsePrimitive($rest);
-        } elseif ($index + 1 < count($parsedLines) && $parsedLines[$index + 1]['depth'] === $baseDepth + 2) {
-            $result[$key] = $this->decodeObject($baseDepth + 2, $parsedLines, $index + 1);
+        } elseif ($index + 1 < count($parsedLines) && $parsedLines[$index + 1]['depth'] >= $contDepth) {
+            $result[$key] = $this->decodeObject($contDepth, $parsedLines, $index + 1);
         } else {
             $result[$key] = [];
         }
 
+        # Parse continuation fields (same indent as content after "- ")
         $i = $index + 1;
         while ($i < count($parsedLines)) {
             $nextLine = $parsedLines[$i];
-            if ($nextLine['depth'] < $baseDepth + 1) break;
-            if ($nextLine['depth'] === $baseDepth + 1) {
+            if ($nextLine['depth'] < $contDepth) break;
+            if ($nextLine['depth'] === $contDepth) {
                 if (strpos($nextLine['content'], self::LIST_ITEM_PREFIX) === 0) break;
                 if ($this->isKeyValueLine($nextLine['content'])) {
-                    list($k, $v, $nextIdx) = $this->decodeKeyValue($nextLine, $parsedLines, $i, $baseDepth + 1);
+                    list($k, $v, $nextIdx) = $this->decodeKeyValue($nextLine, $parsedLines, $i, $contDepth);
                     $result[$k] = $v;
                     $i = $nextIdx;
                     continue;
@@ -660,6 +662,7 @@ class Decoder {
     private function parsePrimitive(string $token): mixed {
         $trimmed = trim($token);
         if ($trimmed === '') return '';
+        if ($trimmed === '[]') return [];
 
         if ($trimmed[0] === self::DOUBLE_QUOTE) {
             return $this->parseStringLiteral($trimmed);
@@ -788,6 +791,28 @@ class Decoder {
         return $parts;
     }
 
+    # Find matching ] for [ at given position (respecting nesting and quotes)
+    private function findMatchingBracket(string $str, int $start): int|false {
+        $depth = 0;
+        $inQuotes = false;
+        $len = strlen($str);
+
+        for ($i = $start; $i < $len; $i++) {
+            $char = $str[$i];
+            if ($char === self::BACKSLASH && $inQuotes && $i + 1 < $len) { $i++; continue; }
+            if ($char === self::DOUBLE_QUOTE) { $inQuotes = !$inQuotes; continue; }
+            if (!$inQuotes) {
+                if ($char === self::OPEN_BRACKET) $depth++;
+                if ($char === self::CLOSE_BRACKET) {
+                    $depth--;
+                    if ($depth === 0) return $i;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private function extractBraceContent(string $input): string {
         $depth = 0;
         $start = -1;
@@ -816,7 +841,10 @@ class Decoder {
     }
 
     private function isArrayHeader(string $content): bool {
-        return str_contains($content, self::OPEN_BRACKET) && str_contains($content, self::COLON);
+        $bracketPos = strpos($content, self::OPEN_BRACKET);
+        $colonPos = strpos($content, self::COLON);
+        # [N]: pattern requires bracket BEFORE colon (e.g. tags[3]: not key: [])
+        return $bracketPos !== false && $colonPos !== false && $bracketPos < $colonPos;
     }
 
     private function isKeyValueLine(string $content): bool {
