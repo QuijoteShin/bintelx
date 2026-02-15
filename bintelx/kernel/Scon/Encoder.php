@@ -2,6 +2,8 @@
 # kernel/Scon/Encoder.php
 namespace bX\Scon;
 
+use bX\TreeHash;
+
 class Encoder {
 
     const COMMA = ',';
@@ -252,7 +254,12 @@ class Encoder {
             if ($this->isPrimitive($item)) {
                 yield $this->indentedListItem($depth + 1, $this->encodePrimitive($item));
             } elseif (is_array($item) && !$this->isSequentialArray($item)) {
-                yield from $this->encodeObjectAsListItem($item, $depth + 1);
+                $schemaRef = $this->findMatchingSchema($item);
+                if ($schemaRef !== null) {
+                    yield $this->indentedListItem($depth + 1, "@s:$schemaRef");
+                } else {
+                    yield from $this->encodeObjectAsListItem($item, $depth + 1);
+                }
             } elseif (is_array($item) && $this->isSequentialArray($item)) {
                 if (empty($item)) {
                     yield $this->indentedListItem($depth + 1, '[]');
@@ -306,41 +313,29 @@ class Encoder {
         return null;
     }
 
-    # Detect repeated sub-structures and extract as schemas
-    private function detectRepeatedSchemas(array $data, string $path = ''): void {
-        $hashes = [];
-        $this->collectSubStructures($data, $hashes, $path);
+    # Detect repeated sub-structures and extract as schemas via TreeHash
+    private function detectRepeatedSchemas(array $data): void {
+        $result = TreeHash::hashTree($data, '', 2, false);
 
-        # Find structures that appear 2+ times
-        $counts = array_count_values(array_map(fn($h) => $h['hash'], $hashes));
-        $extracted = [];
-
-        foreach ($hashes as $entry) {
-            if ($counts[$entry['hash']] >= 2 && !isset($extracted[$entry['hash']])) {
+        foreach ($result['index'] as $entry) {
+            if ($entry['count'] >= 2) {
                 $name = $this->generateSchemaName($entry['path']);
                 $this->registry->register('s', $name, $entry['data']);
-                $extracted[$entry['hash']] = $name;
-            }
-        }
-    }
-
-    private function collectSubStructures(array $data, array &$hashes, string $path): void {
-        foreach ($data as $key => $val) {
-            if (is_array($val) && !$this->isSequentialArray($val) && count($val) >= 2) {
-                $hash = md5(json_encode($val, JSON_UNESCAPED_SLASHES));
-                $hashes[] = ['hash' => $hash, 'path' => "$path.$key", 'data' => $val];
-                $this->collectSubStructures($val, $hashes, "$path.$key");
             }
         }
     }
 
     private function generateSchemaName(string $path): string {
         $parts = explode('.', trim($path, '.'));
-        $last = end($parts);
+        # Strip list indices ([$0], [$1]) from the end — not meaningful names
+        while (!empty($parts) && preg_match('/^\[\d+\]$/', end($parts))) {
+            array_pop($parts);
+        }
+        $last = end($parts) ?: '';
         # Clean up common path segments
         $last = str_replace(['properties', 'content', 'application/json', 'schema'], '', $last);
         $last = trim($last, '.');
-        return $last ?: 'auto_' . substr(md5($path), 0, 6);
+        return $last ?: 'auto_' . substr(hash('xxh128', $path), 0, 6);
     }
 
     # --- Formatting helpers ---
