@@ -66,6 +66,17 @@ class Response
         return $response;
     }
 
+    # Para SCON format (Schema-Compact Object Notation)
+    public static function scon(mixed $data, int $code = 200, array $options = []): self
+    {
+        $response = new self();
+        $response->rawContent = \bX\Scon\Scon::encode($data, $options);
+        $response->statusCode = $code;
+        $response->type = 'raw';
+        $response->headers['Content-Type'] = 'text/scon; charset=utf-8';
+        return $response;
+    }
+
     # Para contenido RAW (HTML, texto plano, etc)
     public static function raw(string $content, string $contentType = 'text/plain'): self
     {

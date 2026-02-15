@@ -8,12 +8,16 @@ use openapi\OpenApiHandler;
  * @endpoint   /api/openapi/spec.json
  * @method     GET
  * @scope      ROUTER_SCOPE_PUBLIC
- * @purpose    Returns OpenAPI 3.1 specification (JSON default, TOON optional)
+ * @purpose    Returns OpenAPI 3.1 specification (JSON default, TOON/SCON optional)
  * @tag        OpenAPI
  */
-Router::register(['GET'], 'spec\.(?P<format>json|toon)', function($format = 'json') {
+Router::register(['GET'], 'spec\.(?P<format>json|toon|scon)', function($format = 'json') {
   $spec = OpenApiHandler::getRawSpec();
-  return $format === 'toon' ? Response::toon($spec) : Response::json($spec);
+  return match($format) {
+    'toon' => Response::toon($spec),
+    'scon' => Response::scon($spec, 200, ['autoExtract' => true]),
+    default => Response::json($spec),
+  };
 }, ROUTER_SCOPE_PUBLIC);
 
 
