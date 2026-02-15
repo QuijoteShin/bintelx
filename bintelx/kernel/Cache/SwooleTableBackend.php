@@ -22,11 +22,16 @@ class SwooleTableBackend implements CacheBackend {
             return null;
         }
 
-        return json_decode($row['data'], true);
+        $data = $row['data'];
+        # Detectar formato legacy (JSON) para compatibilidad durante hot reload USR1
+        if ($data !== '' && ($data[0] === '{' || $data[0] === '[' || $data[0] === '"' || ctype_digit($data[0]) || $data === 'null' || $data === 'true' || $data === 'false')) {
+            return json_decode($data, true);
+        }
+        return igbinary_unserialize($data);
     }
 
     public function set(string $key, mixed $value, int $ttl = 0): void {
-        $encoded = json_encode($value, JSON_UNESCAPED_UNICODE);
+        $encoded = igbinary_serialize($value);
 
         # Swoole\Table STRING column has a size limit; truncate if too large
         if (strlen($encoded) > 8192) {
