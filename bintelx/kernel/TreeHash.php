@@ -5,6 +5,16 @@ namespace bX;
 # - hashTree(): ksort + json_encode + xxh128 (C-level, rápido para dedup)
 # - hash/equals/diff: fingerprints bottom-up (O(n), eficiente para comparación)
 # Requiere PHP 8.1+ (array_is_list, hash xxh128)
+#
+# hashTree usa json_encode como función de serialización canónica interna porque
+# es código C compilado (16-19x más rápido que PHP string concat en árboles 4-5 niveles).
+# La brecha crece con profundidad: 2.5x en 2 niveles, 16x en 4-5, Merkle puro 19x.
+# No se usa como formato de salida: serializa en memoria, hashea con xxh128, descarta.
+# Ver scripts/bench/bench_treehash.php para evidencia (1M ops, arrays reales).
+#
+# hash() y hashTree()['root_hash'] usan algoritmos distintos intencionalmente:
+# - hash/equals/diff: fingerprints tipados (type-safe, int !== float)
+# - hashTree: json_encode (JSON-semantic, rápido para dedup masivo)
 
 class TreeHash
 {
@@ -31,13 +41,15 @@ class TreeHash
         $index = [];
         self::collectHashesHybrid($data, $basePath, $index, $minKeys);
 
-        $rootHash = hash('xxh128', json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        $json = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $rootHash = $json !== false ? hash('xxh128', $json) : hash('xxh128', serialize($data));
         return ['root_hash' => $rootHash, 'index' => $index];
     }
 
     # Comparar dos estructuras: ¿son idénticas?
     public static function equals(mixed $a, mixed $b): bool
     {
+        if ($a === $b) return true;
         return self::fingerprint($a) === self::fingerprint($b);
     }
 
@@ -45,6 +57,7 @@ class TreeHash
     # Poda ramas idénticas por hash → O(cambios)
     public static function diff(array $a, array $b, string $path = ''): array
     {
+        if ($a === $b) return [];
         if (self::fingerprint($a) === self::fingerprint($b)) {
             return [];
         }
@@ -67,6 +80,7 @@ class TreeHash
             $valA = $a[$key];
             $valB = $b[$key];
 
+            if ($valA === $valB) continue;
             if (self::fingerprint($valA) === self::fingerprint($valB)) {
                 continue;
             }
@@ -89,27 +103,61 @@ class TreeHash
             ksort($data, SORT_STRING);
         }
         foreach ($data as &$val) {
+            if ($val instanceof \stdClass) {
+                $val = (array)$val;
+            }
             if (is_array($val)) {
                 self::recursiveKsort($val);
             }
         }
     }
 
+    # FIX: también recorre listas para encontrar sub-objetos dentro de arrays secuenciales
     private static function collectHashesHybrid(array $data, string $path, array &$index, int $minKeys): void
     {
         foreach ($data as $key => $val) {
-            if (is_array($val) && !empty($val) && !array_is_list($val)) {
-                $childPath = $path === '' ? (string)$key : "$path.$key";
+            if ($val instanceof \stdClass) {
+                $val = (array)$val;
+            }
+            if (!is_array($val) || empty($val)) continue;
 
-                if (count($val) >= $minKeys) {
-                    $hash = hash('xxh128', json_encode($val, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-                    if (isset($index[$hash])) {
-                        $index[$hash]['count']++;
-                    } else {
-                        $index[$hash] = ['count' => 1, 'path' => $childPath, 'data' => $val];
+            $childPath = $path === '' ? (string)$key : "$path.$key";
+
+            if (array_is_list($val)) {
+                # Recorrer listas para encontrar sub-objetos (oneOf, allOf, items, etc.)
+                foreach ($val as $i => $item) {
+                    if ($item instanceof \stdClass) {
+                        $item = (array)$item;
+                    }
+                    if (is_array($item) && !empty($item) && !array_is_list($item)) {
+                        $itemPath = "$childPath.[$i]";
+                        if (count($item) >= $minKeys) {
+                            $json = json_encode($item, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                            if ($json !== false) {
+                                $hash = hash('xxh128', $json);
+                                if (isset($index[$hash])) {
+                                    $index[$hash]['count']++;
+                                } else {
+                                    $index[$hash] = ['count' => 1, 'path' => $itemPath, 'data' => $item];
+                                }
+                            }
+                        }
+                        self::collectHashesHybrid($item, $itemPath, $index, $minKeys);
                     }
                 }
-
+            } else {
+                # Array asociativo
+                if (count($val) >= $minKeys) {
+                    $json = json_encode($val, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                    if ($json !== false) {
+                        $hash = hash('xxh128', $json);
+                        if (isset($index[$hash])) {
+                            $index[$hash]['count']++;
+                        } else {
+                            $index[$hash] = ['count' => 1, 'path' => $childPath, 'data' => $val];
+                        }
+                    }
+                }
                 self::collectHashesHybrid($val, $childPath, $index, $minKeys);
             }
         }
