@@ -275,92 +275,9 @@ class Decoder {
         return !str_contains($str, "\n") && str_contains($str, self::SEMICOLON);
     }
 
-    # Expand minified SCON to indented format
+    # Expand minified SCON to indented format (delegates to Minifier)
     private function expandMinified(string $input): string {
-        $lines = [];
-        $depth = 0;
-        $tokens = $this->tokenizeMinified($input);
-
-        foreach ($tokens as $token) {
-            if ($token === ';;') {
-                $depth = max(0, $depth - 1);
-                continue;
-            }
-            if ($token === ';;;') {
-                $depth = max(0, $depth - 2);
-                continue;
-            }
-
-            # Detect if line introduces a new deeper scope
-            $trimmed = trim($token);
-            if ($trimmed === '') continue;
-
-            $line = str_repeat(' ', $this->indent * $depth) . $trimmed;
-            $lines[] = $line;
-
-            # Auto-detect scope increase (line ends with : and no value)
-            if (preg_match('/:\s*$/', $trimmed) && !preg_match('/:\s*\S/', $trimmed)) {
-                $depth++;
-            }
-        }
-
-        return implode("\n", $lines);
-    }
-
-    # Tokenize minified string respecting quoted strings
-    private function tokenizeMinified(string $input): array {
-        $tokens = [];
-        $buffer = '';
-        $inQuotes = false;
-        $len = strlen($input);
-
-        for ($i = 0; $i < $len; $i++) {
-            $char = $input[$i];
-
-            # Handle escape sequences in quotes
-            if ($char === self::BACKSLASH && $inQuotes && $i + 1 < $len) {
-                $buffer .= $char . $input[$i + 1];
-                $i++;
-                continue;
-            }
-
-            if ($char === self::DOUBLE_QUOTE) {
-                $inQuotes = !$inQuotes;
-                $buffer .= $char;
-                continue;
-            }
-
-            if ($char === self::SEMICOLON && !$inQuotes) {
-                # Check for ;; and ;;;
-                $dedentCount = 1;
-                while ($i + 1 < $len && $input[$i + 1] === self::SEMICOLON) {
-                    $dedentCount++;
-                    $i++;
-                }
-
-                if (trim($buffer) !== '') {
-                    $tokens[] = $buffer;
-                    $buffer = '';
-                }
-
-                if ($dedentCount >= 3) {
-                    $tokens[] = ';;;';
-                } elseif ($dedentCount >= 2) {
-                    $tokens[] = ';;';
-                }
-                # Single ; is just a line break (no special token needed)
-
-                continue;
-            }
-
-            $buffer .= $char;
-        }
-
-        if (trim($buffer) !== '') {
-            $tokens[] = $buffer;
-        }
-
-        return $tokens;
+        return Minifier::expand($input, $this->indent);
     }
 
     # --- TOON-compatible body parsing ---
