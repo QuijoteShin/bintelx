@@ -413,6 +413,13 @@ class Decoder {
             if (strpos($line['content'], self::LIST_ITEM_PREFIX) === 0) {
                 $itemContent = substr($line['content'], strlen(self::LIST_ITEM_PREFIX));
 
+                # Schema/response/security reference as list item (e.g. - @s:name)
+                if (str_starts_with($itemContent, '@s:') || str_starts_with($itemContent, '@r:') || str_starts_with($itemContent, '@sec:')) {
+                    $result[] = $this->resolveReference($itemContent);
+                    $i++;
+                    continue;
+                }
+
                 if ($this->isKeyValueLine($itemContent)) {
                     $obj = $this->decodeListItemObject($line, $parsedLines, $i, $baseDepth);
                     $result[] = $obj;

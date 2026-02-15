@@ -111,6 +111,21 @@ class Encoder {
             $lines[] = $line;
         }
 
+        # Prune orphan schemas: defined but never referenced in the body
+        if ($this->autoExtract && !empty($allSchemas)) {
+            $body = implode("\n", $lines);
+            $pruned = [];
+            foreach ($lines as $line) {
+                if (preg_match('/^s:(\S+)\s/', $line, $m)) {
+                    if (strpos($body, '@s:' . $m[1]) === false) {
+                        continue; # orphan — skip
+                    }
+                }
+                $pruned[] = $line;
+            }
+            $lines = $pruned;
+        }
+
         return implode("\n", $lines);
     }
 
@@ -418,7 +433,7 @@ class Encoder {
         if (in_array($value, [self::TRUE_LITERAL, self::FALSE_LITERAL, self::NULL_LITERAL], true)) return false;
         if (is_numeric($value)) return false;
         if (strpos($value, $this->delimiter) !== false) return false;
-        if (preg_match('/[\s:"\\\\;@#]/', $value)) return false;
+        if (preg_match('/[\s:"\\\\;@#\{\[\]\}]/', $value)) return false;
         return true;
     }
 
