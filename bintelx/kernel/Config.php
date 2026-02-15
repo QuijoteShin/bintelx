@@ -31,7 +31,7 @@ class Config
         }
 
         if (!file_exists($path)) {
-            error_log("Config: .env file not found at: {$path}");
+            Log::logWarning("Config: .env file not found at: {$path}");
             return false;
         }
 
@@ -130,7 +130,7 @@ class Config
         $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
 
         if (!in_array($extension, $allowedExtensions, true)) {
-            error_log("Config: Invalid extension '.{$extension}' for {$secretType}. Allowed: " . implode(', ', $allowedExtensions));
+            Log::logWarning("Config: Invalid extension '.{$extension}' for {$secretType}. Allowed: " . implode(', ', $allowedExtensions));
             return false;
         }
 
@@ -142,7 +142,7 @@ class Config
         $resolvedPath = self::resolveSecretPath($filePath);
 
         if (!file_exists($resolvedPath)) {
-            error_log("Config: Secret file not found for '{$keyName}': {$resolvedPath}");
+            Log::logWarning("Config: Secret file not found for '{$keyName}': {$resolvedPath}");
             return null;
         }
 
@@ -152,7 +152,7 @@ class Config
 
         $content = file_get_contents($resolvedPath);
         if ($content === false) {
-            error_log("Config: Failed to read secret file for '{$keyName}': {$resolvedPath}");
+            Log::logWarning("Config: Failed to read secret file for '{$keyName}': {$resolvedPath}");
             return null;
         }
 
@@ -164,7 +164,7 @@ class Config
         $resolvedPath = self::resolveSecretPath($filePath);
 
         if (!file_exists($resolvedPath)) {
-            error_log("Config: Secret JSON file not found for '{$keyName}': {$resolvedPath}");
+            Log::logWarning("Config: Secret JSON file not found for '{$keyName}': {$resolvedPath}");
             return null;
         }
 
@@ -174,13 +174,13 @@ class Config
 
         $content = file_get_contents($resolvedPath);
         if ($content === false) {
-            error_log("Config: Failed to read secret JSON file for '{$keyName}': {$resolvedPath}");
+            Log::logWarning("Config: Failed to read secret JSON file for '{$keyName}': {$resolvedPath}");
             return null;
         }
 
         $decoded = json_decode($content, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log("Config: Invalid JSON in secret file for '{$keyName}': " . json_last_error_msg());
+            Log::logWarning("Config: Invalid JSON in secret file for '{$keyName}': " . json_last_error_msg());
             return null;
         }
 
@@ -306,7 +306,7 @@ class Config
 
         $decoded = json_decode($value, $assoc);
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log("Config: Failed to decode JSON for '{$key}': " . json_last_error_msg());
+            Log::logWarning("Config: Failed to decode JSON for '{$key}': " . json_last_error_msg());
             return $default;
         }
 
