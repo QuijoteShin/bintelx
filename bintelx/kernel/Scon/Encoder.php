@@ -29,6 +29,7 @@ class Encoder {
     private SchemaRegistry $registry;
     private array $extractedSchemas; # auto-detected schemas for dedup
     private bool $autoExtract;
+    private array $warnings = [];
 
     public function __construct(array $options = []) {
         $this->indent = $options['indent'] ?? 2;
@@ -38,10 +39,15 @@ class Encoder {
         $this->autoExtract = $options['autoExtract'] ?? false;
         $this->registry = new SchemaRegistry();
         $this->extractedSchemas = [];
+        $this->warnings = [];
     }
 
     public function getRegistry(): SchemaRegistry {
         return $this->registry;
+    }
+
+    public function getWarnings(): array {
+        return $this->warnings;
     }
 
     # Encode PHP data to SCON string
@@ -410,6 +416,10 @@ class Encoder {
 
     private function encodeString(string $value): string {
         if ($this->isSafeUnquoted($value)) return $value;
+        # Warn on strings that look like incomplete structures
+        if (isset($value[0]) && ($value[0] === '{' || $value[0] === '[')) {
+            $this->warnings[] = "String starts with '{$value[0]}', possible incomplete structure: " . substr($value, 0, 60);
+        }
         return self::DOUBLE_QUOTE . $this->escapeString($value) . self::DOUBLE_QUOTE;
     }
 
