@@ -254,7 +254,9 @@ class Encoder {
             } elseif (is_array($item) && !$this->isSequentialArray($item)) {
                 yield from $this->encodeObjectAsListItem($item, $depth + 1);
             } elseif (is_array($item) && $this->isSequentialArray($item)) {
-                if ($this->isArrayOfPrimitives($item)) {
+                if (empty($item)) {
+                    yield $this->indentedListItem($depth + 1, '[]');
+                } elseif ($this->isArrayOfPrimitives($item)) {
                     $subHeader = $this->formatHeader(count($item), null);
                     $values = $this->encodeAndJoinPrimitives($item);
                     yield $this->indentedListItem($depth + 1, "$subHeader $values");

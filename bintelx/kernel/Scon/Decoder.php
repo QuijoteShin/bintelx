@@ -462,6 +462,16 @@ class Decoder {
             if ($nextLine['depth'] < $contDepth) break;
             if ($nextLine['depth'] === $contDepth) {
                 if (strpos($nextLine['content'], self::LIST_ITEM_PREFIX) === 0) break;
+                # Array header in continuation (e.g. tags[2]: x, y)
+                if ($this->isArrayHeader($nextLine['content'])) {
+                    $header = $this->parseArrayHeader($nextLine['content']);
+                    if ($header['key'] !== null) {
+                        $result[$header['key']] = $this->decodeArrayFromHeader($i, $parsedLines);
+                        $i++;
+                        while ($i < count($parsedLines) && $parsedLines[$i]['depth'] > $contDepth) $i++;
+                        continue;
+                    }
+                }
                 if ($this->isKeyValueLine($nextLine['content'])) {
                     list($k, $v, $nextIdx) = $this->decodeKeyValue($nextLine, $parsedLines, $i, $contDepth);
                     $result[$k] = $v;

@@ -7,8 +7,8 @@ class Minifier {
     # Minify SCON to single line
     # Rules:
     #   ; = newline (same depth)
-    #   ;; = dedent 1 level
-    #   ;;; = dedent 2 levels
+    #   N semicolons (N>=2) = dedent (N-1) levels
+    #   ;; = dedent 1, ;;; = dedent 2, ;;;; = dedent 3, etc.
     #   Strings with ; must be quoted (\; escape)
     public static function minify(string $scon): string {
         $lines = explode("\n", $scon);
@@ -100,11 +100,9 @@ class Minifier {
 
                 $buffer = '';
 
-                # Apply dedent
-                if ($semiCount >= 3) {
-                    $depth = max(0, $depth - 2);
-                } elseif ($semiCount >= 2) {
-                    $depth = max(0, $depth - 1);
+                # Apply dedent: N semicolons = dedent (N-1) levels
+                if ($semiCount >= 2) {
+                    $depth = max(0, $depth - ($semiCount - 1));
                 }
 
                 continue;
