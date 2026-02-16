@@ -259,9 +259,15 @@ class Upload
         $tempDir = self::getTempPath() . '/' . $uploadId;
         $chunkFile = $tempDir . '/chunk_' . str_pad($chunkIndex, 6, '0', STR_PAD_LEFT);
 
-        # Stream copy from php://input to php://temp, then to file
-        # This is memory-efficient and secure
-        $input = fopen('php://input', 'rb');
+        # Leer body binario: php://input (FPM) o SWOOLE_RAW_CONTENT (Channel Server)
+        # En Swoole php://input está vacío → channel.server inyecta rawContent() en $_SERVER
+        if (!empty($_SERVER['SWOOLE_RAW_CONTENT'])) {
+            $input = fopen('php://temp', 'r+b');
+            fwrite($input, $_SERVER['SWOOLE_RAW_CONTENT']);
+            rewind($input);
+        } else {
+            $input = fopen('php://input', 'rb');
+        }
         if ($input === false) {
             return ['success' => false, 'message' => 'Failed to open input stream'];
         }

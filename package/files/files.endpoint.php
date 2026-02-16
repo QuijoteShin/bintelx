@@ -66,17 +66,17 @@ Router::register(['POST'], 'upload/init', function() {
  * @purpose    Upload a chunk
  */
 Router::register(['PUT'], 'upload/(?P<uploadId>[a-f0-9]+)/chunk', function($uploadId) {
-    # chunk_index comes from query string (php://input is binary, not consumed here)
+    # chunk_index comes from query string (body es binario, no JSON)
     $chunkIndex = (int)($_GET['chunk_index'] ?? 0);
 
-    # Upload::chunk reads php://input directly with stream_copy_to_stream
+    # Upload::chunk lee body binario via php://input (FPM) o SWOOLE_RAW_CONTENT
     $result = Upload::chunk([
         'upload_id' => $uploadId,
         'chunk_index' => $chunkIndex
     ], ['scope_entity_id' => Profile::ctx()->scopeEntityId]);
 
     return Response::json(['data' => $result]);
-}, ROUTER_SCOPE_WRITE);
+}, ROUTER_SCOPE_WRITE, ['transport' => 'http']);
 
 /**
  * @endpoint   /api/files/upload/{uploadId}/complete
@@ -126,7 +126,7 @@ Router::register(['POST'], 'upload/(?P<uploadId>[a-f0-9]+)/abort', function($upl
  * @purpose    Simple single-request upload (for small files)
  * @body       Multipart form with 'file' field
  */
-Router::register(['POST'], 'upload-simple', function() {
+Router::register(['POST'], 'upload-simple', function() {  # $_FILES solo existe en FPM/HTTP
     if (empty($_FILES['file'])) {
         return Response::json(['data' => ['success' => false, 'message' => 'No file uploaded']], 400);
     }
@@ -163,7 +163,7 @@ Router::register(['POST'], 'upload-simple', function() {
         'size_bytes' => $storeResult['size_bytes'],
         'deduplicated' => $storeResult['deduplicated']
     ]], 201);
-}, ROUTER_SCOPE_PRIVATE);
+}, ROUTER_SCOPE_PRIVATE, ['transport' => 'http']);
 
 /**
  * @endpoint   /api/files/documents
@@ -199,7 +199,7 @@ Router::register(['GET'], 'documents/(?P<id>\d+)', function($id) {
  * @query      filename (optional) - Custom filename for download
  * @query      inline (optional) - If set, use Content-Disposition: inline for browser viewing
  */
-Router::register(['GET'], 'documents/(?P<id>\d+)/download', function($id) {
+Router::register(['GET'], 'documents/(?P<id>\d+)/download', function($id) {  # Streaming binario
     $resolve = Delivery::resolve(
         ['document_id' => (int)$id],
         ['scope_entity_id' => Profile::ctx()->scopeEntityId]
@@ -223,7 +223,30 @@ Router::register(['GET'], 'documents/(?P<id>\d+)/download', function($id) {
 
     Delivery::stream($fileInfo);
     exit;
-}, ROUTER_SCOPE_PRIVATE);
+}, ROUTER_SCOPE_PRIVATE, ['transport' => 'http']);
+
+/**
+ * @endpoint   /api/files/documents/{id}/inline
+ * @method     GET
+ * @scope      ROUTER_SCOPE_PRIVATE
+ * @purpose    Inline view (PDF, images, etc.) — Content-Disposition: inline
+ */
+Router::register(['GET'], 'documents/(?P<id>\d+)/inline', function($id) {
+    $resolve = Delivery::resolve(
+        ['document_id' => (int)$id],
+        ['scope_entity_id' => Profile::ctx()->scopeEntityId]
+    );
+
+    if (!$resolve['allowed']) {
+        return Response::json(['data' => ['success' => false, 'reason' => $resolve['reason']]], 403);
+    }
+
+    $fileInfo = $resolve['file_info'];
+    $fileInfo['inline'] = true;
+
+    Delivery::stream($fileInfo);
+    exit;
+}, ROUTER_SCOPE_PRIVATE, ['transport' => 'http']);
 
 /**
  * @endpoint   /api/files/documents/{id}/link
@@ -267,4 +290,4 @@ Router::register(['GET'], 'public/(?P<linkId>[a-f0-9]+)', function($linkId) {
 
     Delivery::stream($resolve['file_info']);
     exit;
-}, ROUTER_SCOPE_PUBLIC);
+}, ROUTER_SCOPE_PUBLIC, ['transport' => 'http']);
