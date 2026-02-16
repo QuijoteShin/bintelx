@@ -391,14 +391,16 @@ class EDC {
                 throw new Exception('Not authenticated');
             }
 
-            // Obtener metadata de response
+            # Obtener metadata de response (con filtro tenant)
             $sql = "SELECT r.form_definition_id, r.scope_entity_id, r.status,
                            d.form_name
                     FROM edc_form_responses r
                     JOIN edc_form_definitions d ON r.form_definition_id = d.form_definition_id
                     WHERE r.form_response_id = :rid";
+            $params = [':rid' => $formResponseId];
+            $sql = Tenant::applySql($sql, 'r.scope_entity_id', [], $params);
 
-            $rows = CONN::dml($sql, [':rid' => $formResponseId]);
+            $rows = CONN::dml($sql, $params);
             if (empty($rows)) {
                 throw new Exception("Response not found: $formResponseId");
             }
@@ -532,7 +534,7 @@ class EDC {
         ?array $fieldIds = null
     ): array {
         try {
-            // Obtener metadata
+            # Obtener metadata (con filtro tenant)
             $sql = "SELECT r.form_response_id, r.form_definition_id, r.status, r.version_number,
                            r.submitted_at, r.locked_at, r.respondent_profile_id,
                            r.scope_entity_id, r.metadata_json, r.created_at,
@@ -540,8 +542,10 @@ class EDC {
                     FROM edc_form_responses r
                     JOIN edc_form_definitions d ON r.form_definition_id = d.form_definition_id
                     WHERE r.form_response_id = :rid";
+            $params = [':rid' => $formResponseId];
+            $sql = Tenant::applySql($sql, 'r.scope_entity_id', [], $params);
 
-            $rows = CONN::dml($sql, [':rid' => $formResponseId]);
+            $rows = CONN::dml($sql, $params);
             if (empty($rows)) {
                 return ['success' => false, 'message' => 'Response not found'];
             }
@@ -611,16 +615,18 @@ class EDC {
      */
     public static function lockResponse(int $formResponseId, int $actorProfileId): array {
         try {
-            $result = CONN::nodml(
-                "UPDATE edc_form_responses
+            # UPDATE con filtro tenant (previene lock cross-tenant)
+            $lockSql = "UPDATE edc_form_responses
                  SET status = 'locked',
                      locked_at = NOW(),
                      locked_by_profile_id = :actor,
                      updated_at = NOW()
                  WHERE form_response_id = :rid
-                   AND status IN ('in_progress', 'submitted')",
-                [':rid' => $formResponseId, ':actor' => $actorProfileId]
-            );
+                   AND status IN ('in_progress', 'submitted')";
+            $lockParams = [':rid' => $formResponseId, ':actor' => $actorProfileId];
+            $lockSql = Tenant::applySql($lockSql, 'scope_entity_id', [], $lockParams);
+
+            $result = CONN::nodml($lockSql, $lockParams);
 
             if ($result['rowCount'] === 0) {
                 return ['success' => false, 'message' => 'Response not found or already locked'];
@@ -652,9 +658,11 @@ class EDC {
         ?string $eventContext = null
     ): array {
         try {
-            // Obtener form_definition_id
+            # Obtener form_definition_id CON filtro de tenant (seguridad cross-tenant)
             $sql = "SELECT form_definition_id FROM edc_form_responses WHERE form_response_id = :rid";
-            $rows = CONN::dml($sql, [':rid' => $formResponseId]);
+            $params = [':rid' => $formResponseId];
+            $sql = Tenant::applySql($sql, 'scope_entity_id', [], $params);
+            $rows = CONN::dml($sql, $params);
             if (empty($rows)) {
                 return ['success' => false, 'message' => 'Response not found'];
             }
@@ -721,12 +729,12 @@ class EDC {
                 $params[':status'] = $filters['status'];
             }
 
-            if (array_key_exists('scope_entity_id', $filters)) {
-                $scopeOpts = $filters['scope_entity_id'] !== null
-                    ? ['scope_entity_id' => $filters['scope_entity_id']]
-                    : [];
-                $sql = Tenant::applySql($sql, 'r.scope_entity_id', $scopeOpts, $params);
+            # Tenant filter SIEMPRE (scope=NULL → AND 1=0)
+            $scopeOpts = [];
+            if (array_key_exists('scope_entity_id', $filters) && $filters['scope_entity_id'] !== null) {
+                $scopeOpts['scope_entity_id'] = $filters['scope_entity_id'];
             }
+            $sql = Tenant::applySql($sql, 'r.scope_entity_id', $scopeOpts, $params);
 
             # Responses con datos primero, luego por fecha DESC
             $sql .= " ORDER BY (r.data_capture_context_group_id IS NOT NULL) DESC, r.created_at DESC";

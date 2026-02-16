@@ -468,6 +468,10 @@ class DataCaptureService {
                         AND h.variable_id = :vid";
 
             $params = [':eid' => $entityId, ':vid' => (int)$def['variable_id']];
+
+            # Filtro de tenant en context_groups (seguridad cross-tenant)
+            $sql = Tenant::applySql($sql, 'cg.scope_entity_id', [], $params);
+
             if ($macroContext !== null) {
                 $sql .= " AND cg.macro_context = :macro";
                 $params[':macro'] = $macroContext;

@@ -28,7 +28,7 @@ use bX\Args;
 Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
     
 
-    $data = json_decode(file_get_contents('php://input'), true) ?? [];
+    $data = Args::ctx()->opt;;
     $actorId = Profile::ctx()->accountId;
     $scopeId = Profile::ctx()->scopeEntityId ?: null;
 
@@ -142,7 +142,7 @@ Router::register(['GET'], 'v1/forms/(?P<formName>[a-zA-Z0-9_-]+)/responses', fun
 Router::register(['POST'], 'v1/responses', function() {
     
 
-    $data = json_decode(file_get_contents('php://input'), true) ?? [];
+    $data = Args::ctx()->opt;;
     $respondentId = Profile::ctx()->accountId;
     $scopeId = Profile::ctx()->scopeEntityId ?: null;
 
@@ -179,7 +179,7 @@ Router::register(['POST'], 'v1/responses', function() {
 Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/data', function($responseId) {
     
 
-    $data = json_decode(file_get_contents('php://input'), true) ?? [];
+    $data = Args::ctx()->opt;;
 
     if (empty($data['fields'])) {
         
@@ -229,7 +229,7 @@ Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)', function($response
  */
 Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/snapshot', function($responseId) {
 
-    $data = json_decode(file_get_contents('php://input'), true) ?? [];
+    $data = Args::ctx()->opt;;
 
     $fieldIds = $data['field_ids'] ?? null;
     if ($fieldIds !== null && !is_array($fieldIds)) {
