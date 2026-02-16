@@ -23,9 +23,14 @@
  *   --port=9501        (default: 8000)
  */
 
-# CRÍTICO: Habilitar hooks ANTES de cualquier otra cosa
-# Esto hace que PDO, file_get_contents, sleep, etc. sean non-blocking
-# Cada coroutine tendrá su propia conexión DB aislada (ver CONN::getCoroutineConnection)
+# Xdebug + Swoole coroutines = SIGSEGV (github.com/swoole/swoole-src/issues/5802)
+if (extension_loaded('xdebug')) {
+    fwrite(STDERR, "ERROR: Xdebug loaded. Channel server refuses to start.\n");
+    fwrite(STDERR, "Fix: sudo mv /etc/php/8.4/cli/conf.d/20-xdebug.ini{,.disabled}\n");
+    exit(1);
+}
+
+# Habilitar hooks ANTES de cualquier otra cosa (PDO, file_get_contents, sleep → non-blocking)
 \Swoole\Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
 
 require_once __DIR__ . '/../bintelx/WarmUp.php';
@@ -299,10 +304,16 @@ class ChannelServer
     public function onOpen(Swoole\WebSocket\Server $server, Swoole\Http\Request $request): void
     {
         $fd = $request->fd;
-        $ua = $request->header['user-agent'] ?? 'none';
-        $path = $request->server['request_uri'] ?? '/';
         $origin = $request->header['origin'] ?? 'none';
-        $this->info("New connection: fd={$fd}, remote={$request->server['remote_addr']}, path={$path}, origin={$origin}, ua=" . substr($ua, 0, 80));
+        $this->info("New connection: fd={$fd}, origin={$origin}");
+
+        # Origin check: rechazar conexiones de origins no permitidos
+        $allowedOrigins = array_filter(array_map('trim', explode(',', Config::get('CHANNEL_ALLOWED_ORIGINS', 'https://dev.local'))));
+        if ($origin !== 'none' && !in_array($origin, $allowedOrigins, true)) {
+            $this->info("Rejected fd={$fd}: origin '{$origin}' not allowed");
+            $server->close($fd);
+            return;
+        }
 
         $server->push($fd, json_encode([
             'type' => 'system',
@@ -530,14 +541,16 @@ class ChannelServer
             $route = new Router($uri, '/api');
 
             # FD per-coroutine (aislado entre requests concurrentes del mismo worker)
-            \Swoole\Coroutine::getContext()->ws_fd = $fd;
+            $ctx = \Swoole\Coroutine::getContext();
+            $ctx->ws_fd = $fd;
+            $ctx->http_status = 200;
 
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
 
-            # Capturar HTTP status code (Response::send() lo setea via http_response_code())
-            $statusCode = http_response_code() ?: 200;
+            # Status code coroutine-safe (evita race condition con http_response_code() global)
+            $statusCode = $ctx->http_status ?? (http_response_code() ?: 200);
 
             # Parse JSON response
             $responseData = json_decode($output, true) ?? ['raw' => $output];

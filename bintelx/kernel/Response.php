@@ -122,9 +122,12 @@ class Response
     # Send response
     public function send(): void
     {
-        # Set HTTP status code
+        # Set HTTP status code (global + coroutine-safe para Channel Server)
         if (!headers_sent()) {
             http_response_code($this->statusCode);
+        }
+        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::getContext()->http_status = $this->statusCode;
         }
 
         switch ($this->type) {
