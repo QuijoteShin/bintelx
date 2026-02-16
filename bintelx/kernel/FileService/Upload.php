@@ -175,7 +175,7 @@ class Upload
             ':name' => $originalName,
             ':mime' => $mimeType,
             ':scope' => $tenant['scope'],
-            ':created_by' => Profile::$profile_id ?: null,
+            ':created_by' => Profile::ctx()->profileId ?: null,
             ':expires' => $expiresAt
         ]);
 

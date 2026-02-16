@@ -19,12 +19,12 @@ use bX\FileService\Delivery;
  * @body       (JSON) {"hash": "sha256..."}
  */
 Router::register(['POST'], 'check', function() {
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
-    $result = Upload::check(Args::$OPT, $options);
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
+    $result = Upload::check(Args::ctx()->opt, $options);
 
     # If storage exists but no document for this tenant, create one
     if ($result['success'] && $result['exists'] && empty($result['document_id'])) {
-        $hash = Args::$OPT['hash'] ?? '';
+        $hash = Args::ctx()->opt['hash'] ?? '';
         $storageInfo = Storage::info($hash);
 
         if ($storageInfo) {
@@ -32,8 +32,8 @@ Router::register(['POST'], 'check', function() {
                 'storage_key' => $hash,
                 'hash' => $hash,
                 'size_bytes' => $storageInfo['size_bytes'],
-                'mime_type' => Args::$OPT['mime_type'] ?? $storageInfo['mime_type'],
-                'original_name' => Args::$OPT['original_name'] ?? 'unnamed'
+                'mime_type' => Args::ctx()->opt['mime_type'] ?? $storageInfo['mime_type'],
+                'original_name' => Args::ctx()->opt['original_name'] ?? 'unnamed'
             ], $options);
 
             if ($docResult['success']) {
@@ -54,7 +54,7 @@ Router::register(['POST'], 'check', function() {
  * @body       (JSON) {"hash": "...", "size_bytes": 1024, "original_name": "file.pdf", "mime_type": "application/pdf"}
  */
 Router::register(['POST'], 'upload/init', function() {
-    $result = Upload::init(Args::$OPT, ['scope_entity_id' => Profile::$scope_entity_id]);
+    $result = Upload::init(Args::ctx()->opt, ['scope_entity_id' => Profile::ctx()->scopeEntityId]);
     $code = $result['success'] ? 201 : 400;
     return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_WRITE);
@@ -73,7 +73,7 @@ Router::register(['PUT'], 'upload/(?P<uploadId>[a-f0-9]+)/chunk', function($uplo
     $result = Upload::chunk([
         'upload_id' => $uploadId,
         'chunk_index' => $chunkIndex
-    ], ['scope_entity_id' => Profile::$scope_entity_id]);
+    ], ['scope_entity_id' => Profile::ctx()->scopeEntityId]);
 
     return Response::json(['data' => $result]);
 }, ROUTER_SCOPE_WRITE);
@@ -87,7 +87,7 @@ Router::register(['PUT'], 'upload/(?P<uploadId>[a-f0-9]+)/chunk', function($uplo
 Router::register(['POST'], 'upload/(?P<uploadId>[a-f0-9]+)/complete', function($uploadId) {
     $result = Upload::complete(
         ['upload_id' => $uploadId],
-        ['scope_entity_id' => Profile::$scope_entity_id]
+        ['scope_entity_id' => Profile::ctx()->scopeEntityId]
     );
 
     # Never expose internal paths to client
@@ -150,7 +150,7 @@ Router::register(['POST'], 'upload-simple', function() {
         'size_bytes' => $storeResult['size_bytes'],
         'mime_type' => $file['type'] ?: 'application/octet-stream',
         'original_name' => $file['name']
-    ], ['scope_entity_id' => Profile::$scope_entity_id]);
+    ], ['scope_entity_id' => Profile::ctx()->scopeEntityId]);
 
     if (!$docResult['success']) {
         return Response::json(['data' => $docResult], 500);
@@ -172,7 +172,7 @@ Router::register(['POST'], 'upload-simple', function() {
  * @purpose    List documents
  */
 Router::register(['GET'], 'documents', function() {
-    $result = Document::list(Args::$OPT, ['scope_entity_id' => Profile::$scope_entity_id]);
+    $result = Document::list(Args::ctx()->opt, ['scope_entity_id' => Profile::ctx()->scopeEntityId]);
     return Response::json(['data' => $result]);
 }, ROUTER_SCOPE_PRIVATE);
 
@@ -185,7 +185,7 @@ Router::register(['GET'], 'documents', function() {
 Router::register(['GET'], 'documents/(?P<id>\d+)', function($id) {
     $result = Document::get(
         ['document_id' => (int)$id],
-        ['scope_entity_id' => Profile::$scope_entity_id]
+        ['scope_entity_id' => Profile::ctx()->scopeEntityId]
     );
     $code = $result['success'] ? 200 : 404;
     return Response::json(['data' => $result], $code);
@@ -202,7 +202,7 @@ Router::register(['GET'], 'documents/(?P<id>\d+)', function($id) {
 Router::register(['GET'], 'documents/(?P<id>\d+)/download', function($id) {
     $resolve = Delivery::resolve(
         ['document_id' => (int)$id],
-        ['scope_entity_id' => Profile::$scope_entity_id]
+        ['scope_entity_id' => Profile::ctx()->scopeEntityId]
     );
 
     if (!$resolve['allowed']) {
@@ -233,10 +233,10 @@ Router::register(['GET'], 'documents/(?P<id>\d+)/download', function($id) {
  * @body       (JSON) {"expires_in": 3600, "access_code": "secret123", "download_limit": 5}
  */
 Router::register(['POST'], 'documents/(?P<id>\d+)/link', function($id) {
-    $data = Args::$OPT;
+    $data = Args::ctx()->opt;
     $data['document_id'] = (int)$id;
 
-    $result = Delivery::createPublicLink($data, ['scope_entity_id' => Profile::$scope_entity_id]);
+    $result = Delivery::createPublicLink($data, ['scope_entity_id' => Profile::ctx()->scopeEntityId]);
     $code = $result['success'] ? 201 : 400;
     return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_WRITE);
@@ -248,7 +248,7 @@ Router::register(['POST'], 'documents/(?P<id>\d+)/link', function($id) {
  * @purpose    Download via public link
  */
 Router::register(['GET'], 'public/(?P<linkId>[a-f0-9]+)', function($linkId) {
-    $accessCode = Args::$OPT['code'] ?? $_GET['code'] ?? null;
+    $accessCode = Args::ctx()->opt['code'] ?? $_GET['code'] ?? null;
 
     $resolve = Delivery::resolvePublicLink([
         'link_id' => $linkId,

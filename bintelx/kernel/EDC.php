@@ -386,7 +386,7 @@ class EDC {
         CONN::begin();
         try {
             // Actor desde sesión
-            $actorId = Profile::$account_id;
+            $actorId = Profile::ctx()->accountId;
             if (!$actorId) {
                 throw new Exception('Not authenticated');
             }

@@ -8,16 +8,23 @@ namespace bX;
  * Manages user profiles in the target schema (bintelx_core).
  * Uses CONN directly with real field names (no DatabaseAdapter).
  *
+ * Per-request state lives in coroutine context via CoroutineAware trait.
+ * Static methods remain static (backward compatible) — internally use self::ctx()->prop.
+ *
  * @package bX
- * @version 3.0 - Simplified for target schema only
+ * @version 4.0 - Coroutine-safe via CoroutineAware
  */
 class Profile {
-    // Processed data from the loaded profile row
+    use CoroutineAware;
+
+    # Instance data for individual profile reads (not per-request context)
     private array $data = [];
-    // Raw data from the database for the loaded profile row
     private array $data_raw = [];
+
+    # Global-immutable schema cache (safe as static in Swoole)
     private static bool $rolePermissionsColumnChecked = false;
     private static bool $rolePermissionsColumnExists = false;
+
     private const ROUTER_SCOPE_WEIGHTS = [
         'write' => 4,
         'read' => 3,
@@ -26,17 +33,18 @@ class Profile {
         'public' => 0,
     ];
 
-    // Static properties to hold the current user's context for the request
-    public static int $profile_id = 0;
-    public static int $account_id = 0;
-    public static int $entity_id = 0; // The main entity linked to this profile (primary_entity_id in DB)
-    public static int $scope_entity_id = 0; // Current tenant/scope from JWT (multi-tenant)
-    public static bool $isLoggedIn = false;
-    public static array $roles = [];
-    public static array $userPermissions = [];
-
-    // Cache for ACL (allowed scopes per request)
-    private static ?array $cachedAllowedScopes = null;
+    # Per-request state (coroutine-isolated via ctx())
+    public int $profileId = 0;
+    public int $accountId = 0;
+    public int $entityId = 0;
+    public int $scopeEntityId = 0;
+    public bool $isLoggedIn = false;
+    public array $roles = [];
+    public array $permissions = [
+        'routes' => ['*' => 'public'],
+        'roles' => []
+    ];
+    public ?array $cachedAllowedScopes = null;
 
     /**
      * Constructor
@@ -48,10 +56,9 @@ class Profile {
 
     /**
      * Checks if a user is currently logged in
-     * @return bool
      */
     public static function isLoggedIn(): bool {
-        return self::$isLoggedIn && self::$account_id > 0 && self::$profile_id > 0;
+        return self::ctx()->isLoggedIn && self::ctx()->accountId > 0 && self::ctx()->profileId > 0;
     }
 
     /**
@@ -68,11 +75,10 @@ class Profile {
         $primaryEntityId = $profileData['primary_entity_id'] ?? null;
         $profileName = $profileData['profile_name'] ?? "Profile #{$existingId}";
         $status = $profileData['status'] ?? 'active';
-        // Allow override for actor_profile_id (useful for first account creation)
-        $actorProfileId = $profileData['actor_profile_id'] ?? (self::$profile_id ?: null);
+        # Allow override for actor_profile_id (useful for first account creation)
+        $actorProfileId = $profileData['actor_profile_id'] ?? (self::ctx()->profileId ?: null);
 
         if ($existingId > 0) {
-            // Update existing record
             $query = "UPDATE profiles
                 SET
                     primary_entity_id = :primary_entity_id,
@@ -100,7 +106,6 @@ class Profile {
             return $existingId;
 
         } else {
-            // Create new record
             $query = "INSERT INTO profiles
                 (account_id, primary_entity_id, profile_name, status, created_by_profile_id, updated_by_profile_id)
                 VALUES
@@ -128,7 +133,7 @@ class Profile {
     }
 
     /**
-     * Loads a profile by account_id and populates static properties
+     * Loads a profile by account_id and populates per-request context
      * This is typically called after successful login to set up the user's session context
      *
      * @param array $criteria Associative array for lookup, typically ['account_id' => int]
@@ -141,35 +146,32 @@ class Profile {
             return false;
         }
 
-        // Reset static properties before loading a new profile
+        # Reset context before loading a new profile
         self::resetStaticProfileData();
 
         $query = "SELECT * FROM profiles WHERE account_id = :account_id LIMIT 1";
         $params = [':account_id' => (int)$criteria['account_id']];
 
-
         $profileData = null;
 
-        // Use callback to get first row efficiently without loading full array
         CONN::dml($query, $params, function($row) use (&$profileData) {
             $profileData = $row;
-            return false; // Stop after first row
+            return false;
         });
 
-        self::$isLoggedIn = true;
-        self::$account_id = (int)$criteria['account_id'];
+        self::ctx()->isLoggedIn = true;
+        self::ctx()->accountId = (int)$criteria['account_id'];
         if ($profileData !== null) {
             $this->data_raw = $profileData;
             $this->data = $profileData;
 
-            // Populate static properties
-            self::$profile_id = $profileData['profile_id'] ?? 0;
-            self::$entity_id = $profileData['primary_entity_id'] ?? 0;
+            self::ctx()->profileId = $profileData['profile_id'] ?? 0;
+            self::ctx()->entityId = $profileData['primary_entity_id'] ?? 0;
 
-            // Load user permissions
-            self::loadUserPermissions(self::$account_id);
+            # Load user permissions
+            self::loadUserPermissions(self::ctx()->accountId);
 
-            Log::logInfo("Profile loaded: account_id=" . self::$account_id . ", profile_id=" . self::$profile_id . ", entity_id=" . self::$entity_id);
+            Log::logInfo("Profile loaded: account_id=" . self::ctx()->accountId . ", profile_id=" . self::ctx()->profileId . ", entity_id=" . self::ctx()->entityId);
             return true;
         }
 
@@ -179,54 +181,42 @@ class Profile {
 
     /**
      * Loads user permissions/roles for the given account
-     *
-     * @param int $accountId
-     * @return void
      */
     private static function loadUserPermissions(int $accountId): void
     {
-        self::$roles = [];
-        self::$userPermissions = [
+        self::ctx()->roles = [];
+        self::ctx()->permissions = [
             'routes' => ['*' => 'private'],
             'roles' => []
         ];
 
-        if (self::$profile_id <= 0) {
+        if (self::ctx()->profileId <= 0) {
             Log::logWarning("Profile::loadUserPermissions - profile not initialized for account_id={$accountId}");
             return;
         }
 
-        $relationships = self::fetchProfileRelationships(self::$profile_id);
-        $roleAssignments = self::fetchProfileRoles(self::$profile_id);
+        $relationships = self::fetchProfileRelationships(self::ctx()->profileId);
+        $roleAssignments = self::fetchProfileRoles(self::ctx()->profileId);
         self::hydrateRoleCaches($relationships, $roleAssignments);
 
-        $roleCount = count(self::$roles['by_role'] ?? []);
-        $routeCount = count(self::$userPermissions['routes'] ?? []);
-        Log::logDebug("Permissions loaded for profile_id=" . self::$profile_id . " (roles={$roleCount}, route_rules={$routeCount})");
+        $roleCount = count(self::ctx()->roles['by_role'] ?? []);
+        $routeCount = count(self::ctx()->permissions['routes'] ?? []);
+        Log::logDebug("Permissions loaded for profile_id=" . self::ctx()->profileId . " (roles={$roleCount}, route_rules={$routeCount})");
     }
 
     /**
-     * Resets all static profile data (used before loading a new profile or on logout)
+     * Resets all per-request profile data.
+     * Call at start AND finally of each request boundary.
      */
     public static function resetStaticProfileData(): void
     {
-        self::$profile_id = 0;
-        self::$account_id = 0;
-        self::$entity_id = 0;
-        self::$scope_entity_id = 0;
-        self::$isLoggedIn = false;
-        self::$roles = [];
-        self::$userPermissions = [
-            'routes' => ['*' => 'public'],
-            'roles' => []
-        ];
-        self::$cachedAllowedScopes = null;
+        self::resetCtx();
 
         # Reset Tenant cache to prevent stale admin bypass between requests
         Tenant::resetCache();
 
-        # Reset Entity static context
-        Entity::reset();
+        # Reset Entity context
+        Entity::resetCtx();
     }
 
     /**
@@ -240,8 +230,8 @@ class Profile {
      */
     public static function hasRole(?int $profileId = null, ?int $scopeEntityId = null, string|array $roleCode = '', bool $includePassive = true): bool
     {
-        $profileId = $profileId ?? self::$profile_id;
-        $scopeEntityId = $scopeEntityId ?? (self::$scope_entity_id > 0 ? self::$scope_entity_id : null);
+        $profileId = $profileId ?? self::ctx()->profileId;
+        $scopeEntityId = $scopeEntityId ?? (self::ctx()->scopeEntityId > 0 ? self::ctx()->scopeEntityId : null);
 
         # Normalize to array
         $roleCodes = is_array($roleCode) ? $roleCode : [$roleCode];
@@ -251,7 +241,7 @@ class Profile {
         }
 
         # Cache path: check each role (ANY match = true)
-        if ($profileId === self::$profile_id && !empty(self::$roles['by_role'])) {
+        if ($profileId === self::ctx()->profileId && !empty(self::ctx()->roles['by_role'])) {
             foreach ($roleCodes as $code) {
                 if (self::hasRoleInCache($scopeEntityId, $code, $includePassive)) {
                     return true;
@@ -296,8 +286,8 @@ class Profile {
      */
     public static function hasOwnership(int $profileId, int $entityId): bool
     {
-        if ($profileId === self::$profile_id && !empty(self::$roles['ownership'])) {
-            return isset(self::$roles['ownership'][$entityId]);
+        if ($profileId === self::ctx()->profileId && !empty(self::ctx()->roles['ownership'])) {
+            return isset(self::ctx()->roles['ownership'][$entityId]);
         }
 
         $sql = "SELECT COUNT(*) AS total
@@ -319,14 +309,11 @@ class Profile {
      */
     public static function getRoutePermissions(): array
     {
-        return self::$userPermissions['routes'] ?? ['*' => 'private'];
+        return self::ctx()->permissions['routes'] ?? ['*' => 'private'];
     }
 
     /**
      * Gets profile data for a specific entity
-     *
-     * @param int $entityId
-     * @return bool
      */
     public function read(int $entityId): bool
     {
@@ -340,10 +327,9 @@ class Profile {
 
         $profileData = null;
 
-        // Use callback to get first row efficiently
         CONN::dml($query, $params, function($row) use (&$profileData) {
             $profileData = $row;
-            return false; // Stop after first row
+            return false;
         });
 
         if ($profileData !== null) {
@@ -360,7 +346,6 @@ class Profile {
 
     /**
      * Gets the processed data for this profile instance
-     * @return array
      */
     public function getData(): array
     {
@@ -369,7 +354,6 @@ class Profile {
 
     /**
      * Gets the raw data for this profile instance
-     * @return array
      */
     public function getRawData(): array
     {
@@ -378,48 +362,38 @@ class Profile {
 
     /**
      * Formats raw database data (placeholder for future use)
-     * @param array $rawData
-     * @return array
      */
     private function formatData(array $rawData): array
     {
-        // For now, just return as-is
-        // In the future, could do transformations here
         return $rawData;
     }
 
     /**
-     * Gets the profile_id from static context
-     * @return int
+     * Gets the profile_id from context
      */
     public static function getProfileId(): int
     {
-        return self::$profile_id;
+        return self::ctx()->profileId;
     }
 
     /**
-     * Gets the account_id from static context
-     * @return int
+     * Gets the account_id from context
      */
     public static function getAccountId(): int
     {
-        return self::$account_id;
+        return self::ctx()->accountId;
     }
 
     /**
-     * Gets the entity_id from static context
-     * @return int
+     * Gets the entity_id from context
      */
     public static function getEntityId(): int
     {
-        return self::$entity_id;
+        return self::ctx()->entityId;
     }
 
     /**
      * Fetches active business relationships for a profile (owner, supplier, customer, etc.)
-     * Role assignments are now in profile_roles table
-     *
-     * @return array<int,array<string,mixed>>
      */
     private static function fetchProfileRelationships(int $profileId): array
     {
@@ -446,8 +420,6 @@ class Profile {
 
     /**
      * Fetches role assignments from profile_roles table
-     *
-     * @return array<int,array<string,mixed>>
      */
     private static function fetchProfileRoles(int $profileId): array
     {
@@ -481,9 +453,6 @@ class Profile {
 
     /**
      * Builds the cached structures for roles and router permissions.
-     *
-     * @param array<int,array<string,mixed>> $relationships Business relationships (owner, supplier, etc.)
-     * @param array<int,array<string,mixed>> $roleAssignments Role assignments from profile_roles
      */
     private static function hydrateRoleCaches(array $relationships, array $roleAssignments = []): void
     {
@@ -575,14 +544,14 @@ class Profile {
             }
         }
 
-        self::$roles = [
+        self::ctx()->roles = [
             'assignments' => $assignments,
             'by_role' => $byRole,
             'by_entity' => $byEntity,
             'ownership' => $ownership
         ];
 
-        self::$userPermissions = [
+        self::ctx()->permissions = [
             'routes' => $routeMap,
             'roles' => array_keys($byRole)
         ];
@@ -590,6 +559,7 @@ class Profile {
 
     /**
      * Determines if the roles table exposes the permissions_json column.
+     * Global-immutable schema check — safe as static in Swoole.
      */
     private static function rolesTableHasPermissionsColumn(): bool
     {
@@ -605,8 +575,6 @@ class Profile {
 
     /**
      * Decodes permissions JSON safely.
-     *
-     * @return array<string,mixed>|null
      */
     private static function decodePermissionsJson(?string $json): ?array
     {
@@ -673,12 +641,12 @@ class Profile {
      */
     private static function hasRoleInCache(?int $scopeEntityId, string $roleCode, bool $includePassive): bool
     {
-        if (empty(self::$roles['by_role'][$roleCode])) {
+        if (empty(self::ctx()->roles['by_role'][$roleCode])) {
             return false;
         }
 
         $globalIds = Tenant::globalIds();
-        foreach (self::$roles['by_role'][$roleCode] as $assignment) {
+        foreach (self::ctx()->roles['by_role'][$roleCode] as $assignment) {
             $assignmentScope = $assignment['scopeEntityId'] ?? null;
             # Match if: no scope requested, scope matches, or assignment is global
             if ($scopeEntityId === null || $assignmentScope === $scopeEntityId || in_array($assignmentScope, $globalIds, true)) {
@@ -703,18 +671,18 @@ class Profile {
      */
     public static function getAllowedScopes(): array
     {
-        if (!self::$isLoggedIn || !self::$profile_id) {
+        if (!self::ctx()->isLoggedIn || !self::ctx()->profileId) {
             return [];
         }
 
-        if (self::$cachedAllowedScopes !== null) {
-            return self::$cachedAllowedScopes;
+        if (self::ctx()->cachedAllowedScopes !== null) {
+            return self::ctx()->cachedAllowedScopes;
         }
 
         # Super admin wildcard
-        if (self::$account_id === 1) {
-            self::$cachedAllowedScopes = ['*'];
-            return self::$cachedAllowedScopes;
+        if (self::ctx()->accountId === 1) {
+            self::ctx()->cachedAllowedScopes = ['*'];
+            return self::ctx()->cachedAllowedScopes;
         }
 
         $scopes = [];
@@ -734,19 +702,19 @@ class Profile {
              WHERE profile_id = :profile_id
                AND status = 'active'
                {$excludeClause}",
-            [':profile_id' => self::$profile_id],
+            [':profile_id' => self::ctx()->profileId],
             function(array $row) use (&$scopes) {
                 $scopes[] = (int)$row['scope_entity_id'];
             }
         );
 
         # Fallback: if no scopes found, use profile's own entity_id
-        if (empty($scopes) && self::$entity_id > 0) {
-            $scopes[] = self::$entity_id;
+        if (empty($scopes) && self::ctx()->entityId > 0) {
+            $scopes[] = self::ctx()->entityId;
         }
 
-        self::$cachedAllowedScopes = array_values(array_unique($scopes));
-        return self::$cachedAllowedScopes;
+        self::ctx()->cachedAllowedScopes = array_values(array_unique($scopes));
+        return self::ctx()->cachedAllowedScopes;
     }
 
     /**
@@ -763,7 +731,7 @@ class Profile {
         $result = [];
 
         # Always include personal scope first (user's own entity)
-        $personalEntityId = self::$entity_id;
+        $personalEntityId = self::ctx()->entityId;
         if ($personalEntityId > 0) {
             CONN::dml(
                 "SELECT entity_id, primary_name FROM entities WHERE entity_id = :id",
@@ -801,14 +769,14 @@ class Profile {
 
         # Specific scopes: fetch metadata in single query
         if (empty($scopes)) {
-            return $result; # Return at least personal scope
+            return $result;
         }
 
         # Build IN clause (exclude personal entity)
         $placeholders = [];
         $params = [];
         foreach ($scopes as $index => $scopeId) {
-            if ($scopeId === $personalEntityId) continue; # Skip personal
+            if ($scopeId === $personalEntityId) continue;
             $key = ":scope{$index}";
             $placeholders[] = $key;
             $params[$key] = $scopeId;
@@ -835,14 +803,11 @@ class Profile {
 
     /**
      * Check if profile can access a specific scope
-     *
-     * @param int $scopeEntityId Scope to check
-     * @return bool True if allowed
      */
     public static function canAccessScope(int $scopeEntityId): bool
     {
         # Personal scope is always allowed
-        if ($scopeEntityId === self::$entity_id && self::$entity_id > 0) {
+        if ($scopeEntityId === self::ctx()->entityId && self::ctx()->entityId > 0) {
             return true;
         }
 
@@ -861,18 +826,14 @@ class Profile {
      *
      * Validates scope and logs security violation if invalid.
      * Use ONLY in login and scope switch endpoints.
-     *
-     * @param int $scopeEntityId Requested scope
-     * @throws \RuntimeException If scope not allowed
      */
     public static function assertScope(int $scopeEntityId): void
     {
         if (!self::canAccessScope($scopeEntityId)) {
-            # LOG SECURITY VIOLATION
             Log::logError('SECURITY: SCOPE_VIOLATION', [
-                'account_id' => self::$account_id,
-                'profile_id' => self::$profile_id,
-                'entity_id' => self::$entity_id,
+                'account_id' => self::ctx()->accountId,
+                'profile_id' => self::ctx()->profileId,
+                'entity_id' => self::ctx()->entityId,
                 'requested_scope' => $scopeEntityId,
                 'allowed_scopes' => self::getAllowedScopes(),
                 'ip_address' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
@@ -888,13 +849,6 @@ class Profile {
     /**
      * Gets comprehensive profile information including entity and account details.
      * Use this to retrieve "author" names or user profile cards.
-     *
-     * @param int $profileId The ID of the profile to fetch.
-     * @param array $options [
-     *   'includeAccount' => bool,
-     *   'onlyActive' => bool (default: true)
-     * ]
-     * @return array|null Profile data array or null if not found.
      */
     public static function getProfileInfo(int $profileId, array $options = []): ?array
     {

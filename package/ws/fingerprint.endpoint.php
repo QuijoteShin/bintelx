@@ -11,7 +11,7 @@ use bX\Args;
 # y envía los componentes al server. El server ordena y hashea con xxh128.
 # Funciona vía WS (route: /ws/fingerprint) y vía HTTP (POST /fingerprint en onRequest)
 Router::register(['POST'], 'fingerprint', function(...$params) {
-    $components = Args::$OPT['components'] ?? null;
+    $components = Args::ctx()->opt['components'] ?? null;
     if (!is_array($components) || empty($components)) {
         return Response::json(['success' => false, 'error' => 'components array required'], 400);
     }

@@ -42,8 +42,8 @@ class Correlation {
                       WHERE entity_correlation_id = :entity_correlation_id";
       $params = [
         ':entity_correlation_id'    => $existingId,
-        ':comp_id'                  => $correlation['comp_id'] ?? Entity::$comp_id,
-        ':comp_branch_id'           => $correlation['comp_branch_id'] ?? Entity::$comp_branch_id,
+        ':comp_id'                  => $correlation['comp_id'] ?? Entity::ctx()->compId,
+        ':comp_branch_id'           => $correlation['comp_branch_id'] ?? Entity::ctx()->compBranchId,
         ':snapshot_id'              => $correlation['snapshot_id'] ?? 0,
         ':entity_correlation_to'    => $correlation['entity_correlation_to'] ?? 0,
         ':entity_correlation_type'  => strtolower($correlation['entity_correlation_type'] ?? ''),
@@ -59,8 +59,8 @@ class Correlation {
 
       $params = [
         ':entity_id'                => $correlation['entity_id'] ?? null,
-        ':comp_id'                  => $correlation['comp_id'] ?? Entity::$comp_id,
-        ':comp_branch_id'           => $correlation['comp_branch_id'] ?? Entity::$comp_branch_id,
+        ':comp_id'                  => $correlation['comp_id'] ?? Entity::ctx()->compId,
+        ':comp_branch_id'           => $correlation['comp_branch_id'] ?? Entity::ctx()->compBranchId,
         ':snapshot_id'              => $correlation['snapshot_id'] ?? 0,
         ':entity_correlation_to'    => $correlation['entity_correlation_to'] ?? 0,
         ':entity_correlation_type'  => strtolower($correlation['entity_correlation_type'] ?? ''),
@@ -88,8 +88,8 @@ class Correlation {
          WHERE entity_correlation_id = :id AND comp_id = :comp_id AND comp_branch_id = :comp_branch_id";
     $this->data_raw = \bX\CONN::dml($query,
       [':id' => $id,
-        ':comp_id' => Entity::$comp_id,
-        ':comp_branch_id' => Entity::$comp_branch_id
+        ':comp_id' => Entity::ctx()->compId,
+        ':comp_branch_id' => Entity::ctx()->compBranchId
     ]);
 
     if (!empty($this->data_raw)) {
@@ -112,8 +112,8 @@ class Correlation {
 
     \bX\CONN::dml($query, [
       ':entity_id' => $entityId,
-      ':comp_id' => Entity::$comp_id,
-      ':comp_branch_id' => Entity::$comp_branch_id
+      ':comp_id' => Entity::ctx()->compId,
+      ':comp_branch_id' => Entity::ctx()->compBranchId
     ], function ($row) use (&$groups) {
       $type = $row['entity_correlation_type'];
       if (!isset($groups[$type])) {
@@ -136,9 +136,9 @@ class Correlation {
                   WHERE entity_id = :entity_id AND comp_id = :comp_id AND comp_branch_id = :comp_branch_id";
 
     \bX\CONN::dml($query, [
-      ':entity_id' => Entity::$entity_id,
-      ':comp_id' => Entity::$comp_id,
-      ':comp_branch_id' => Entity::$comp_branch_id
+      ':entity_id' => Entity::ctx()->entityId,
+      ':comp_id' => Entity::ctx()->compId,
+      ':comp_branch_id' => Entity::ctx()->compBranchId
     ], function ($row) use (&$groups) {
       $type = $row['entity_correlation_type'];
       if (!isset($groups[$type])) {

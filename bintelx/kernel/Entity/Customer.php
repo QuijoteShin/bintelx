@@ -78,12 +78,12 @@ class Customer
                 'primary_name' => $data['primary_name'],
                 'national_id' => $data['national_id'],
                 'national_isocode' => $nationalIsocode,
-                'created_by_profile_id' => Profile::$profile_id
+                'created_by_profile_id' => Profile::ctx()->profileId
             ]);
 
             # Crear relationship
             $relResult = Graph::create([
-                'profile_id' => Profile::$profile_id,
+                'profile_id' => Profile::ctx()->profileId,
                 'entity_id' => $entityId,
                 'relation_kind' => self::RELATION_KIND,
                 'relationship_label' => $data['primary_name']

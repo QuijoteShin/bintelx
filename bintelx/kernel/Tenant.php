@@ -30,9 +30,6 @@ class Tenant
     # Field name constant - change here if schema changes
     public const FIELD = 'scope_entity_id';
 
-    # Cache for admin check
-    private static ?bool $isAdminCache = null;
-
     # Global tenant IDs from .env (immutable config, safe as static in Swoole)
     private static ?array $globalIds = null;
 
@@ -71,30 +68,23 @@ class Tenant
 
     /**
      * Check if current user is system.admin (bypass tenant restrictions)
+     * Reads from Profile::ctx() which is already per-coroutine — no cache needed.
      */
     public static function isAdmin(): bool
     {
-        if (self::$isAdminCache !== null) {
-            return self::$isAdminCache;
-        }
-
-        # account_id 1 is always admin
-        if (Profile::$account_id === 1) {
-            self::$isAdminCache = true;
+        if (Profile::ctx()->accountId === 1) {
             return true;
         }
-
-        # Check for system.admin role
-        self::$isAdminCache = !empty(Profile::$roles['by_role']['system.admin'] ?? []);
-        return self::$isAdminCache;
+        return !empty(Profile::ctx()->roles['by_role']['system.admin'] ?? []);
     }
 
     /**
-     * Reset admin cache (call after login/scope change)
+     * Reset admin cache — no-op since isAdmin() now reads directly from ctx()
+     * Kept for backward compatibility (called from Profile::resetStaticProfileData)
      */
     public static function resetCache(): void
     {
-        self::$isAdminCache = null;
+        # No cache to reset — isAdmin() reads from Profile::ctx() directly
     }
 
     /**
@@ -102,7 +92,7 @@ class Tenant
      *
      * Priority:
      * 1. $options['scope_entity_id'] if provided
-     * 2. Profile::$scope_entity_id from session
+     * 2. Profile::ctx()->scopeEntityId from session
      *
      * SECURITY: NULL means user has no tenant and CANNOT see any data.
      *
@@ -118,7 +108,7 @@ class Tenant
         }
 
         # From session context
-        $val = Profile::$scope_entity_id;
+        $val = Profile::ctx()->scopeEntityId;
         return $val > 0 ? $val : null;
     }
 

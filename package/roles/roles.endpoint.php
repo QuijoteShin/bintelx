@@ -28,21 +28,21 @@ DataCaptureService::defineCaptureField([
     'label' => 'Rol asignado',
     'data_type' => 'STRING',
     'is_pii' => false
-], Profile::$profile_id ?: 0);
+], Profile::ctx()->profileId ?: 0);
 
 DataCaptureService::defineCaptureField([
     'unique_name' => 'profile.role_action',
     'label' => 'Accion sobre rol',
     'data_type' => 'STRING',
     'is_pii' => false
-], Profile::$profile_id ?: 0);
+], Profile::ctx()->profileId ?: 0);
 
 DataCaptureService::defineCaptureField([
     'unique_name' => 'profile.role_scope',
     'label' => 'Scope del rol',
     'data_type' => 'DECIMAL',
     'is_pii' => false
-], Profile::$profile_id ?: 0);
+], Profile::ctx()->profileId ?: 0);
 
 /**
  * @endpoint   /api/roles/list.json
@@ -118,7 +118,7 @@ Router::register(['GET'], 'list-all\.json', function() {
  * @purpose    Get roles assigned to current user
  */
 Router::register(['GET'], 'my-roles\.json', function() {
-    $profileId = Profile::$profile_id;
+    $profileId = Profile::ctx()->profileId;
 
     if ($profileId <= 0) {
         return Response::json(['success' => false, 'message' => 'Not authenticated'], 401);
@@ -211,7 +211,7 @@ Router::register(['POST'], 'assign\.json', function() {
         # Reactivate if inactive
         CONN::nodml(
             "UPDATE profile_roles SET status = 'active', updated_by_profile_id = :actor WHERE profile_role_id = :id",
-            [':id' => $existingId, ':actor' => Profile::$profile_id]
+            [':id' => $existingId, ':actor' => Profile::ctx()->profileId]
         );
 
         # EAV audit: reactivation
@@ -232,7 +232,7 @@ Router::register(['POST'], 'assign\.json', function() {
             ':pid' => $targetProfileId,
             ':role' => $roleCode,
             ':scope' => $scopeEntityId,
-            ':actor' => Profile::$profile_id
+            ':actor' => Profile::ctx()->profileId
         ]
     );
 
@@ -247,7 +247,7 @@ Router::register(['POST'], 'assign\.json', function() {
         'target_profile_id' => $targetProfileId,
         'role_code' => $roleCode,
         'scope_entity_id' => $scopeEntityId,
-        'assigned_by' => Profile::$profile_id
+        'assigned_by' => Profile::ctx()->profileId
     ]);
 
     return Response::json([
@@ -281,7 +281,7 @@ Router::register(['POST'], 'revoke\.json', function() {
          WHERE profile_id = :pid AND role_code = :role
            AND scope_entity_id = :scope
            AND status = 'active'",
-        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':actor' => Profile::$profile_id]
+        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':actor' => Profile::ctx()->profileId]
     );
 
     if (($result['rowCount'] ?? 0) === 0) {
@@ -295,7 +295,7 @@ Router::register(['POST'], 'revoke\.json', function() {
         'target_profile_id' => $targetProfileId,
         'role_code' => $roleCode,
         'scope_entity_id' => $scopeEntityId,
-        'revoked_by' => Profile::$profile_id
+        'revoked_by' => Profile::ctx()->profileId
     ]);
 
     return Response::json(['success' => true, 'message' => 'Role revoked successfully']);
@@ -351,7 +351,7 @@ Router::register(['GET'], 'profile/(?P<profileId>\d+)\.json', function($profileI
  * @purpose    List role templates (global + scope-specific)
  */
 Router::register(['GET'], 'templates/list\.json', function() {
-    $scopeId = Profile::$scope_entity_id ?: null;
+    $scopeId = Profile::ctx()->scopeEntityId ?: null;
     $templates = RoleTemplateService::listTemplates($scopeId);
 
     # Group by relation_kind for easier UI consumption
@@ -389,7 +389,7 @@ Router::register(['GET'], 'templates/list\.json', function() {
  * @body       { "relation_kind": string, "role_code": string, "global": bool, "priority": int }
  */
 Router::register(['POST'], 'templates/create\.json', function() {
-    $input = Args::$OPT;
+    $input = Args::ctx()->opt;
 
     $relationKind = $input['relation_kind'] ?? '';
     $roleCode = $input['role_code'] ?? '';
@@ -401,7 +401,7 @@ Router::register(['POST'], 'templates/create\.json', function() {
     }
 
     # Determine scope (global -> GLOBAL_TENANT_ID)
-    $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::$scope_entity_id ?: null);
+    $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::ctx()->scopeEntityId ?: null);
 
     # Only system.admin can create global templates
     if ($isGlobal && !Profile::hasRole(roleCode: 'system.admin')) {
@@ -418,7 +418,7 @@ Router::register(['POST'], 'templates/create\.json', function() {
         'relation_kind' => $relationKind,
         'role_code' => $roleCode,
         'scope_entity_id' => $scopeId,
-        'created_by' => Profile::$profile_id
+        'created_by' => Profile::ctx()->profileId
     ]);
 
     return Response::json([
@@ -436,7 +436,7 @@ Router::register(['POST'], 'templates/create\.json', function() {
  * @body       { "relation_kind": string, "role_code": string, "global": bool }
  */
 Router::register(['POST'], 'templates/delete\.json', function() {
-    $input = Args::$OPT;
+    $input = Args::ctx()->opt;
 
     $relationKind = $input['relation_kind'] ?? '';
     $roleCode = $input['role_code'] ?? '';
@@ -446,7 +446,7 @@ Router::register(['POST'], 'templates/delete\.json', function() {
         return Response::json(['success' => false, 'message' => 'relation_kind and role_code required'], 400);
     }
 
-    $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::$scope_entity_id ?: null);
+    $scopeId = $isGlobal ? (Tenant::globalIds()[0] ?? null) : (Profile::ctx()->scopeEntityId ?: null);
 
     # Only system.admin can delete global templates
     if ($isGlobal && !Profile::hasRole(roleCode: 'system.admin')) {
@@ -463,7 +463,7 @@ Router::register(['POST'], 'templates/delete\.json', function() {
         'relation_kind' => $relationKind,
         'role_code' => $roleCode,
         'scope_entity_id' => $scopeId,
-        'deleted_by' => Profile::$profile_id
+        'deleted_by' => Profile::ctx()->profileId
     ]);
 
     return Response::json(['success' => true, 'message' => 'Template deleted']);
@@ -476,7 +476,7 @@ Router::register(['POST'], 'templates/delete\.json', function() {
  * @purpose    Preview what roles would be assigned for a relation_kind
  */
 Router::register(['GET'], 'templates/preview/(?P<relationKind>[a-z_]+)', function($relationKind) {
-    $scopeId = Profile::$scope_entity_id ?: null;
+    $scopeId = Profile::ctx()->scopeEntityId ?: null;
     $roles = RoleTemplateService::getTemplateRoles($relationKind, $scopeId);
 
     return Response::json([
@@ -509,9 +509,9 @@ function _auditRoleChange(int $targetProfileId, string $roleCode, ?int $scopeEnt
     }
 
     DataCaptureService::saveData(
-        Profile::$profile_id,
+        Profile::ctx()->profileId,
         $subjectEntityId,
-        Profile::$scope_entity_id ?: null,
+        Profile::ctx()->scopeEntityId ?: null,
         [
             'macro_context' => 'profile',
             'event_context' => 'role_assignment',

@@ -36,7 +36,7 @@ Router::register(['POST'], 'calculate\.(?P<format>json|toon)', function($format 
         'period_start' => $input['period_start'] ?? '',
         'period_end' => $input['period_end'] ?? '',
         'calc_type' => $input['calc_type'] ?? 'MONTHLY',
-        'scope_entity_id' => Profile::$scope_entity_id,
+        'scope_entity_id' => Profile::ctx()->scopeEntityId,
     ];
 
     if (isset($input['finiquito'])) {
@@ -74,7 +74,7 @@ Router::register(['GET'], 'params\.(?P<format>json|toon)', function($format = 'j
     $options = [
         'country_code' => Args::$GET['country'] ?? 'CL',
         'date' => $date,
-        'scope_entity_id' => Profile::$scope_entity_id,
+        'scope_entity_id' => Profile::ctx()->scopeEntityId,
     ];
 
     $result = PayrollHandler::getParams([], $options);

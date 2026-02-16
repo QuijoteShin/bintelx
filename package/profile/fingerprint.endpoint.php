@@ -11,7 +11,7 @@ use bX\Args;
 # y envía los componentes al server. El server ordena y hashea con xxh128.
 # Disponible en FPM (/api/profile/fingerprint) y Channel Server (/api/profile/fingerprint)
 Router::register(['POST'], 'fingerprint', function(...$params) {
-    $components = Args::$OPT['components'] ?? null;
+    $components = Args::ctx()->opt['components'] ?? null;
     if (!is_array($components) || empty($components)) {
         return Response::json(['success' => false, 'error' => 'components array required'], 400);
     }

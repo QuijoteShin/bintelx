@@ -125,7 +125,7 @@ class Document
                 ':mime' => $mimeType,
                 ':name' => $originalName,
                 ':size' => $sizeBytes,
-                ':created_by' => Profile::$profile_id ?: null,
+                ':created_by' => Profile::ctx()->profileId ?: null,
                 ':id' => $deletedDoc['document_id']
             ]);
 
@@ -162,7 +162,7 @@ class Document
             ':scope' => $tenant['scope'],
             ':category' => $category,
             ':tags' => $tags,
-            ':created_by' => Profile::$profile_id ?: null
+            ':created_by' => Profile::ctx()->profileId ?: null
         ]);
 
         if (!$result['success']) {
@@ -471,7 +471,7 @@ class Document
             ':entity' => $entityId,
             ':link_type' => $linkType,
             ':link_type2' => $linkType,
-            ':created_by' => Profile::$profile_id ?: null
+            ':created_by' => Profile::ctx()->profileId ?: null
         ]);
 
         if (!$result['success']) {

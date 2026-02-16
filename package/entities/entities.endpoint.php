@@ -40,12 +40,12 @@ foreach ($entityVariables as $varDef) {
  * @index      Requiere: entity_relationships(scope_entity_id, entity_id)
  */
 Router::register(['GET'], 'list', function() {
-    $limit = min((int)(Args::$OPT['limit'] ?? 100), 500);
-    $offset = (int)(Args::$OPT['offset'] ?? 0);
-    $entityType = Args::$OPT['entity_type'] ?? null;
-    $relationKind = Args::$OPT['relation_kind'] ?? null;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
-    $profileId = Profile::$profile_id;
+    $limit = min((int)(Args::ctx()->opt['limit'] ?? 100), 500);
+    $offset = (int)(Args::ctx()->opt['offset'] ?? 0);
+    $entityType = Args::ctx()->opt['entity_type'] ?? null;
+    $relationKind = Args::ctx()->opt['relation_kind'] ?? null;
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
+    $profileId = Profile::ctx()->profileId;
     $params = [];
 
     # Query 1: Obtener entities únicos (EXISTS para usuarios, directo para admin)
@@ -182,11 +182,11 @@ Router::register(['GET'], 'list', function() {
  * @body       (JSON) {query, relation_kind, limit}
  */
 Router::register(['POST'], 'find.json', function() {
-    $data = Args::$OPT;
+    $data = Args::ctx()->opt;
     $query = trim($data['query'] ?? $data['search'] ?? '');
     $relationKind = $data['relation_kind'] ?? null;
     $limit = min((int)($data['limit'] ?? 20), 100);
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
     $params = [];
 
     $sql = "SELECT e.entity_id, e.primary_name, e.entity_type, 
@@ -247,8 +247,8 @@ Router::register(['POST'], 'find.json', function() {
  */
 Router::register(['GET'], '(?P<id>\d+)', function($id) {
     $entityId = (int)$id;
-    $profileId = Profile::$profile_id;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $profileId = Profile::ctx()->profileId;
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
     $params = [':id' => $entityId];
 
     # Admin: acceso directo sin verificar relaciones
@@ -367,8 +367,8 @@ Router::register(['GET'], '(?P<id>\d+)', function($id) {
  * @body       (JSON) {entity_type, primary_name, national_id, national_isocode, email, phone, address}
  */
 Router::register(['POST'], 'create', function() {
-    $data = Args::$OPT;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $data = Args::ctx()->opt;
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
 
     # Validate required fields
     if (empty($data['primary_name'])) {
@@ -427,7 +427,7 @@ Router::register(['POST'], 'create', function() {
         ':national_id' => $data['national_id'] ?? null,
         ':national_isocode' => $data['national_isocode'] ?? 'CL',
         ':identity_hash' => $identityHash,
-        ':created_by' => Profile::$profile_id
+        ':created_by' => Profile::ctx()->profileId
     ];
 
     $result = CONN::nodml($sql, $params);
@@ -456,9 +456,9 @@ Router::register(['POST'], 'create', function() {
 
     if (!empty($eavValues)) {
         DataCaptureService::saveData(
-            Profile::$profile_id,           # actorProfileId
+            Profile::ctx()->profileId,           # actorProfileId
             $entityId,                       # subjectEntityId (el entity creado)
-            Profile::$scope_entity_id,       # scopeEntityId (tenant)
+            Profile::ctx()->scopeEntityId,       # scopeEntityId (tenant)
             [                                # contextPayload (3 niveles)
                 'macro_context' => 'entity',
                 'event_context' => 'contact_info',
@@ -472,9 +472,9 @@ Router::register(['POST'], 'create', function() {
     # Guardar giros comerciales (JSON array en EAV)
     if (!empty($data['giros']) && is_array($data['giros'])) {
         DataCaptureService::saveData(
-            Profile::$profile_id,
+            Profile::ctx()->profileId,
             $entityId,
-            Profile::$scope_entity_id,
+            Profile::ctx()->scopeEntityId,
             [
                 'macro_context' => 'entity',
                 'event_context' => 'business_info',
@@ -501,9 +501,9 @@ Router::register(['POST'], 'create', function() {
  */
 Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
     $entityId = (int)$id;
-    $data = Args::$OPT;
-    $profileId = Profile::$profile_id;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $data = Args::ctx()->opt;
+    $profileId = Profile::ctx()->profileId;
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
 
     # Verificar que el entity existe y es accesible
     if (Tenant::isAdmin()) {
@@ -605,7 +605,7 @@ Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
         DataCaptureService::saveData(
             $profileId,
             $entityId,
-            Profile::$scope_entity_id,
+            Profile::ctx()->scopeEntityId,
             [
                 'macro_context' => 'entity',
                 'event_context' => 'contact_info',
@@ -622,7 +622,7 @@ Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
         DataCaptureService::saveData(
             $profileId,
             $entityId,
-            Profile::$scope_entity_id,
+            Profile::ctx()->scopeEntityId,
             [
                 'macro_context' => 'entity',
                 'event_context' => 'business_info',
@@ -656,8 +656,8 @@ Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
  *             permitiendo que un entity tenga diferentes direcciones/teléfonos por contexto.
  */
 Router::register(['POST'], 'ensure', function() {
-    $data = Args::$OPT;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $data = Args::ctx()->opt;
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
 
     # Validaciones
     if (empty($data['primary_name'])) {
@@ -713,7 +713,7 @@ Router::register(['POST'], 'ensure', function() {
             ':national_id' => $data['national_id'] ?? null,
             ':national_isocode' => $data['national_isocode'] ?? 'CL',
             ':identity_hash' => $identityHash,
-            ':created_by' => Profile::$profile_id
+            ':created_by' => Profile::ctx()->profileId
         ]);
 
         if (!$result['success']) {
@@ -729,7 +729,7 @@ Router::register(['POST'], 'ensure', function() {
 
     # Paso 3: Crear relación (Graph::create aplica role templates automáticamente)
     $graphResult = Graph::create([
-        'profile_id' => Profile::$profile_id,
+        'profile_id' => Profile::ctx()->profileId,
         'entity_id' => $entityId,
         'relation_kind' => $relationKind
     ], $options);
@@ -749,9 +749,9 @@ Router::register(['POST'], 'ensure', function() {
 
     if (!empty($eavValues)) {
         DataCaptureService::saveData(
-            Profile::$profile_id,
+            Profile::ctx()->profileId,
             $entityId,
-            Profile::$scope_entity_id,
+            Profile::ctx()->scopeEntityId,
             [
                 'macro_context' => 'entity',
                 'event_context' => $relationKind,  # Contexto = tipo de relación
@@ -885,8 +885,8 @@ Router::register(['GET'], '(?P<id>\d+)/shadows', function($id) {
  * @purpose    Get entity statistics for current scope (admin sees global stats)
  */
 Router::register(['GET'], 'stats', function() {
-    $profileId = Profile::$profile_id;
-    $options = ['scope_entity_id' => Profile::$scope_entity_id];
+    $profileId = Profile::ctx()->profileId;
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
     $params = [];
 
     # Admin ve estadísticas globales
@@ -933,7 +933,7 @@ Router::register(['GET'], 'stats', function() {
  * @body       (JSON) {entity_id, relation_kind, relationship_label?, scope_entity_id?}
  */
 Router::register(['POST'], 'relationships/create', function() {
-    $data = Args::$OPT;
+    $data = Args::ctx()->opt;
 
     $entityId = (int)($data['entity_id'] ?? 0);
     $relationKind = $data['relation_kind'] ?? 'contact';
@@ -942,7 +942,7 @@ Router::register(['POST'], 'relationships/create', function() {
     # scope_entity_id: if provided (e.g., for owner), use it; otherwise use current scope
     $scopeEntityId = isset($data['scope_entity_id'])
         ? (int)$data['scope_entity_id']
-        : Profile::$scope_entity_id;
+        : Profile::ctx()->scopeEntityId;
 
     $options = ['scope_entity_id' => $scopeEntityId];
 
@@ -954,7 +954,7 @@ Router::register(['POST'], 'relationships/create', function() {
     }
 
     $relationData = [
-        'profile_id' => Profile::$profile_id,
+        'profile_id' => Profile::ctx()->profileId,
         'entity_id' => $entityId,
         'relation_kind' => $relationKind
     ];
@@ -978,7 +978,7 @@ Router::register(['POST'], 'relationships/create', function() {
  * @body       (JSON) {entity_id, relation_kind}
  */
 Router::register(['POST'], 'relationships/delete', function() {
-    $data = Args::$OPT;
+    $data = Args::ctx()->opt;
 
     $entityId = (int)($data['entity_id'] ?? 0);
     $relationKind = $data['relation_kind'] ?? '';
@@ -998,10 +998,10 @@ Router::register(['POST'], 'relationships/delete', function() {
            AND relation_kind = :kind
            AND status = 'active'",
         [
-            ':profile_id' => Profile::$profile_id,
+            ':profile_id' => Profile::ctx()->profileId,
             ':entity_id' => $entityId,
             ':kind' => $relationKind,
-            ':actor' => Profile::$profile_id
+            ':actor' => Profile::ctx()->profileId
         ]
     );
 
@@ -1023,7 +1023,7 @@ Router::register(['POST'], 'relationships/delete', function() {
  * @body       (JSON) {entity_id, relation_kind, relationship_label}
  */
 Router::register(['POST'], 'relationships/update', function() {
-    $data = Args::$OPT;
+    $data = Args::ctx()->opt;
 
     $entityId = (int)($data['entity_id'] ?? 0);
     $relationKind = $data['relation_kind'] ?? '';
@@ -1044,11 +1044,11 @@ Router::register(['POST'], 'relationships/update', function() {
            AND relation_kind = :kind
            AND status = 'active'",
         [
-            ':profile_id' => Profile::$profile_id,
+            ':profile_id' => Profile::ctx()->profileId,
             ':entity_id' => $entityId,
             ':kind' => $relationKind,
             ':label' => $relationshipLabel,
-            ':actor' => Profile::$profile_id
+            ':actor' => Profile::ctx()->profileId
         ]
     );
 

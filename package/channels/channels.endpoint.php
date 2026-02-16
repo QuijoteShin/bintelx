@@ -16,7 +16,7 @@ use bX\Log;
  * @tag        Channels
  */
 Router::register(['GET'], 'channels', function(...$params) {
-    $userId = Profile::$profile_id;
+    $userId = Profile::ctx()->profileId;
 
     if (!$userId) {
         return Response::error('Not authenticated', 401);
@@ -47,8 +47,8 @@ Router::register(['GET'], 'channels', function(...$params) {
  * @tag        Channels
  */
 Router::register(['POST'], 'channels/join', function(...$params) {
-    $userId = Profile::$profile_id;
-    $channel = Args::$OPT['channel'] ?? null;
+    $userId = Profile::ctx()->profileId;
+    $channel = Args::ctx()->opt['channel'] ?? null;
 
     if (!$userId) {
         return Response::error('Not authenticated', 401);
@@ -92,8 +92,8 @@ Router::register(['POST'], 'channels/join', function(...$params) {
  * @tag        Channels
  */
 Router::register(['POST'], 'channels/leave', function(...$params) {
-    $userId = Profile::$profile_id;
-    $channel = Args::$OPT['channel'] ?? null;
+    $userId = Profile::ctx()->profileId;
+    $channel = Args::ctx()->opt['channel'] ?? null;
 
     if (!$userId) {
         return Response::error('Not authenticated', 401);

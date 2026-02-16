@@ -68,14 +68,13 @@ class SuperGlobalHydrator
      */
     public static function hydrateArgs(string $method, array $body, array $query): void
     {
-        # Limpiar estado anterior
-        Args::$OPT = [];
-        Args::$input = [];
+        # Reset Args context for this request
+        Args::resetCtx();
 
         # Poblar según método HTTP
         $inputData = ($method === 'GET') ? $query : $body;
-        Args::$OPT = $inputData;
-        Args::$input = $inputData;
+        Args::ctx()->opt = $inputData;
+        Args::ctx()->input = $inputData;
     }
 
     /**

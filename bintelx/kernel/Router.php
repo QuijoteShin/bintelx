@@ -190,9 +190,10 @@ class Router
     }
     $effectiveUserScope = ROUTER_SCOPE_PUBLIC; # Default to the lowest permission.
 
-    Log::logInfo("hasPermission check: path='$pathAfterPrefix', requiredScope='$requiredScope', userPerms=" . json_encode(self::$currentUserPermissions));
+    $userPerms = Profile::getRoutePermissions();
+    Log::logInfo("hasPermission check: path='$pathAfterPrefix', requiredScope='$requiredScope', userPerms=" . json_encode($userPerms));
 
-    foreach (self::$currentUserPermissions as $pathRegex => $permissionScope) {
+    foreach ($userPerms as $pathRegex => $permissionScope) {
       $isMatch = ($pathRegex === '*') ? true : @preg_match('#^' . $pathRegex . '$#i', $pathAfterPrefix);
       # If the path matches and this permission is higher than what we've found so far, update it.
       if ($isMatch && self::getScopeWeight($permissionScope) > self::getScopeWeight($effectiveUserScope)) {

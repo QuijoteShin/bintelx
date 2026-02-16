@@ -82,7 +82,7 @@ class Graph
             ':role_code' => $roleCode,
             ':grant_mode' => $grantMode,
             ':label' => $label,
-            ':created_by' => Profile::$profile_id ?: null
+            ':created_by' => Profile::ctx()->profileId ?: null
         ];
 
         $result = CONN::nodml($sql, $params);
@@ -99,7 +99,7 @@ class Graph
             $entityId,
             $kind,
             $tenant['scope'],
-            Profile::$profile_id ?: null
+            Profile::ctx()->profileId ?: null
         );
 
         return [
@@ -381,7 +381,7 @@ class Graph
 
         $sets[] = "updated_at = NOW()";
         $sets[] = "updated_by_profile_id = :updated_by";
-        $params[':updated_by'] = Profile::$profile_id ?: null;
+        $params[':updated_by'] = Profile::ctx()->profileId ?: null;
 
         $sql = "UPDATE entity_relationships SET " . implode(', ', $sets) . " WHERE relationship_id = :id";
 

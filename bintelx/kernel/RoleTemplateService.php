@@ -96,7 +96,7 @@ class RoleTemplateService
 
         $applied = [];
         $skipped = [];
-        $actor = $actorProfileId ?? Profile::$profile_id;
+        $actor = $actorProfileId ?? Profile::ctx()->profileId;
 
         foreach ($roles as $roleCode) {
             # Check if role already assigned
@@ -186,7 +186,7 @@ class RoleTemplateService
                 ':role' => $roleCode,
                 ':scope' => $scopeEntityId,
                 ':priority' => $priority,
-                ':actor' => Profile::$profile_id
+                ':actor' => Profile::ctx()->profileId
             ]
         );
 
@@ -219,7 +219,7 @@ class RoleTemplateService
             ':kind' => $relationKind,
             ':role' => $roleCode,
             ':scope' => $scopeEntityId,
-            ':actor' => Profile::$profile_id
+            ':actor' => Profile::ctx()->profileId
         ];
 
         $result = CONN::nodml($sql, $params);

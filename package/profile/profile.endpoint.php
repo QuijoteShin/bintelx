@@ -25,9 +25,9 @@ Router::register(['GET'], '', function() {
     return $authError;
   }
 
-  $accountId = Profile::$account_id;
-  $profileId = Profile::$profile_id;
-  $entityId = Profile::$entity_id;
+  $accountId = Profile::ctx()->accountId;
+  $profileId = Profile::ctx()->profileId;
+  $entityId = Profile::ctx()->entityId;
 
   $row = null;
   $sql = "SELECT
@@ -63,7 +63,7 @@ Router::register(['GET'], '', function() {
   $lastName = count($parts) > 1 ? implode(' ', array_slice($parts, 1)) : '';
   $displayName = $row['profile_name'] ?: ($fullName ?: $row['username']);
 
-  $roles = Profile::$roles['assignments'] ?? [];
+  $roles = Profile::ctx()->roles['assignments'] ?? [];
   $roleCode = !empty($roles) ? ($roles[0]['role_code'] ?? 'user') : 'user';
 
   $profileEmail = null;
@@ -74,8 +74,8 @@ Router::register(['GET'], '', function() {
       $profileEmail = $hot['data']['profile.contact_email']['value'];
     }
   }
-  if (!empty(Profile::$roles['assignments'])) {
-    foreach (Profile::$roles['assignments'] as $assign) {
+  if (!empty(Profile::ctx()->roles['assignments'])) {
+    foreach (Profile::ctx()->roles['assignments'] as $assign) {
       if (!empty($assign['roleCode'])) {
         $userRoles[] = $assign['roleCode'];
       }
@@ -113,8 +113,8 @@ Router::register(['PUT'], 'password', function() {
     return $authError;
   }
 
-  $current = \bX\Args::$OPT['current_password'] ?? '';
-  $next = \bX\Args::$OPT['new_password'] ?? '';
+  $current = \bX\Args::ctx()->opt['current_password'] ?? '';
+  $next = \bX\Args::ctx()->opt['new_password'] ?? '';
 
   if (empty($current) || empty($next)) {
     return Response::json(['success' => false, 'message' => 'current_password y new_password son requeridos'], 400);
@@ -123,7 +123,7 @@ Router::register(['PUT'], 'password', function() {
     return Response::json(['success' => false, 'message' => 'La nueva contraseña debe tener al menos 8 caracteres'], 400);
   }
 
-  $accountId = Profile::$account_id;
+  $accountId = Profile::ctx()->accountId;
   $row = null;
   CONN::dml("SELECT password_hash FROM accounts WHERE account_id = :id LIMIT 1", [':id' => $accountId], function($r) use (&$row) { $row = $r; return false; });
   if (!$row || empty($row['password_hash'])) {
@@ -136,7 +136,7 @@ Router::register(['PUT'], 'password', function() {
   $hash = password_hash($next, PASSWORD_DEFAULT);
   $res = CONN::nodml(
     "UPDATE accounts SET password_hash = :pwd, updated_at = NOW(), updated_by_profile_id = :p WHERE account_id = :id",
-    [':pwd' => $hash, ':id' => $accountId, ':p' => Profile::$profile_id]
+    [':pwd' => $hash, ':id' => $accountId, ':p' => Profile::ctx()->profileId]
   );
 
   if (!$res['success']) {
@@ -155,17 +155,17 @@ Router::register(['PUT'], 'name', function() {
     return $authError;
   }
 
-  $first = trim((string)(\bX\Args::$OPT['first_name'] ?? ''));
-  $last = trim((string)(\bX\Args::$OPT['last_name'] ?? ''));
-  $display = trim((string)(\bX\Args::$OPT['display_name'] ?? ''));
+  $first = trim((string)(\bX\Args::ctx()->opt['first_name'] ?? ''));
+  $last = trim((string)(\bX\Args::ctx()->opt['last_name'] ?? ''));
+  $display = trim((string)(\bX\Args::ctx()->opt['display_name'] ?? ''));
 
   if ($first === '' && $display === '') {
     return Response::json(['success' => false, 'message' => 'Debe enviar display_name o first_name'], 400);
   }
 
-  $accountId = Profile::$account_id;
-  $entityId = Profile::$entity_id;
-  $profileId = Profile::$profile_id;
+  $accountId = Profile::ctx()->accountId;
+  $entityId = Profile::ctx()->entityId;
+  $profileId = Profile::ctx()->profileId;
 
   $primaryName = trim("{$first} {$last}") ?: $display;
   $profileName = $display ?: $primaryName;
@@ -220,14 +220,14 @@ Router::register(['PUT'], 'email', function() {
     return $authError;
   }
 
-  $newEmail = trim((string)(\bX\Args::$OPT['new_email'] ?? ''));
-  $password = \bX\Args::$OPT['password'] ?? '';
+  $newEmail = trim((string)(\bX\Args::ctx()->opt['new_email'] ?? ''));
+  $password = \bX\Args::ctx()->opt['password'] ?? '';
 
   if ($newEmail === '' || $password === '') {
     return Response::json(['success' => false, 'message' => 'new_email y password son requeridos'], 400);
   }
 
-  $accountId = Profile::$account_id;
+  $accountId = Profile::ctx()->accountId;
   $current = null;
   CONN::dml("SELECT username, email, password_hash FROM accounts WHERE account_id = :id LIMIT 1", [':id' => $accountId], function($r) use (&$current) { $current = $r; return false; });
 
@@ -252,7 +252,7 @@ Router::register(['PUT'], 'email', function() {
               updated_at = NOW(),
               updated_by_profile_id = :p
         WHERE account_id = :id",
-      [':u' => $newEmail, ':id' => $accountId, ':p' => Profile::$profile_id]
+      [':u' => $newEmail, ':id' => $accountId, ':p' => Profile::ctx()->profileId]
     );
     if (!$resAcc['success']) {
       throw new \Exception($resAcc['error'] ?? 'Error al actualizar correo de cuenta');
@@ -266,11 +266,11 @@ Router::register(['PUT'], 'email', function() {
       'is_pii' => true,
       'status' => 'active'
     ];
-    DataCaptureService::defineCaptureField($fieldDef, Profile::$profile_id);
+    DataCaptureService::defineCaptureField($fieldDef, Profile::ctx()->profileId);
 
     $saveRes = DataCaptureService::saveData(
-      Profile::$profile_id,
-      Profile::$entity_id,
+      Profile::ctx()->profileId,
+      Profile::ctx()->entityId,
       null,
       ['macro_context' => 'profile', 'event_context' => 'contact', 'sub_context' => 'email_update'],
       [
@@ -325,7 +325,7 @@ Router::register(['POST'], 'scope/switch.json', function() {
     return $authError;
   }
 
-  $requestedScope = (int)(Args::$OPT['scope_entity_id'] ?? 0);
+  $requestedScope = (int)(Args::ctx()->opt['scope_entity_id'] ?? 0);
 
   if ($requestedScope <= 0) {
     return Response::json(['success' => false, 'message' => 'scope_entity_id is required'], 400);
@@ -353,26 +353,26 @@ Router::register(['POST'], 'scope/switch.json', function() {
 
   $account = new \bX\Account($jwtSecret, $jwtXorKey);
   $token = $account->generateToken(
-    (string)Profile::$account_id,
+    (string)Profile::ctx()->accountId,
     null,
     null,
-    Profile::$profile_id,
+    Profile::ctx()->profileId,
     $requestedScope,
     $deviceHash
   );
 
   if (!$token) {
     Log::logError('Failed to generate new token during scope switch', [
-      'account_id' => Profile::$account_id,
+      'account_id' => Profile::ctx()->accountId,
       'requested_scope' => $requestedScope
     ]);
     return Response::json(['success' => false, 'message' => 'Failed to generate new token'], 500);
   }
 
   Log::logInfo('Scope switched successfully', [
-    'account_id' => Profile::$account_id,
-    'profile_id' => Profile::$profile_id,
-    'old_scope' => Profile::$scope_entity_id,
+    'account_id' => Profile::ctx()->accountId,
+    'profile_id' => Profile::ctx()->profileId,
+    'old_scope' => Profile::ctx()->scopeEntityId,
     'new_scope' => $requestedScope
   ]);
 

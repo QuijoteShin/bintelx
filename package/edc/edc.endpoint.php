@@ -29,8 +29,8 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
     
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
-    $actorId = Profile::$account_id;
-    $scopeId = Profile::$scope_entity_id ?: null;
+    $actorId = Profile::ctx()->accountId;
+    $scopeId = Profile::ctx()->scopeEntityId ?: null;
 
     if (!$actorId) {
         
@@ -58,7 +58,7 @@ Router::register(['POST'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
 Router::register(['GET'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
     
 
-    $scopeId = Profile::$scope_entity_id ?: null;
+    $scopeId = Profile::ctx()->scopeEntityId ?: null;
     $formDef = EDC::getFormDefinition($formName, $scopeId);
 
     if ($formDef) {
@@ -81,8 +81,8 @@ Router::register(['GET'], 'v1/forms/(?P<formName>[^/]+)', function($formName) {
 Router::register(['GET'], 'v1/forms', function() {
     
 
-    $scopeId = Profile::$scope_entity_id ?: null;
-    $status = Args::$OPT['status'] ?? null;
+    $scopeId = Profile::ctx()->scopeEntityId ?: null;
+    $status = Args::ctx()->opt['status'] ?? null;
 
     $result = EDC::listForms($scopeId, $status);
 
@@ -99,7 +99,7 @@ Router::register(['GET'], 'v1/forms', function() {
 Router::register(['PUT'], 'v1/forms/(?P<formDefId>\d+)/publish', function($formDefId) {
     
 
-    $actorId = Profile::$account_id;
+    $actorId = Profile::ctx()->accountId;
     if (!$actorId) {
         
         return Response::json(['success' => false, 'message' => 'Not authenticated']);
@@ -124,7 +124,7 @@ Router::register(['GET'], 'v1/forms/(?P<formName>[a-zA-Z0-9_-]+)/responses', fun
         'form_name' => $formName,
     ];
     # scope_entity_id filtrado via Tenant:: (null scope = AND 1=0)
-    $filters['scope_entity_id'] = Profile::$scope_entity_id ?: null;
+    $filters['scope_entity_id'] = Profile::ctx()->scopeEntityId ?: null;
 
     return Response::json(EDC::listResponses($filters));
 }, ROUTER_SCOPE_PRIVATE);
@@ -143,8 +143,8 @@ Router::register(['POST'], 'v1/responses', function() {
     
 
     $data = json_decode(file_get_contents('php://input'), true) ?? [];
-    $respondentId = Profile::$account_id;
-    $scopeId = Profile::$scope_entity_id ?: null;
+    $respondentId = Profile::ctx()->accountId;
+    $scopeId = Profile::ctx()->scopeEntityId ?: null;
 
     if (!$respondentId) {
         
@@ -212,7 +212,7 @@ Router::register(['GET'], 'v1/responses/(?P<responseId>\d+)', function($response
 
 
     // Obtener field_ids específicos si se proporcionan
-    $fieldIds = !empty(Args::$OPT['fields']) ? explode(',', Args::$OPT['fields']) : null;
+    $fieldIds = !empty(Args::ctx()->opt['fields']) ? explode(',', Args::ctx()->opt['fields']) : null;
 
     $result = EDC::getResponseData((int)$responseId, $fieldIds);
 
@@ -251,7 +251,7 @@ Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/snapshot', function
 Router::register(['PUT'], 'v1/responses/(?P<responseId>\d+)/lock', function($responseId) {
     
 
-    $actorId = Profile::$account_id;
+    $actorId = Profile::ctx()->accountId;
     if (!$actorId) {
         
         return Response::json(['success' => false, 'message' => 'Not authenticated']);
@@ -276,17 +276,17 @@ Router::register(['GET'], 'v1/responses', function() {
     
 
     $filters = [];
-    if (!empty(Args::$OPT['form_name'])) {
-        $filters['form_name'] = Args::$OPT['form_name'];
+    if (!empty(Args::ctx()->opt['form_name'])) {
+        $filters['form_name'] = Args::ctx()->opt['form_name'];
     }
-    if (!empty(Args::$OPT['respondent_profile_id'])) {
-        $filters['respondent_profile_id'] = Args::$OPT['respondent_profile_id'];
+    if (!empty(Args::ctx()->opt['respondent_profile_id'])) {
+        $filters['respondent_profile_id'] = Args::ctx()->opt['respondent_profile_id'];
     }
-    if (!empty(Args::$OPT['status'])) {
-        $filters['status'] = Args::$OPT['status'];
+    if (!empty(Args::ctx()->opt['status'])) {
+        $filters['status'] = Args::ctx()->opt['status'];
     }
     # scope_entity_id filtrado via Tenant:: (null scope = AND 1=0)
-    $filters['scope_entity_id'] = Profile::$scope_entity_id ?: null;
+    $filters['scope_entity_id'] = Profile::ctx()->scopeEntityId ?: null;
 
     $result = EDC::listResponses($filters);
 
@@ -303,11 +303,9 @@ Router::register(['GET'], 'v1/responses', function() {
  * @tag        Audit
  */
 Router::register(['POST'], 'v1/responses/(?P<responseId>\d+)/audit/(?P<fieldId>[^/]+)', function($responseId, $fieldId) {
-    
+    $payload = Args::ctx()->opt;
 
-    $payload = json_decode(file_get_contents('php://input'), true) ?? [];
-
-    // Contexto opcional
+    # Contexto opcional
     $macro = $payload['macro_context'] ?? null;
     $event = $payload['event_context'] ?? null;
 

@@ -49,8 +49,8 @@ class AuthHandler
       if ($accountId) {
         $profile = new \bX\Profile();
         if ($profile->load(['account_id' => $accountId])) {
-          $profileId = \bX\Profile::$profile_id;
-          $entityId = \bX\Profile::$entity_id;
+          $profileId = \bX\Profile::ctx()->profileId;
+          $entityId = \bX\Profile::ctx()->entityId;
 
           # Determine scope_entity_id
           $allowedScopes = \bX\Profile::getAllowedScopes();
@@ -112,8 +112,8 @@ class AuthHandler
     }
 
     // If not authenticated via header/cookie, check for token in POST body
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty(\bX\Args::$OPT['token'])) {
-      $token = \bX\Args::$OPT['token'];
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty(\bX\Args::ctx()->opt['token'])) {
+      $token = \bX\Args::ctx()->opt['token'];
 
       try {
         $ping = \bX\CONN::dml('SELECT 1 AS ok');
@@ -633,10 +633,10 @@ class AuthHandler
       'success' => true,
       'message' => $message,
       'data' => [
-        'accountId' => \bX\Profile::$account_id,
-        'profileId' => \bX\Profile::$profile_id,
-        'primaryEntityId' => \bX\Profile::$entity_id,
-        'permissions' => \bX\Profile::$userPermissions
+        'accountId' => \bX\Profile::ctx()->accountId,
+        'profileId' => \bX\Profile::ctx()->profileId,
+        'primaryEntityId' => \bX\Profile::ctx()->entityId,
+        'permissions' => \bX\Profile::ctx()->permissions
       ]
     ];
   }

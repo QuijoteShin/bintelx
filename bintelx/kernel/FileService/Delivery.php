@@ -64,13 +64,13 @@ class Delivery
         }
 
         # Check explicit permissions
-        if (self::hasPermission($documentId, Profile::$profile_id)) {
+        if (self::hasPermission($documentId, Profile::ctx()->profileId)) {
             self::logDelivery($documentId, true, self::REASON_OK, $options);
             return self::allow($docData);
         }
 
         # Check if owner (created_by)
-        if ($docData['created_by'] == Profile::$profile_id) {
+        if ($docData['created_by'] == Profile::ctx()->profileId) {
             self::logDelivery($documentId, true, self::REASON_OK, $options);
             return self::allow($docData);
         }
@@ -228,7 +228,7 @@ class Delivery
             ':expires' => $expiresAt,
             ':code_hash' => $accessCodeHash,
             ':limit' => $downloadLimit,
-            ':created_by' => Profile::$profile_id ?: null
+            ':created_by' => Profile::ctx()->profileId ?: null
         ]);
 
         if (!$result['success']) {
@@ -352,8 +352,8 @@ class Delivery
             ':profile' => $profileId,
             ':role' => $role,
             ':role2' => $role,
-            ':granted_by' => Profile::$profile_id ?: null,
-            ':granted_by2' => Profile::$profile_id ?: null
+            ':granted_by' => Profile::ctx()->profileId ?: null,
+            ':granted_by2' => Profile::ctx()->profileId ?: null
         ]);
 
         return ['success' => $result['success']];
@@ -453,8 +453,8 @@ class Delivery
 
         CONN::nodml($sql, [
             ':doc' => $documentId,
-            ':ptype' => Profile::$profile_id ? 'profile' : null,
-            ':pid' => Profile::$profile_id ?: null,
+            ':ptype' => Profile::ctx()->profileId ? 'profile' : null,
+            ':pid' => Profile::ctx()->profileId ?: null,
             ':link' => $linkId,
             ':allowed' => $allowed ? 1 : 0,
             ':reason' => $reason,

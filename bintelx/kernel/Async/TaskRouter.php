@@ -158,7 +158,6 @@ class TaskRouter
                 if ($accountId) {
                     $profile = new \bX\Profile();
                     if ($profile->load(['account_id' => $accountId])) {
-                        Router::$currentUserPermissions = \bX\Profile::getRoutePermissions();
                     }
                 }
             }

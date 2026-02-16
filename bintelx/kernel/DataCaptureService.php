@@ -283,7 +283,7 @@ class DataCaptureService {
                     ':vid' => $variableId,
                     ':cgid' => $contextGroupId,
                     ':pid' => $actorProfileId,
-                    ':aid' => \bX\Profile::$account_id,  // ALCOA: Attributable (legal identity)
+                    ':aid' => \bX\Profile::ctx()->accountId,  // ALCOA: Attributable (legal identity)
                     ':ts' => $currentTimestamp,        // ALCOA: Contemporaneous
                     ':ver' => $nextVersionNum,
                     ':reason' => $changeReason,        // ALCOA: Accurate + Attributable
@@ -949,7 +949,7 @@ class DataCaptureService {
             ':sub' => $sub,
             ':parent' => $parentContextId,
             ':cbpid' => $actorProfileId,
-            ':cbaid' => \bX\Profile::$account_id  // ALCOA: Attributable (legal identity via account → entity)
+            ':cbaid' => \bX\Profile::ctx()->accountId  // ALCOA: Attributable (legal identity via account → entity)
         ];
 
         $result = CONN::nodml($sqlInsert, $paramsInsert);

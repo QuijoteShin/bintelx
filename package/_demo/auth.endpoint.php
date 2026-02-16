@@ -13,7 +13,7 @@ use _demo\AuthHandler;
  * @tag        Authentication
  */
 Router::register(['POST'], 'login', function(...$params) {
-  $result = AuthHandler::login(\bX\Args::$OPT);
+  $result = AuthHandler::login(\bX\Args::ctx()->opt);
   $code = $result['success'] ? 200 : 401;
   return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
@@ -28,7 +28,7 @@ Router::register(['POST'], 'login', function(...$params) {
  * @tag        Authentication
  */
 Router::register(['POST'], 'register', function(...$params) {
-  $result = AuthHandler::register(\bX\Args::$OPT);
+  $result = AuthHandler::register(\bX\Args::ctx()->opt);
   $code = $result['success'] ? 201 : 400;
   return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
@@ -43,7 +43,7 @@ Router::register(['POST'], 'register', function(...$params) {
  * @tag        Authentication
  */
 Router::register(['POST'], 'register-company', function(...$params) {
-  $result = AuthHandler::registerCompany(\bX\Args::$OPT);
+  $result = AuthHandler::registerCompany(\bX\Args::ctx()->opt);
   $code = $result['success'] ? 201 : 400;
   return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
@@ -58,7 +58,7 @@ Router::register(['POST'], 'register-company', function(...$params) {
  * @tag        Profile Management
  */
 Router::register(['POST'], 'profile/create', function(...$params) {
-  $result = AuthHandler::createProfile(\bX\Args::$OPT);
+  $result = AuthHandler::createProfile(\bX\Args::ctx()->opt);
   $code = $result['success'] ? 201 : 400;
   return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);
@@ -70,7 +70,7 @@ Router::register(['POST'], 'profile/create', function(...$params) {
  * @purpose    Crea una relación profile→entity para scopes
  */
 Router::register(['POST'], 'profile/relationship', function(...$params) {
-  $result = AuthHandler::createRelationship(\bX\Args::$OPT);
+  $result = AuthHandler::createRelationship(\bX\Args::ctx()->opt);
   $code = $result['success'] ? 201 : 400;
   return Response::json(['data' => $result], $code);
 }, ROUTER_SCOPE_PUBLIC);

@@ -73,8 +73,8 @@ class Log {
     $fileDateSuffix = date("Y-m"); // Archivo de log mensual
 
     // Información del usuario y solicitud (puede ser diferente o no estar disponible en CLI)
-    $userId = (class_exists('\bX\Profile') && isset(\bX\Profile::$account_id) && \bX\Profile::$account_id > 0)
-        ? \bX\Profile::$account_id
+    $userId = (class_exists('\bX\Profile') && \bX\Profile::ctx()->accountId > 0)
+        ? \bX\Profile::ctx()->accountId
         : ((isset($_SERVER['REMOTE_USER']) ? $_SERVER['REMOTE_USER'] : (php_sapi_name() === 'cli' ? 'CLI' : 'ANONYMOUS')));
 
     $requestUri = (isset($_SERVER['REQUEST_METHOD']) && isset($_SERVER['REQUEST_URI']))

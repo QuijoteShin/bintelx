@@ -69,7 +69,7 @@ class GeoService
         ?int $scopeEntityId = null
     ): ?array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = $scopeEntityId ?? Profile::$scope_entity_id;
+        $scopeEntityId = $scopeEntityId ?? Profile::ctx()->scopeEntityId;
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
@@ -237,7 +237,7 @@ class GeoService
         ?string $date = null
     ): array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
         $baseCurrency = strtoupper($baseCurrency);
 
         if (empty($currencies)) {
@@ -316,7 +316,7 @@ class GeoService
         ?string $date = null
     ): array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
         $baseCurrency = strtoupper($baseCurrency);
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
@@ -372,8 +372,8 @@ class GeoService
         ?string $sourceReference = null,
         ?int $scopeEntityId = null
     ): array {
-        $profileId = Profile::$profile_id ?? 0;
-        $scopeEntityId = $scopeEntityId ?? Profile::$scope_entity_id;
+        $profileId = Profile::ctx()->profileId ?? 0;
+        $scopeEntityId = $scopeEntityId ?? Profile::ctx()->scopeEntityId;
         if ($scopeEntityId <= 0) $scopeEntityId = null;
 
         # Validate rate
@@ -466,7 +466,7 @@ class GeoService
         ?string $date = null
     ): ?array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
@@ -505,7 +505,7 @@ class GeoService
     public static function getTaxRatesMap(string $country, ?string $date = null): array
     {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
@@ -545,7 +545,7 @@ class GeoService
     public static function getDefaultTaxRate(string $country, ?string $date = null): ?array
     {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
@@ -586,7 +586,7 @@ class GeoService
         ?string $date = null
     ): ?array {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
@@ -649,7 +649,7 @@ class GeoService
     public static function getAllLaborPolicies(string $country, ?string $date = null): array
     {
         $date = $date ?? date('Y-m-d');
-        $scopeEntityId = Profile::$scope_entity_id;
+        $scopeEntityId = Profile::ctx()->scopeEntityId;
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
         if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
@@ -863,7 +863,7 @@ class GeoService
             ':action' => $action,
             ':old' => $oldValue ? json_encode($oldValue) : null,
             ':new' => $newValue ? json_encode($newValue) : null,
-            ':profile' => Profile::$profile_id ?? 0,
+            ':profile' => Profile::ctx()->profileId ?? 0,
             ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
             ':ua' => isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : null
         ]);

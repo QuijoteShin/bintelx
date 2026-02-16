@@ -176,10 +176,10 @@ Router::register(['GET'], 'utm\.json', function () {
 # POST /api/geo/convert.json
 # Body: { "amount": "1000000", "from": "CLP", "to": "UF", "date": "2026-01-20" }
 Router::register(['POST'], 'convert\.json', function () {
-    $amount = Args::$OPT['amount'] ?? '0';
-    $from = Args::$OPT['from'] ?? 'CLP';
-    $to = Args::$OPT['to'] ?? 'UF';
-    $date = Args::$OPT['date'] ?? null;
+    $amount = Args::ctx()->opt['amount'] ?? '0';
+    $from = Args::ctx()->opt['from'] ?? 'CLP';
+    $to = Args::ctx()->opt['to'] ?? 'UF';
+    $date = Args::ctx()->opt['date'] ?? null;
 
     $result = GeoService::convert($amount, $from, $to, $date);
     return Response::json(['data' => $result]);
@@ -191,7 +191,7 @@ Router::register(['POST'], 'exchange-rate\.json', function () {
     # Validate required fields
     $required = ['base', 'target', 'rate', 'effective_from'];
     foreach ($required as $field) {
-        if (empty(Args::$OPT[$field])) {
+        if (empty(Args::ctx()->opt[$field])) {
             return Response::json(['data' => [
                 'success' => false,
                 'error' => 'MISSING_FIELD',
@@ -200,16 +200,16 @@ Router::register(['POST'], 'exchange-rate\.json', function () {
         }
     }
 
-    $base = Args::$OPT['base'];
-    $target = Args::$OPT['target'];
-    $rate = Args::$OPT['rate'];
-    $effectiveFrom = Args::$OPT['effective_from'];
-    $effectiveTo = Args::$OPT['effective_to'] ?? null;
-    $sourceReference = Args::$OPT['source_reference'] ?? null;
+    $base = Args::ctx()->opt['base'];
+    $target = Args::ctx()->opt['target'];
+    $rate = Args::ctx()->opt['rate'];
+    $effectiveFrom = Args::ctx()->opt['effective_from'];
+    $effectiveTo = Args::ctx()->opt['effective_to'] ?? null;
+    $sourceReference = Args::ctx()->opt['source_reference'] ?? null;
 
     # scope_entity_id: null = global (requires admin), otherwise use current tenant
-    $isGlobal = isset(Args::$OPT['is_global']) && Args::$OPT['is_global'] === true;
-    $scopeEntityId = $isGlobal ? null : (Profile::$scope_entity_id ?? null);
+    $isGlobal = isset(Args::ctx()->opt['is_global']) && Args::ctx()->opt['is_global'] === true;
+    $scopeEntityId = $isGlobal ? null : (Profile::ctx()->scopeEntityId ?? null);
 
     # Only admins can write global rates
     if ($isGlobal && !Profile::hasRole(roleCode: 'system.admin')) {

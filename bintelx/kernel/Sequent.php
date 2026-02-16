@@ -11,7 +11,7 @@ namespace bX;
  * EJEMPLO DE USO CORRECTO:
  * ```php
  * $sequent = Sequent::consume([
- *     'scope_entity_id' => Profile::$scope_entity_id,
+ *     'scope_entity_id' => Profile::ctx()->scopeEntityId,
  *     'sequent_family' => 'offering_quote',      # Identifica el tipo de secuencia
  *     'sequent_prefix' => 'QT-',                 # Prefijo visible (incluir guión)
  *     'sequent_padding_length' => 5              # QT-00001, QT-00002, etc.
@@ -123,8 +123,8 @@ class Sequent
           ':inc_by' => $incBy,
           ':pad_length' => $padLength,
           ':pad_string' => $padString,
-          ':created_by' => \bX\Profile::$profile_id,
-          ':updated_by' => \bX\Profile::$profile_id
+          ':created_by' => \bX\Profile::ctx()->profileId,
+          ':updated_by' => \bX\Profile::ctx()->profileId
         ];
         $res = \bX\CONN::nodml($queryInsert, $insertParams);
         if (!$res['success']) {

@@ -15,7 +15,7 @@
 # SAVE OPTIONS:
 #   - global: true → guarda como ruta global (scope = GLOBAL_TENANT_ID)
 #   - scope_entity_id: X → guarda para scope específico
-#   - (default) → usa Profile::$scope_entity_id
+#   - (default) → usa Profile::ctx()->scopeEntityId
 
 use bX\Router;
 use bX\Response;
@@ -31,8 +31,8 @@ Router::register(['GET','POST'], '', function() {
 
     ensureNavigationTable();
 
-    $action = \bX\Args::$OPT['action'] ?? 'fetch';
-    $localRoutes = \bX\Args::$OPT['local_routes'] ?? [];
+    $action = \bX\Args::ctx()->opt['action'] ?? 'fetch';
+    $localRoutes = \bX\Args::ctx()->opt['local_routes'] ?? [];
 
     if ($action === 'save') {
         return handleSaveAction();
@@ -110,9 +110,9 @@ Router::register(['GET','POST'], '', function() {
  * Returns: initial, scope_name, profile_id (for hue generation)
  */
 function getProfileAvatarData(): array {
-    $profileId = Profile::$profile_id;
-    $scopeId = Profile::$scope_entity_id;
-    $ownEntityId = Profile::$entity_id; # Profile's own entity (primary_entity_id)
+    $profileId = Profile::ctx()->profileId;
+    $scopeId = Profile::ctx()->scopeEntityId;
+    $ownEntityId = Profile::ctx()->entityId; # Profile's own entity (primary_entity_id)
 
     # Get profile name from DB
     $profileName = null;
@@ -179,11 +179,11 @@ function handleSaveAction(): array {
     if (!isSysAdmin()) {
         return Response::json(['success' => false, 'message' => 'Only sysadmin can manage navigation'], 403);
     }
-    $requestedRoutes = \bX\Args::$OPT['routes'] ?? null;
+    $requestedRoutes = \bX\Args::ctx()->opt['routes'] ?? null;
     if (!is_array($requestedRoutes)) {
         return Response::json(['success' => false, 'message' => 'routes array required'], 400);
     }
-    $replace = !empty(\bX\Args::$OPT['replace']);
+    $replace = !empty(\bX\Args::ctx()->opt['replace']);
     $saved = upsertNavigationRoutes($requestedRoutes, $replace);
     return Response::json(['success' => true, 'saved' => $saved]);
 }
@@ -299,7 +299,7 @@ function filterByRoles(array $routes, array $userRoles): array {
 function getUserRoles(): array {
     return array_unique(array_filter(array_map(function($a) {
         return $a['roleCode'] ?? null;
-    }, Profile::$roles['assignments'] ?? [])));
+    }, Profile::ctx()->roles['assignments'] ?? [])));
 }
 
 function ensureNavigationTable(): void {
@@ -323,7 +323,7 @@ function ensureNavigationTable(): void {
 }
 
 function loadDbNavigationConfig(): array {
-    $scopeId = Profile::$scope_entity_id ?? null;
+    $scopeId = Profile::ctx()->scopeEntityId ?? null;
     $params = [];
 
     $sql = "SELECT path, label, hidden, route_group, required_roles_json, order_index, scope_entity_id
@@ -365,14 +365,14 @@ function upsertNavigationRoutes(array $routes, bool $replace): int {
     $saved = 0;
 
     # Determinar scope: del request o del perfil actual
-    $scopeId = \bX\Args::$OPT['scope_entity_id'] ?? null;
-    $isGlobal = isset(\bX\Args::$OPT['global']) && \bX\Args::$OPT['global'] === true;
+    $scopeId = \bX\Args::ctx()->opt['scope_entity_id'] ?? null;
+    $isGlobal = isset(\bX\Args::ctx()->opt['global']) && \bX\Args::ctx()->opt['global'] === true;
 
     # Global explícito → GLOBAL_TENANT_ID; sino usar scope del perfil
     if ($isGlobal) {
         $scopeId = Tenant::globalIds()[0] ?? null;
     } elseif ($scopeId === null) {
-        $scopeId = Profile::$scope_entity_id ?? null;
+        $scopeId = Profile::ctx()->scopeEntityId ?? null;
     }
 
     foreach ($routes as $r) {
@@ -419,7 +419,7 @@ function upsertNavigationRoutes(array $routes, bool $replace): int {
 }
 
 function isSysAdmin(): bool {
-    foreach (Profile::$roles['assignments'] ?? [] as $assign) {
+    foreach (Profile::ctx()->roles['assignments'] ?? [] as $assign) {
         if (($assign['roleCode'] ?? null) === 'system.admin') return true;
     }
     return false;
