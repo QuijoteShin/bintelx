@@ -17,7 +17,7 @@ use bX\ChannelContext;
  */
 Router::register(['POST'], 'ack', function(...$params) {
     $authTable = ChannelContext::$authTable;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
 
     $messageId = $_POST['message_id'] ?? null;
     $ackLevel = $_POST['ack_level'] ?? 'client'; # client o app

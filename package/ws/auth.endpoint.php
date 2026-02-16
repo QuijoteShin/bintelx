@@ -19,7 +19,7 @@ use bX\ChannelContext;
  */
 Router::register(['POST'], 'auth', function(...$params) {
     $server = ChannelContext::$server;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
     $authTable = ChannelContext::$authTable;
 
     $token = $_POST['token'] ?? null;

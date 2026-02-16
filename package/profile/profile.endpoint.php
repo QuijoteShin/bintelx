@@ -4,6 +4,7 @@ use bX\Response;
 use bX\Profile;
 use bX\CONN;
 use bX\Log;
+use bX\Args;
 use bX\DataCaptureService;
 
 /**
@@ -324,8 +325,7 @@ Router::register(['POST'], 'scope/switch.json', function() {
     return $authError;
   }
 
-  $data = json_decode(file_get_contents('php://input'), true) ?? [];
-  $requestedScope = (int)($data['scope_entity_id'] ?? 0);
+  $requestedScope = (int)(Args::$OPT['scope_entity_id'] ?? 0);
 
   if ($requestedScope <= 0) {
     return Response::json(['success' => false, 'message' => 'scope_entity_id is required'], 400);

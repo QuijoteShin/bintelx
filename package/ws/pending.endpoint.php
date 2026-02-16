@@ -16,7 +16,7 @@ use bX\ChannelContext;
  */
 Router::register(['GET'], 'pending', function(...$params) {
     $authTable = ChannelContext::$authTable;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
 
     if (!$authTable->exists((string)$fd)) {
         return Response::error('Authentication required', 401);

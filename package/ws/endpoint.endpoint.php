@@ -17,7 +17,7 @@ use bX\ChannelContext;
  */
 Router::register(['GET', 'POST'], 'endpoint', function(...$params) {
     $server = ChannelContext::$server;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
     $authTable = ChannelContext::$authTable;
 
     $method = strtoupper($_POST['method'] ?? 'GET');

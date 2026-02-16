@@ -17,7 +17,7 @@ use bX\ChannelContext;
  */
 Router::register(['POST'], 'subscribe', function(...$params) {
     $server = ChannelContext::$server;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
     $channelsTable = ChannelContext::$channelsTable;
     $authTable = ChannelContext::$authTable;
 
@@ -33,15 +33,16 @@ Router::register(['POST'], 'subscribe', function(...$params) {
     }
 
     # Add to Swoole\Table (memoria compartida entre workers)
-    $key = $channel . ':' . $fd;
+    # Key format: "{channel}\x00{fd}" — \x00 evita colisiones con ":" en channel names
+    $key = $channel . "\x00" . $fd;
     $channelsTable->set($key, ['subscribed' => 1]);
 
     # Contar suscriptores actuales de este canal
     $subscribers = 0;
-    $subscribers = 0;
-    $channelLen = strlen($channel) + 1;
+    $prefix = $channel . "\x00";
+    $prefixLen = strlen($prefix);
     foreach ($channelsTable as $k => $v) {
-        if (strncmp($k, $channel . ':', $channelLen) === 0) {
+        if (strncmp($k, $prefix, $prefixLen) === 0) {
             $subscribers++;
         }
     }

@@ -16,7 +16,7 @@ use bX\ChannelContext;
  */
 Router::register(['POST'], 'unsubscribe', function(...$params) {
     $server = ChannelContext::$server;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
     $channelsTable = ChannelContext::$channelsTable;
 
     $channel = $_POST['channel'] ?? null;
@@ -30,8 +30,8 @@ Router::register(['POST'], 'unsubscribe', function(...$params) {
         return;
     }
 
-    # Remove from Swoole\Table
-    $channelsTable->del($channel . ':' . $fd);
+    # Remove from Swoole\Table — key format: "{channel}\x00{fd}"
+    $channelsTable->del($channel . "\x00" . $fd);
 
     return Response::json([
         'type' => 'unsubscribe',

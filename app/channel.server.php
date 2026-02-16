@@ -11,7 +11,16 @@
  * - Conexiones DB no-bloqueantes (coroutine-aware)
  *
  * Uso:
- *   php app/channel.server.php [--port=9501] [--host=0.0.0.0]
+ *   stdbuf -oL php app/channel.server.php > /tmp/channel-server.log 2>&1 &
+ *
+ * IMPORTANTE: stdbuf -oL fuerza line-buffering en stdout. Sin esto, los workers
+ * Swoole (procesos forkeados) bufferean su output y los logs no aparecen en el
+ * archivo hasta que el buffer se llena (~4KB). Con -oL cada echo/print aparece
+ * inmediatamente en el log.
+ *
+ * Opciones:
+ *   --host=0.0.0.0    (default: 127.0.0.1)
+ *   --port=9501        (default: 8000)
  */
 
 # CRÍTICO: Habilitar hooks ANTES de cualquier otra cosa
@@ -43,9 +52,11 @@ class ChannelServer
     private $server;
     private ?\Swoole\Table $channelsTable = null; # Memoria compartida entre workers
     private ?\Swoole\Table $authTable = null; # Autenticaciones compartidas
-    # Per-worker array — crece con conexiones, se limpia en onClose.
+    private ?\Swoole\Table $rateLimitTable = null; # Token bucket per FD
+    # Per-worker arrays — crecen con conexiones, se limpian en onClose.
     # heartbeat_idle_time (65s) fuerza onClose en conexiones muertas sin FIN.
     private array $authenticatedConnections = [];
+    private array $fdChannels = []; # fd → [channel1, channel2, ...] índice inverso O(1) cleanup
     private ?TaskRouter $taskRouter = null;
     private ?SwooleResponseBus $responseBus = null;
     private ?SwooleAsyncBusAdapter $asyncBus = null;
@@ -77,12 +88,19 @@ class ChannelServer
         $this->channelsTable->create();
 
         # Tabla para autenticaciones compartidas
-        $this->authTable = new \Swoole\Table(2048); # 2k conexiones
+        $this->authTable = new \Swoole\Table(65536); # 64k conexiones
         $this->authTable->column('account_id', \Swoole\Table::TYPE_INT);
         $this->authTable->column('profile_id', \Swoole\Table::TYPE_INT);
         $this->authTable->column('token', \Swoole\Table::TYPE_STRING, 512);
         $this->authTable->column('device_hash', \Swoole\Table::TYPE_STRING, 32); # xxh128 = 32 hex chars
+        $this->authTable->column('scope_entity_id', \Swoole\Table::TYPE_INT);
         $this->authTable->create();
+
+        # Rate limiting: token bucket por FD (shared entre workers)
+        $this->rateLimitTable = new \Swoole\Table(65536);
+        $this->rateLimitTable->column('tokens', \Swoole\Table::TYPE_FLOAT);
+        $this->rateLimitTable->column('last_ts', \Swoole\Table::TYPE_FLOAT);
+        $this->rateLimitTable->create();
 
         # Cache compartido entre workers (GeoService, FeePolicyRepository, EDC, HolidayProvider)
         $cacheTable = new \Swoole\Table(65536); # 64k entries
@@ -281,7 +299,10 @@ class ChannelServer
     public function onOpen(Swoole\WebSocket\Server $server, Swoole\Http\Request $request): void
     {
         $fd = $request->fd;
-        $this->info("New connection: fd={$fd}, remote={$request->server['remote_addr']}");
+        $ua = $request->header['user-agent'] ?? 'none';
+        $path = $request->server['request_uri'] ?? '/';
+        $origin = $request->header['origin'] ?? 'none';
+        $this->info("New connection: fd={$fd}, remote={$request->server['remote_addr']}, path={$path}, origin={$origin}, ua=" . substr($ua, 0, 80));
 
         $server->push($fd, json_encode([
             'type' => 'system',
@@ -290,11 +311,27 @@ class ChannelServer
             'fd' => $fd,
             'timestamp' => time()
         ]));
+
+        # Auth timeout: cerrar si no se autentica en N segundos (previene FD exhaustion)
+        $authTimeout = (int)Config::get('CHANNEL_AUTH_TIMEOUT', 10);
+        Swoole\Timer::after($authTimeout * 1000, function () use ($server, $fd) {
+            if (!isset($this->authenticatedConnections[$fd]) && $server->isEstablished($fd)) {
+                $this->sendError($server, $fd, 'Authentication timeout', null, 401);
+                $server->close($fd);
+            }
+        });
     }
 
     public function onMessage(Swoole\WebSocket\Server $server, Swoole\WebSocket\Frame $frame): void
     {
         $fd = $frame->fd;
+
+        # Rate limiting: token bucket per FD
+        if (!$this->checkRateLimit($fd)) {
+            $this->sendError($server, $fd, 'Rate limit exceeded', null, 429);
+            return;
+        }
+
         try {
             $data = json_decode($frame->data, true);
 
@@ -315,8 +352,98 @@ class ChannelServer
                 return;
             }
 
-            # Todos los mensajes se ejecutan como endpoints
-            $this->executeApiRoute($server, $fd, $data);
+            # Verbose logging: mensaje entrante
+            $logCtx = match($type) {
+                'api' => ($data['method'] ?? 'POST') . ' ' . ($data['route'] ?? $data['uri'] ?? '?'),
+                'auth' => 'auth (token ' . (isset($data['token']) ? substr($data['token'], -8) : 'none') . ')',
+                'subscribe', 'unsubscribe' => $type . ' ' . ($data['channel'] ?? '?'),
+                'ping' => 'ping',
+                default => $type,
+            };
+            $this->info("→ fd={$fd} IN: {$logCtx}");
+
+            # Dispatch por tipo de mensaje
+            switch ($type) {
+                case 'auth':
+                    # Re-auth sin reconectar (JWT refresh, scope switch)
+                    $token = $data['token'] ?? null;
+                    if (!$token) {
+                        $this->sendError($server, $fd, 'Token required', null, 400);
+                        return;
+                    }
+                    Profile::resetStaticProfileData();
+                    $this->loadProfile($token, $fd);
+                    if (isset($this->authenticatedConnections[$fd])) {
+                        $server->push($fd, json_encode([
+                            'type' => 'authenticated',
+                            'profile_id' => $this->authenticatedConnections[$fd]['profile_id'],
+                            'scope_entity_id' => $this->authenticatedConnections[$fd]['scope_entity_id'],
+                            'timestamp' => time()
+                        ]));
+                    } else {
+                        $this->sendError($server, $fd, 'Authentication failed', null, 401);
+                    }
+                    Profile::resetStaticProfileData();
+                    return;
+
+                case 'subscribe':
+                    $channel = $data['channel'] ?? null;
+                    if (!$channel || strlen($channel) > 128 || str_contains($channel, "\x00")) {
+                        $this->sendError($server, $fd, 'Invalid channel name', null, 400);
+                        return;
+                    }
+                    # Auth: array local primero, luego authTable (resiliente a worker reload)
+                    if (!isset($this->authenticatedConnections[$fd]) && $this->authTable->exists((string)$fd)) {
+                        $this->authenticatedConnections[$fd] = $this->authTable->get((string)$fd);
+                    }
+                    if (!isset($this->authenticatedConnections[$fd])) {
+                        $this->sendError($server, $fd, 'Authentication required', null, 401);
+                        return;
+                    }
+                    # TODO: ACL de canales — validar permisos por prefijo/scope
+                    $key = $this->channelKey($channel, $fd);
+                    if (!$this->channelsTable->set($key, ['subscribed' => 1])) {
+                        $this->sendError($server, $fd, 'Channel table full', null, 503);
+                        return;
+                    }
+                    $this->fdChannels[$fd][] = $channel;
+                    $server->push($fd, json_encode([
+                        'type' => 'subscribed',
+                        'channel' => $channel,
+                        'timestamp' => time()
+                    ]));
+                    return;
+
+                case 'unsubscribe':
+                    $channel = $data['channel'] ?? null;
+                    if ($channel) {
+                        $this->channelsTable->del($this->channelKey($channel, $fd));
+                        if (isset($this->fdChannels[$fd])) {
+                            $this->fdChannels[$fd] = array_values(array_filter(
+                                $this->fdChannels[$fd],
+                                fn($c) => $c !== $channel
+                            ));
+                        }
+                        $server->push($fd, json_encode([
+                            'type' => 'unsubscribed',
+                            'channel' => $channel,
+                            'timestamp' => time()
+                        ]));
+                    }
+                    return;
+
+                case 'ping':
+                    $server->push($fd, json_encode([
+                        'type' => 'pong',
+                        'ts' => $data['ts'] ?? time(),
+                        'timestamp' => time()
+                    ]));
+                    return;
+
+                default:
+                    # API calls y otros → executeApiRoute
+                    $this->executeApiRoute($server, $fd, $data);
+            }
 
         } catch (\Exception $e) {
             $this->error("Error processing message from fd={$fd}: " . $e->getMessage());
@@ -340,6 +467,8 @@ class ChannelServer
             Log::logWarning("WebSocket message missing 'route' field", ['data' => $data, 'fd' => $fd]);
             return;
         }
+
+        $t0 = microtime(true);
 
         # 1. SNAPSHOT de superglobales (aislamiento entre requests)
         $snapshot = SuperGlobalHydrator::snapshot();
@@ -398,47 +527,59 @@ class ChannelServer
             # 6. EJECUTAR Router
             ob_start();
 
-            # No usar base path - dejar que Router extraiga módulo de la URI completa
-            $route = new Router($uri, '/api');  // Set apiBasePath
+            $route = new Router($uri, '/api');
 
-            # FD es per-request (cada mensaje WS tiene su propia conexión)
-            # Server + tables viven en ChannelContext (set en onWorkerStart)
-            $_SERVER['WS_FD'] = $fd;
+            # FD per-coroutine (aislado entre requests concurrentes del mismo worker)
+            \Swoole\Coroutine::getContext()->ws_fd = $fd;
 
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
 
+            # Capturar HTTP status code (Response::send() lo setea via http_response_code())
+            $statusCode = http_response_code() ?: 200;
+
             # Parse JSON response
             $responseData = json_decode($output, true) ?? ['raw' => $output];
 
-            # Enviar respuesta estructurada
-            $server->push($fd, json_encode([
+            # Enviar respuesta con status_code para compatibilidad HTTP
+            $elapsed = round((microtime(true) - $t0) * 1000, 1);
+            $responsePayload = [
                 'type' => 'api_response',
                 'correlation_id' => $correlationId,
-                'status' => 'success',
+                'status' => $statusCode >= 200 && $statusCode < 400 ? 'success' : 'error',
+                'status_code' => $statusCode,
                 'data' => $responseData,
+                '_l' => "{$statusCode} {$method} {$uri}",
                 'timestamp' => time()
-            ]));
+            ];
+            $server->push($fd, json_encode($responsePayload));
+
+            # Verbose logging: response out
+            $outSize = strlen(json_encode($responseData));
+            $this->info("← fd={$fd} OUT: {$statusCode} {$method} {$uri} ({$elapsed}ms, {$outSize}B)");
 
         } catch (\Exception $e) {
             if (ob_get_level() > 0) {
                 ob_end_clean();
             }
 
+            $elapsed = round((microtime(true) - $t0) * 1000, 1);
             $server->push($fd, json_encode([
                 'type' => 'api_error',
                 'correlation_id' => $correlationId,
+                'status' => 'error',
+                'status_code' => 500,
                 'message' => 'Request failed. Check server logs for details.',
+                '_l' => "500 {$method} {$uri}",
                 'timestamp' => time()
             ]));
 
+            $this->info("← fd={$fd} ERR: 500 {$method} {$uri} ({$elapsed}ms) {$e->getMessage()}");
             Log::logError("API via WS failed", ['uri' => $uri, 'error' => $e->getMessage()]);
         } finally {
             # 7. RESTORE superglobales
             SuperGlobalHydrator::restore($snapshot);
-
-            unset($_SERVER['WS_FD']);
 
             # 8. CLEANUP estado
             Profile::resetStaticProfileData();
@@ -447,7 +588,7 @@ class ChannelServer
 
     # Ejecuta endpoints WS nativos
 
-    # Autentica y carga Profile
+    # Autentica y carga Profile — limpia auth previa si JWT inválido/expirado
     private function loadProfile(string $token, int $fd): void
     {
         try {
@@ -457,57 +598,69 @@ class ChannelServer
             $account = new \bX\Account($jwtSecret, $jwtXorKey);
             $accountId = $account->verifyToken($token, $_SERVER['REMOTE_ADDR']);
 
-            if ($accountId) {
-                # Extraer claims del JWT (scope, device_hash)
-                $scopeEntityId = 0;
-                $deviceHash = '';
-                try {
-                    $jwt = new JWT($jwtSecret, $token);
-                    $payload = $jwt->getPayload(); # [METADATA, {id, profile_id, scope_entity_id, device_hash}]
-                    $userPayload = $payload[1] ?? [];
-                    $scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
-                    $deviceHash = $userPayload['device_hash'] ?? '';
-                } catch (\Exception $e) {
-                    Log::logWarning("Channel: Failed to extract JWT claims: " . $e->getMessage());
-                }
-
-                $profile = new Profile();
-                $profile->load(['account_id' => $accountId]);
-
-                # Validate scope from JWT against ACL
-                if ($scopeEntityId > 0 && !Profile::canAccessScope($scopeEntityId)) {
-                    Log::logError('SECURITY: JWT_SCOPE_MISMATCH', [
-                        'account_id' => $accountId,
-                        'profile_id' => Profile::$profile_id,
-                        'jwt_scope' => $scopeEntityId,
-                        'device_hash' => $deviceHash,
-                        'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
-                    ]);
-                    $scopeEntityId = Profile::$entity_id;
-                }
-                Profile::$scope_entity_id = $scopeEntityId;
-
-                # Guardar sesión WS (array + Swoole\Table)
-                $this->authenticatedConnections[$fd]['token'] = $token;
-                $this->authenticatedConnections[$fd]['account_id'] = $accountId;
-                $this->authenticatedConnections[$fd]['profile_id'] = Profile::$profile_id;
-                $this->authenticatedConnections[$fd]['scope_entity_id'] = $scopeEntityId;
-                $this->authenticatedConnections[$fd]['device_hash'] = $deviceHash;
-
-                if ($this->authTable) {
-                    $this->authTable->set((string)$fd, [
-                        'token' => $token,
-                        'account_id' => (int)$accountId,
-                        'profile_id' => Profile::$profile_id,
-                        'device_hash' => $deviceHash
-                    ]);
-                }
-
-                # Set permissions
-                Router::$currentUserPermissions = Profile::getRoutePermissions();
+            if (!$accountId) {
+                # Token inválido/expirado — limpiar auth previa para que no siga recibiendo pushes
+                $this->clearAuth($fd);
+                return;
             }
+
+            # Extraer claims del JWT (scope, device_hash)
+            $scopeEntityId = 0;
+            $deviceHash = '';
+            try {
+                $jwt = new JWT($jwtSecret, $token);
+                $payload = $jwt->getPayload(); # [METADATA, {id, profile_id, scope_entity_id, device_hash}]
+                $userPayload = $payload[1] ?? [];
+                $scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
+                $deviceHash = $userPayload['device_hash'] ?? '';
+            } catch (\Exception $e) {
+                Log::logWarning("Channel: Failed to extract JWT claims: " . $e->getMessage());
+            }
+
+            $profile = new Profile();
+            $profile->load(['account_id' => $accountId]);
+
+            # Validate scope from JWT against ACL
+            if ($scopeEntityId > 0 && !Profile::canAccessScope($scopeEntityId)) {
+                Log::logError('SECURITY: JWT_SCOPE_MISMATCH', [
+                    'account_id' => $accountId,
+                    'profile_id' => Profile::$profile_id,
+                    'jwt_scope' => $scopeEntityId,
+                    'device_hash' => $deviceHash,
+                    'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+                ]);
+                $scopeEntityId = Profile::$entity_id;
+            }
+            Profile::$scope_entity_id = $scopeEntityId;
+
+            # Guardar sesión WS (array + Swoole\Table)
+            $this->authenticatedConnections[$fd] = [
+                'token' => $token,
+                'account_id' => $accountId,
+                'profile_id' => Profile::$profile_id,
+                'scope_entity_id' => $scopeEntityId,
+                'device_hash' => $deviceHash
+            ];
+
+            if ($this->authTable) {
+                $ok = $this->authTable->set((string)$fd, [
+                    'token' => $token,
+                    'account_id' => (int)$accountId,
+                    'profile_id' => Profile::$profile_id,
+                    'device_hash' => $deviceHash,
+                    'scope_entity_id' => (int)$scopeEntityId
+                ]);
+                if (!$ok) {
+                    Log::logError('authTable FULL — cannot store auth', ['fd' => $fd, 'profile_id' => Profile::$profile_id]);
+                }
+            }
+
+            # Set permissions
+            Router::$currentUserPermissions = Profile::getRoutePermissions();
+
         } catch (\Exception $e) {
-            Log::logWarning("Profile load failed", ['error' => $e->getMessage()]);
+            $this->clearAuth($fd);
+            Log::logWarning("Profile load failed", ['fd' => $fd, 'error' => $e->getMessage()]);
         }
     }
 
@@ -570,11 +723,12 @@ class ChannelServer
 
     public function onClose(Swoole\WebSocket\Server $server, int $fd): void
     {
-        # Limpiar de Swoole\Table (compartida entre workers)
-        foreach ($this->channelsTable as $key => $row) {
-            if (str_ends_with($key, ':' . $fd)) {
-                $this->channelsTable->del($key);
+        # O(1) cleanup via índice inverso (no itera toda channelsTable)
+        if (isset($this->fdChannels[$fd])) {
+            foreach ($this->fdChannels[$fd] as $channel) {
+                $this->channelsTable->del($this->channelKey($channel, $fd));
             }
+            unset($this->fdChannels[$fd]);
         }
 
         # Limpiar autenticación
@@ -586,16 +740,61 @@ class ChannelServer
             $this->info("Connection closed: fd={$fd}");
         }
 
+        # Cleanup per-worker state
         unset($this->authenticatedConnections[$fd]);
+        $this->rateLimitTable->del((string)$fd);
     }
 
-    private function sendError(Swoole\WebSocket\Server $server, int $fd, string $message): void
+    private function sendError(Swoole\WebSocket\Server $server, int $fd, string $message, ?string $correlationId = null, int $statusCode = 400): void
     {
         $server->push($fd, json_encode([
             'type' => 'error',
+            'correlation_id' => $correlationId,
+            'status' => 'error',
+            'status_code' => $statusCode,
             'message' => $message,
             'timestamp' => time()
         ]));
+    }
+
+    # Channel key: separador \x00 evita colisiones cuando channel name contiene ":"
+    private function channelKey(string $channel, int $fd): string
+    {
+        return $channel . "\x00" . $fd;
+    }
+
+    # Token bucket rate limiter per FD
+    private function checkRateLimit(int $fd): bool
+    {
+        $maxPerSec = (float)Config::get('CHANNEL_RATE_LIMIT_PER_SEC', 20);
+        $burst = (float)Config::get('CHANNEL_RATE_LIMIT_BURST', 30);
+        $now = microtime(true);
+        $key = (string)$fd;
+
+        if (!$this->rateLimitTable->exists($key)) {
+            $this->rateLimitTable->set($key, ['tokens' => $burst - 1, 'last_ts' => $now]);
+            return true;
+        }
+
+        $row = $this->rateLimitTable->get($key);
+        $elapsed = $now - $row['last_ts'];
+        $tokens = min($burst, $row['tokens'] + $elapsed * $maxPerSec);
+
+        if ($tokens < 1.0) {
+            return false;
+        }
+
+        $this->rateLimitTable->set($key, ['tokens' => $tokens - 1, 'last_ts' => $now]);
+        return true;
+    }
+
+    # Limpia auth de un FD (JWT expirado, error, desconexión)
+    private function clearAuth(int $fd): void
+    {
+        unset($this->authenticatedConnections[$fd]);
+        if ($this->authTable) {
+            $this->authTable->del((string)$fd);
+        }
     }
 
     private function info(string $message): void

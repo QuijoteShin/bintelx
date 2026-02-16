@@ -50,8 +50,8 @@ class SuperGlobalHydrator
         # $_POST para métodos que envían body
         $_POST = in_array($method, ['POST', 'PUT', 'PATCH']) ? $body : [];
 
-        # $_GET para query params
-        $_GET = $method === 'GET' ? $query : [];
+        # $_GET siempre refleja query string (estándar PHP — independiente del método)
+        $_GET = $query;
 
         # $_COOKIE
         $_COOKIE = $cookies;

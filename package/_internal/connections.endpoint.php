@@ -18,6 +18,7 @@ Router::register(['GET'], 'connections', function() {
                 'fd' => (int)$fd,
                 'account_id' => $row['account_id'],
                 'profile_id' => $row['profile_id'],
+                'scope_entity_id' => $row['scope_entity_id'],
                 'device_hash' => $row['device_hash'],
                 'remote_ip' => $info['remote_ip'] ?? 'unknown',
                 'connect_time' => $info['connect_time'] ?? null,

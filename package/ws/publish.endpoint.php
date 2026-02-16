@@ -18,7 +18,7 @@ use bX\ChannelContext;
  */
 Router::register(['POST'], 'publish', function(...$params) {
     $server = ChannelContext::$server;
-    $fd = $_SERVER['WS_FD'];
+    $fd = ChannelContext::getWsFd();
     $channelsTable = ChannelContext::$channelsTable;
     $authTable = ChannelContext::$authTable;
 
@@ -52,12 +52,13 @@ Router::register(['POST'], 'publish', function(...$params) {
     $payload = json_encode($messageData);
 
     # Broadcast a TODOS los suscriptores del canal (Swoole\Table compartida)
+    # Key format: "{channel}\x00{fd}"
     $sent = 0;
-    $prefix = $channel . ':';
-    $channelLen = strlen($prefix);
+    $prefix = $channel . "\x00";
+    $prefixLen = strlen($prefix);
     foreach ($channelsTable as $key => $row) {
-        if (strncmp($key, $prefix, $channelLen) === 0) {
-            $recipientFd = (int)substr($key, $channelLen);
+        if (strncmp($key, $prefix, $prefixLen) === 0) {
+            $recipientFd = (int)substr($key, $prefixLen);
             if ($server->isEstablished($recipientFd)) {
                 $server->push($recipientFd, $payload);
                 $sent++;
