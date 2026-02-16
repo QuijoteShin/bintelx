@@ -38,6 +38,10 @@ class Router
    */
   private static string $apiBasePath = '/';
 
+  # Transport actual del request: 'http' (FPM/Swoole HTTP) o 'ws' (WebSocket)
+  # Seteado por channel.server antes de dispatch()
+  public static string $currentTransport = 'http';
+
   /**
    * The Router is initialized by the application's entry point.
    * This is where the app injects its configuration, like the API base path.
@@ -133,7 +137,15 @@ class Router
    * @param string|callable $callback Handler (e.g., 'MyController::action', or a Closure).
    * @param string $scope Required permission scope (e.g., ROUTER_SCOPE_READ).
    */
-  public static function register(array|string $methods, string $regexPattern, string|callable $callback, string $scope = ROUTER_SCOPE_PRIVATE): void {
+  /**
+   * @param array|string $methods HTTP method(s)
+   * @param string $regexPattern URI pattern relative to module
+   * @param string|callable $callback Handler
+   * @param string $scope Permission scope
+   * @param array $options Extra flags:
+   *   'transport' => 'http'|'ws'|'any' (default 'any') — restringe transporte permitido
+   */
+  public static function register(array|string $methods, string $regexPattern, string|callable $callback, string $scope = ROUTER_SCOPE_PRIVATE, array $options = []): void {
     if (!is_array($methods)) {
       $methods = [$methods];
     }
@@ -151,15 +163,17 @@ class Router
       $scope = ROUTER_SCOPE_PRIVATE;
     }
 
+    $transport = $options['transport'] ?? 'any'; # 'http' | 'ws' | 'any'
 
     self::$routesByModule[$moduleKey][] = [
       'methods' => array_map('strtoupper', $methods),
-      'regex_pattern' => trim($regexPattern, '/'), # Store pattern without leading/trailing slashes
+      'regex_pattern' => trim($regexPattern, '/'),
       'callback' => $callback,
       'scope' => $scope,
+      'transport' => $transport,
       'defined_in_file' => self::$CurrentRouteFileContext['real'] ?? 'N/A'
     ];
-    Log::logDebug("Router: Registered for module '$moduleKey': [".implode(',', $methods)."] /".$moduleKey."/".trim($regexPattern, '/')." (Scope: $scope)");
+    Log::logDebug("Router: Registered for module '$moduleKey': [".implode(',', $methods)."] /".$moduleKey."/".trim($regexPattern, '/')." (Scope: $scope, Transport: $transport)");
   }
 
   /**
@@ -253,6 +267,13 @@ class Router
       $fullRoutePattern = '#^' . $route['regex_pattern'] . '$#i';
 
       if (preg_match($fullRoutePattern, $uriPathForRouteMatching, $routeSpecificMatches) !== 1) continue;
+
+      # Verificar transport (http-only endpoints no se sirven por WS y viceversa)
+      $routeTransport = $route['transport'] ?? 'any';
+      if ($routeTransport !== 'any' && $routeTransport !== self::$currentTransport) {
+        Log::logWarning("Router::dispatch - Transport mismatch: route requires '{$routeTransport}' but current is '" . self::$currentTransport . "' for '{$requestUri}'");
+        continue;
+      }
 
       $foundMatchingPattern = true;
       if (!self::hasPermission($route['scope'], $pathForMatching)) {

@@ -194,6 +194,8 @@ class ChannelServer
     }
 
     # Despacha requests HTTP al Router unificado (mismos endpoints que WS)
+    # SYNC: lógica de parseo URI/query/auth paralela a executeApiRoute (WS)
+    #        cambios aquí deben reflejarse en executeApiRoute y viceversa
     private function executeHttpRoute(
         Swoole\Http\Request $request,
         Swoole\Http\Response $response,
@@ -203,10 +205,14 @@ class ChannelServer
         $snapshot = SuperGlobalHydrator::snapshot();
         try {
             Profile::resetStaticProfileData();
-            Router::$currentUserPermissions = [];
 
-            $body = json_decode($request->rawContent() ?: '{}', true) ?: [];
+            $rawContent = $request->rawContent() ?: '';
+            $body = json_decode($rawContent, true) ?: [];
             $query = $request->get ?? [];
+
+            # Raw body para endpoints que leen binario (ej: file upload chunks)
+            # En FPM usan php://input; en Swoole ese stream está vacío
+            $_SERVER['SWOOLE_RAW_CONTENT'] = $rawContent;
             $headers = [];
 
             # JWT desde header Authorization o cookie bnxt
@@ -246,13 +252,13 @@ class ChannelServer
                     $userPayload = $payload[1] ?? [];
                     $profile = new Profile();
                     $profile->load(['account_id' => $accountId]);
-                    Profile::$scope_entity_id = (int)($userPayload['scope_entity_id'] ?? 0);
-                    Router::$currentUserPermissions = Profile::getRoutePermissions();
+                    Profile::ctx()->scopeEntityId = (int)($userPayload['scope_entity_id'] ?? 0);
                 }
             }
 
             ob_start();
             $route = new Router($uri, '/api');
+            Router::$currentTransport = 'http';
             Router::dispatch($method, $uri);
             $output = ob_get_clean();
 
@@ -464,13 +470,23 @@ class ChannelServer
     }
 
     # Ejecuta CUALQUIER endpoint (WS o API REST) vía Router Unificado
+    # SYNC: lógica de parseo URI/query/auth paralela a executeHttpRoute (HTTP)
+    #        cambios aquí deben reflejarse en executeHttpRoute y viceversa
     private function executeApiRoute(Swoole\WebSocket\Server $server, int $fd, array $data): void
     {
         # Support both 'route' and 'uri' keys (backward compatibility)
-        $uri = $data['route'] ?? $data['uri'] ?? null;
+        $rawUri = $data['route'] ?? $data['uri'] ?? null;
         $method = strtoupper($data['method'] ?? 'POST');
         $body = $data['body'] ?? [];
         $query = $data['query'] ?? [];
+
+        # Separar query string de la URI (front puede enviar /api/units/list.json?page=1&limit=50)
+        $uri = $rawUri;
+        if ($rawUri && str_contains($rawUri, '?')) {
+            [$uri, $qs] = explode('?', $rawUri, 2);
+            parse_str($qs, $qsParams);
+            $query = array_merge($qsParams, $query); # query explícito tiene prioridad
+        }
         $correlationId = $data['correlation_id'] ?? uniqid('api_', true);
 
         if (!$uri) {
@@ -487,7 +503,6 @@ class ChannelServer
         try {
             # 2. RESET de estado
             Profile::resetStaticProfileData();
-            Router::$currentUserPermissions = [];
 
             # 3. HIDRATACIÓN de superglobales
             $clientInfo = $server->getClientInfo($fd);
@@ -545,6 +560,7 @@ class ChannelServer
             $ctx->ws_fd = $fd;
             $ctx->http_status = 200;
 
+            Router::$currentTransport = 'ws';
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
@@ -637,20 +653,20 @@ class ChannelServer
             if ($scopeEntityId > 0 && !Profile::canAccessScope($scopeEntityId)) {
                 Log::logError('SECURITY: JWT_SCOPE_MISMATCH', [
                     'account_id' => $accountId,
-                    'profile_id' => Profile::$profile_id,
+                    'profile_id' => Profile::ctx()->profileId,
                     'jwt_scope' => $scopeEntityId,
                     'device_hash' => $deviceHash,
                     'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
                 ]);
-                $scopeEntityId = Profile::$entity_id;
+                $scopeEntityId = Profile::ctx()->entityId;
             }
-            Profile::$scope_entity_id = $scopeEntityId;
+            Profile::ctx()->scopeEntityId = $scopeEntityId;
 
             # Guardar sesión WS (array + Swoole\Table)
             $this->authenticatedConnections[$fd] = [
                 'token' => $token,
                 'account_id' => $accountId,
-                'profile_id' => Profile::$profile_id,
+                'profile_id' => Profile::ctx()->profileId,
                 'scope_entity_id' => $scopeEntityId,
                 'device_hash' => $deviceHash
             ];
@@ -659,17 +675,16 @@ class ChannelServer
                 $ok = $this->authTable->set((string)$fd, [
                     'token' => $token,
                     'account_id' => (int)$accountId,
-                    'profile_id' => Profile::$profile_id,
+                    'profile_id' => Profile::ctx()->profileId,
                     'device_hash' => $deviceHash,
                     'scope_entity_id' => (int)$scopeEntityId
                 ]);
                 if (!$ok) {
-                    Log::logError('authTable FULL — cannot store auth', ['fd' => $fd, 'profile_id' => Profile::$profile_id]);
+                    Log::logError('authTable FULL — cannot store auth', ['fd' => $fd, 'profile_id' => Profile::ctx()->profileId]);
                 }
             }
 
             # Set permissions
-            Router::$currentUserPermissions = Profile::getRoutePermissions();
 
         } catch (\Exception $e) {
             $this->clearAuth($fd);
@@ -849,6 +864,16 @@ foreach ($argv as $arg) {
     if (strpos($arg, '--port=') === 0) {
         $port = (int)substr($arg, 7);
     }
+}
+
+# Protección contra doble inicio en el mismo puerto
+$checkSocket = @stream_socket_client("tcp://{$host}:{$port}", $errno, $errstr, 1);
+if ($checkSocket) {
+    fclose($checkSocket);
+    $existingPid = trim(shell_exec("lsof -ti tcp:{$port} 2>/dev/null | head -1") ?? '');
+    fwrite(STDERR, "[ERROR] Puerto {$host}:{$port} ya está en uso (PID: {$existingPid})\n");
+    fwrite(STDERR, "[ERROR] Cierre el proceso existente: kill {$existingPid}\n");
+    exit(1);
 }
 
 $server = new ChannelServer($host, $port);

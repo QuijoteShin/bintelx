@@ -8,7 +8,7 @@ require_once '../bintelx/WarmUp.php';
   }
   # timezone se aplica via CONN::pdoOptions() MYSQL_ATTR_INIT_COMMAND
 
-new \bX\Args();
+\bX\Args::parseRequest();
 
 // CORS Configuration from environment
 $corsOrigin = \bX\Config::get('CORS_ALLOWED_ORIGINS', 'https://dev.local');
@@ -30,8 +30,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
 }
 
 
-if ($_SERVER['CONTENT_TYPE'] === 'application/json') {
-    $_POST = json_decode(file_get_contents('php://input'), true) ?? [];
+if (($_SERVER['CONTENT_TYPE'] ?? '') === 'application/json') {
+    $_POST = \bX\Args::ctx()->opt;
 }
 
 try {
@@ -77,16 +77,15 @@ try {
                 if ($scopeEntityId > 0 && !\bX\Profile::canAccessScope($scopeEntityId)) {
                     \bX\Log::logError('SECURITY: JWT_SCOPE_MISMATCH', [
                         'account_id' => $account_id,
-                        'profile_id' => \bX\Profile::$profile_id,
+                        'profile_id' => \bX\Profile::ctx()->profileId,
                         'jwt_scope' => $scopeEntityId,
                         'device_hash' => $deviceHash,
                         'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
                     ]);
-                    $scopeEntityId = \bX\Profile::$entity_id;
+                    $scopeEntityId = \bX\Profile::ctx()->entityId;
                 }
-                \bX\Profile::$scope_entity_id = $scopeEntityId;
+                \bX\Profile::ctx()->scopeEntityId = $scopeEntityId;
 
-                \bX\Router::$currentUserPermissions = \bX\Profile::getRoutePermissions();
 
                 \bX\Log::logDebug("Profile loaded with scope_entity_id: $scopeEntityId");
             }
