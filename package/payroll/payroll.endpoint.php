@@ -23,7 +23,7 @@ Router::register(['POST'], 'calculate\.(?P<format>json|toon)', function($format 
         return payrollResponse(['success' => false, 'message' => 'Authentication required'], $format, 401);
     }
 
-    $input = json_decode(file_get_contents('php://input'), true) ?? [];
+    $input = Args::ctx()->opt;;
 
     $data = [
         'employee_id' => (int)($input['employee_id'] ?? 0),

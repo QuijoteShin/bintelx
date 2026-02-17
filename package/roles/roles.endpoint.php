@@ -169,7 +169,7 @@ Router::register(['GET'], 'my-roles\.json', function() {
  * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int|null }
  */
 Router::register(['POST'], 'assign\.json', function() {
-    $input = json_decode(file_get_contents('php://input'), true) ?? [];
+    $input = Args::ctx()->opt;;
 
     $targetProfileId = (int)($input['profile_id'] ?? 0);
     $roleCode = $input['role_code'] ?? '';
@@ -265,7 +265,7 @@ Router::register(['POST'], 'assign\.json', function() {
  * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int|null }
  */
 Router::register(['POST'], 'revoke\.json', function() {
-    $input = json_decode(file_get_contents('php://input'), true) ?? [];
+    $input = Args::ctx()->opt;;
 
     $targetProfileId = (int)($input['profile_id'] ?? 0);
     $roleCode = $input['role_code'] ?? '';
