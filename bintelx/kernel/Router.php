@@ -38,9 +38,17 @@ class Router
    */
   private static string $apiBasePath = '/';
 
-  # Transport actual del request: 'http' (FPM/Swoole HTTP) o 'ws' (WebSocket)
-  # Seteado por channel.server antes de dispatch()
-  public static string $currentTransport = 'http';
+  /**
+   * Transport del request actual: 'http' o 'ws'
+   * En Swoole se lee de Coroutine::getContext() (coroutine-safe)
+   * En FPM siempre es 'http'
+   */
+  public static function getCurrentTransport(): string {
+    if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
+      return \Swoole\Coroutine::getContext()['_transport'] ?? 'http';
+    }
+    return 'http';
+  }
 
   /**
    * The Router is initialized by the application's entry point.
@@ -163,7 +171,11 @@ class Router
       $scope = ROUTER_SCOPE_PRIVATE;
     }
 
-    $transport = $options['transport'] ?? 'any'; # 'http' | 'ws' | 'any'
+    $transport = $options['transport'] ?? 'any';
+    if (!in_array($transport, ['http', 'ws', 'any'], true)) {
+      Log::logError("Router::register - Invalid transport '{$transport}' for '{$regexPattern}'. Defaulting to 'any'.");
+      $transport = 'any';
+    }
 
     self::$routesByModule[$moduleKey][] = [
       'methods' => array_map('strtoupper', $methods),
@@ -270,8 +282,9 @@ class Router
 
       # Verificar transport (http-only endpoints no se sirven por WS y viceversa)
       $routeTransport = $route['transport'] ?? 'any';
-      if ($routeTransport !== 'any' && $routeTransport !== self::$currentTransport) {
-        Log::logWarning("Router::dispatch - Transport mismatch: route requires '{$routeTransport}' but current is '" . self::$currentTransport . "' for '{$requestUri}'");
+      $currentTransport = self::getCurrentTransport();
+      if ($routeTransport !== 'any' && $routeTransport !== $currentTransport) {
+        Log::logWarning("Router::dispatch - Transport mismatch: route requires '{$routeTransport}' but current is '{$currentTransport}' for '{$requestUri}'");
         continue;
       }
 
