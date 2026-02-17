@@ -210,9 +210,9 @@ class ChannelServer
             $body = json_decode($rawContent, true) ?: [];
             $query = $request->get ?? [];
 
-            # Raw body para endpoints que leen binario (ej: file upload chunks)
+            # Raw body en contexto coroutine (para endpoints que leen binario como Upload::chunk)
             # En FPM usan php://input; en Swoole ese stream está vacío
-            $_SERVER['SWOOLE_RAW_CONTENT'] = $rawContent;
+            \Swoole\Coroutine::getContext()['_raw_content'] = $rawContent;
             $headers = [];
 
             # JWT desde header Authorization o cookie bnxt
@@ -256,9 +256,11 @@ class ChannelServer
                 }
             }
 
+            # Transport coroutine-safe (no static — evita race condition entre coroutines)
+            \Swoole\Coroutine::getContext()['_transport'] = 'http';
+
             ob_start();
             $route = new Router($uri, '/api');
-            Router::$currentTransport = 'http';
             Router::dispatch($method, $uri);
             $output = ob_get_clean();
 
@@ -555,12 +557,12 @@ class ChannelServer
 
             $route = new Router($uri, '/api');
 
-            # FD per-coroutine (aislado entre requests concurrentes del mismo worker)
+            # Estado per-coroutine (aislado entre requests concurrentes del mismo worker)
             $ctx = \Swoole\Coroutine::getContext();
             $ctx->ws_fd = $fd;
             $ctx->http_status = 200;
+            $ctx['_transport'] = 'ws';
 
-            Router::$currentTransport = 'ws';
             Router::dispatch($method, $uri);
 
             $output = ob_get_clean();
