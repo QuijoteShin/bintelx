@@ -24,7 +24,7 @@ if ($isSignatureValid) {
   $userId = $payload["id"];
   $profile = new \bX\Profile();
   $profile->load(["account_id" => $userId]);
-  echo "User ID:" . \bX\Profile::$account_id . PHP_EOL;
+  echo "User ID:" . \bX\Profile::ctx()->accountId . PHP_EOL;
 } else {
   echo "Invalid signature" . PHP_EOL;
 }

@@ -13,7 +13,7 @@ use cdc\CRF;
 $account = new \bX\Account("woz.min..", 'XOR_KEY_2o25');
 $profile = new \bX\Profile();
 $profile->load(['account_id' => 1]); // Usuario de prueba
-$actor = \bX\Profile::$account_id;
+$actor = \bX\Profile::ctx()->accountId;
 
 // --- Cargar el módulo CDC y sus endpoints ---
 $module = 'cdc';
