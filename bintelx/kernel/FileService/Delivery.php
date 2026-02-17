@@ -16,6 +16,8 @@ use bX\Log;
  *   - File streaming
  *   - Delivery audit logging
  *
+ * TODO: Panel de archivos — access request + password protection en resolve/stream
+ *
  * All methods follow Bintelx signature: (array $data, array $options, ?callable $callback)
  *
  * @package bX\FileService

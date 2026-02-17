@@ -259,11 +259,15 @@ class Upload
         $tempDir = self::getTempPath() . '/' . $uploadId;
         $chunkFile = $tempDir . '/chunk_' . str_pad($chunkIndex, 6, '0', STR_PAD_LEFT);
 
-        # Leer body binario: php://input (FPM) o SWOOLE_RAW_CONTENT (Channel Server)
-        # En Swoole php://input está vacío → channel.server inyecta rawContent() en $_SERVER
-        if (!empty($_SERVER['SWOOLE_RAW_CONTENT'])) {
-            $input = fopen('php://temp', 'r+b');
-            fwrite($input, $_SERVER['SWOOLE_RAW_CONTENT']);
+        # Leer body binario: coroutine context (Swoole) o php://input (FPM)
+        # En Swoole php://input está vacío → channel.server guarda rawContent() en ctx
+        $rawContent = null;
+        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
+            $rawContent = \Swoole\Coroutine::getContext()['_raw_content'] ?? null;
+        }
+        if ($rawContent !== null && $rawContent !== '') {
+            $input = fopen('php://memory', 'r+b');
+            fwrite($input, $rawContent);
             rewind($input);
         } else {
             $input = fopen('php://input', 'rb');
