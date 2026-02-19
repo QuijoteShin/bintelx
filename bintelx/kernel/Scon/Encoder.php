@@ -88,7 +88,7 @@ class Encoder {
         # Schema definitions
         $allSchemas = $this->registry->getAll('s');
         if (!empty($allSchemas)) {
-            $lines[] = '';
+            if (!empty($lines)) $lines[] = '';
             foreach ($allSchemas as $name => $def) {
                 $lines[] = "s:$name " . $this->encodeInline($def);
             }
@@ -97,7 +97,7 @@ class Encoder {
         # Response group definitions
         $allResponses = $this->registry->getAll('r');
         if (!empty($allResponses)) {
-            $lines[] = '';
+            if (!empty($lines)) $lines[] = '';
             foreach ($allResponses as $name => $def) {
                 $lines[] = "r:$name " . $this->encodeResponseGroup($def);
             }
@@ -106,7 +106,7 @@ class Encoder {
         # Security group definitions
         $allSecurity = $this->registry->getAll('sec');
         if (!empty($allSecurity)) {
-            $lines[] = '';
+            if (!empty($lines)) $lines[] = '';
             foreach ($allSecurity as $name => $def) {
                 $lines[] = "sec:$name " . $this->encodeInline($def);
             }

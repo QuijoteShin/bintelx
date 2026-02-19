@@ -44,8 +44,12 @@ class Minifier {
             $result .= $trimmed;
             $prevDepth = $depth;
 
-            # If line ends with : (introduces nested scope), increase expected depth
+            # Scope openers: increase expected depth for children
             if (preg_match('/:$/', $trimmed)) {
+                $prevDepth = $depth + 1;
+            }
+            # List item (- key: val) children are indented 1 level deeper
+            if (str_starts_with($trimmed, '- ')) {
                 $prevDepth = $depth + 1;
             }
 
@@ -92,8 +96,12 @@ class Minifier {
                 if ($trimmed !== '') {
                     $lines[] = str_repeat(' ', $indent * $depth) . $trimmed;
 
-                    # Auto-increase depth if line ends with :
+                    # Scope openers: increase depth for children
                     if (preg_match('/:$/', $trimmed) && !preg_match('/:\s*\S/', $trimmed)) {
+                        $depth++;
+                    }
+                    # List item children are indented 1 level deeper
+                    if (str_starts_with($trimmed, '- ')) {
                         $depth++;
                     }
                 }
