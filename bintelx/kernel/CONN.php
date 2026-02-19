@@ -61,9 +61,16 @@ class CONN {
             $tz = Config::get('DEFAULT_TIMEZONE', 'UTC');
         }
 
+        # Convertir IANA a offset numérico (MySQL sin timezone tables no acepta nombres IANA)
+        $offset = (new \DateTimeZone($tz))->getOffset(new \DateTime('now', new \DateTimeZone('UTC')));
+        $sign = $offset >= 0 ? '+' : '-';
+        $hours = str_pad((string)(int)abs($offset / 3600), 2, '0', STR_PAD_LEFT);
+        $minutes = str_pad((string)(int)(abs($offset) % 3600 / 60), 2, '0', STR_PAD_LEFT);
+        $tzOffset = "{$sign}{$hours}:{$minutes}";
+
         return [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE {$collation}, time_zone = '{$tz}'"
+            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE {$collation}, time_zone = '{$tzOffset}'",
         ];
     }
 
