@@ -89,6 +89,18 @@ class Args {
             return;
         }
 
+        # SCON
+        if (str_contains($contentType, 'text/scon')) {
+            $sconInput = file_get_contents('php://input');
+            if (!empty($sconInput)) {
+                $data = \bX\Scon\Scon::decode($sconInput);
+                if (is_array($data)) {
+                    self::populateData($data);
+                }
+            }
+            return;
+        }
+
         # Form-encoded en PUT/PATCH/DELETE (PHP solo auto-parsea POST en $_POST)
         if (str_contains($contentType, 'application/x-www-form-urlencoded') && $method !== 'POST') {
             $raw = file_get_contents('php://input');

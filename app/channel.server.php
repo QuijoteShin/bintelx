@@ -485,6 +485,11 @@ class ChannelServer
         $body = $data['body'] ?? [];
         $query = $data['query'] ?? [];
 
+        # SCON: si el frontend envía body como string SCON, decodificar a array
+        if (($data['_fmt'] ?? '') === 'scon' && is_string($body) && !empty($body)) {
+            $body = \bX\Scon\Scon::decode($body);
+        }
+
         # Separar query string de la URI (front puede enviar /api/units/list.json?page=1&limit=50)
         $uri = $rawUri;
         if ($rawUri && str_contains($rawUri, '?')) {
@@ -573,24 +578,34 @@ class ChannelServer
             # Status code coroutine-safe (evita race condition con http_response_code() global)
             $statusCode = $ctx->http_status ?? (http_response_code() ?: 200);
 
-            # Parse JSON response
-            $responseData = json_decode($output, true) ?? ['raw' => $output];
+            # Parse response — detect SCON or other non-JSON content types
+            $contentType = ChannelContext::getContextValue('_content_type', 'application/json; charset=utf-8');
 
-            # Enviar respuesta con status_code para compatibilidad HTTP
             $elapsed = round((microtime(true) - $t0) * 1000, 1);
             $responsePayload = [
                 'type' => 'api_response',
                 'correlation_id' => $correlationId,
                 'status' => $statusCode >= 200 && $statusCode < 400 ? 'success' : 'error',
                 'status_code' => $statusCode,
-                'data' => $responseData,
                 '_l' => "{$statusCode} {$method} {$uri}",
                 'timestamp' => time()
             ];
+
+            if (str_contains($contentType, 'application/json')) {
+                $responsePayload['data'] = json_decode($output, true) ?? ['raw' => $output];
+            } else {
+                # Non-JSON (scon, toon, etc): enviar string raw, frontend decodifica por _fmt
+                $responsePayload['data'] = $output;
+                # Extraer formato del content-type (text/scon → scon, text/toon → toon)
+                if (preg_match('#text/(\w+)#', $contentType, $m)) {
+                    $responsePayload['_fmt'] = $m[1];
+                }
+            }
+
             $server->push($fd, json_encode($responsePayload));
 
             # Verbose logging: response out
-            $outSize = strlen(json_encode($responseData));
+            $outSize = strlen($output);
             $this->info("← fd={$fd} OUT: {$statusCode} {$method} {$uri} ({$elapsed}ms, {$outSize}B)");
 
         } catch (\Exception $e) {
