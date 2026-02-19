@@ -265,9 +265,8 @@ class ChannelServer
             $output = ob_get_clean();
 
             # Enviar respuesta HTTP — Content-Type y status propagados desde Response::send()
-            $ctx = \Swoole\Coroutine::getContext();
-            $httpStatus = $ctx->http_status ?? 200;
-            $contentType = $ctx['_content_type'] ?? 'application/json; charset=utf-8';
+            $httpStatus = ChannelContext::getContextValue('http_status', 200);
+            $contentType = ChannelContext::getContextValue('_content_type', 'application/json; charset=utf-8');
             $response->status($httpStatus);
             $response->header('Content-Type', $contentType);
             $response->end($output);

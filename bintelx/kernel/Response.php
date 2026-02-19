@@ -136,9 +136,7 @@ class Response
         if (!headers_sent()) {
             http_response_code($this->statusCode);
         }
-        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::getContext()->http_status = $this->statusCode;
-        }
+        ChannelContext::setContextValue('http_status', $this->statusCode);
 
         switch ($this->type) {
             case 'json':
@@ -176,10 +174,8 @@ class Response
             }
         }
 
-        # Propagar Content-Type al contexto de coroutine para Channel Server HTTP
-        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::getContext()['_content_type'] = $this->headers['Content-Type'];
-        }
+        # Propagar Content-Type al Channel Server HTTP (no-op en FPM)
+        ChannelContext::setContextValue('_content_type', $this->headers['Content-Type']);
 
         # Send data (tal cual, el dev controla la estructura)
         echo json_encode($this->data);
@@ -187,10 +183,8 @@ class Response
 
     protected function sendRaw(): void
     {
-        # Propagar Content-Type al contexto de coroutine para Channel Server HTTP
-        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::getContext()['_content_type'] = $this->headers['Content-Type'] ?? 'text/plain';
-        }
+        # Propagar Content-Type al Channel Server HTTP (no-op en FPM)
+        ChannelContext::setContextValue('_content_type', $this->headers['Content-Type'] ?? 'text/plain');
 
         # Send headers
         foreach ($this->headers as $name => $value) {

@@ -81,6 +81,19 @@ class ChannelContext
         return $sent;
     }
 
+    # Almacena valor en contexto de coroutine (no-op en FPM/CLI)
+    # Uso: propagar metadata de Response (Content-Type, headers) a executeHttpRoute
+    public static function setContextValue(string $key, mixed $value): void {
+        if (!self::isChannel()) return;
+        \Swoole\Coroutine::getContext()[$key] = $value;
+    }
+
+    # Lee valor del contexto de coroutine, con fallback
+    public static function getContextValue(string $key, mixed $default = null): mixed {
+        if (!self::isChannel()) return $default;
+        return \Swoole\Coroutine::getContext()[$key] ?? $default;
+    }
+
     # Helper: obtener FDs por scope (workspace)
     public static function getFdsByScope(int $scopeEntityId): array {
         $fds = [];
