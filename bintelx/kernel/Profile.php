@@ -199,6 +199,11 @@ class Profile {
         $roleAssignments = self::fetchProfileRoles(self::ctx()->profileId);
         self::hydrateRoleCaches($relationships, $roleAssignments);
 
+        # Persistir roles en Cache compartido (Swoole\Table) — TTL 300s con invalidación inmediata
+        if (!empty(self::ctx()->roles['by_role'])) {
+            Cache::set('global:profile:roles', (string)self::ctx()->profileId, self::ctx()->roles, 300);
+        }
+
         $roleCount = count(self::ctx()->roles['by_role'] ?? []);
         $routeCount = count(self::ctx()->permissions['routes'] ?? []);
         Log::logDebug("Permissions loaded for profile_id=" . self::ctx()->profileId . " (roles={$roleCount}, route_rules={$routeCount})");
@@ -244,6 +249,17 @@ class Profile {
         if ($profileId === self::ctx()->profileId && !empty(self::ctx()->roles['by_role'])) {
             foreach ($roleCodes as $code) {
                 if (self::hasRoleInCache($scopeEntityId, $code, $includePassive)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        # Cache path (shared): check bX\Cache before DB (global por profile, filtro scope en memoria)
+        $cached = Cache::get('global:profile:roles', (string)$profileId);
+        if ($cached !== null && !empty($cached['by_role'])) {
+            foreach ($roleCodes as $code) {
+                if (self::hasRoleInCacheFrom($cached, $scopeEntityId, $code, $includePassive)) {
                     return true;
                 }
             }
@@ -641,12 +657,18 @@ class Profile {
      */
     private static function hasRoleInCache(?int $scopeEntityId, string $roleCode, bool $includePassive): bool
     {
-        if (empty(self::ctx()->roles['by_role'][$roleCode])) {
+        return self::hasRoleInCacheFrom(self::ctx()->roles, $scopeEntityId, $roleCode, $includePassive);
+    }
+
+    # Busca rol en un array de roles (ctx o cached) — no modifica estado global
+    private static function hasRoleInCacheFrom(array $roles, ?int $scopeEntityId, string $roleCode, bool $includePassive): bool
+    {
+        if (empty($roles['by_role'][$roleCode])) {
             return false;
         }
 
         $globalIds = Tenant::globalIds();
-        foreach (self::ctx()->roles['by_role'][$roleCode] as $assignment) {
+        foreach ($roles['by_role'][$roleCode] as $assignment) {
             $assignmentScope = $assignment['scopeEntityId'] ?? null;
             # Match if: no scope requested, scope matches, or assignment is global
             if ($scopeEntityId === null || $assignmentScope === $scopeEntityId || in_array($assignmentScope, $globalIds, true)) {

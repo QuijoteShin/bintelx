@@ -18,7 +18,7 @@ class HolidayProvider
     public const TYPE_OPTIONAL = 'OPTIONAL';
 
     # Cache namespace (transparente: Swoole\Table o static array via bX\Cache)
-    private const CACHE_NS = 'geo:holidays';
+    private const CACHE_NS = 'global:geo:holidays';
     private const CACHE_TTL = 86400; # 24h
     private static bool $useDb = true;
 

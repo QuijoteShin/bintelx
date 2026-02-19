@@ -29,6 +29,7 @@ class Encoder {
     private SchemaRegistry $registry;
     private array $extractedSchemas; # auto-detected schemas for dedup
     private bool $autoExtract;
+    private bool $header;
     private array $warnings = [];
 
     public function __construct(array $options = []) {
@@ -37,6 +38,7 @@ class Encoder {
         $this->mode = $options['mode'] ?? 'warn';
         $this->enforce = $options['enforce'] ?? null;
         $this->autoExtract = $options['autoExtract'] ?? false;
+        $this->header = $options['header'] ?? false; # header off by default
         $this->registry = new SchemaRegistry();
         $this->extractedSchemas = [];
         $this->warnings = [];
@@ -70,8 +72,10 @@ class Encoder {
 
         $lines = [];
 
-        # Header
-        $lines[] = self::HEADER;
+        # Header (optional, off by default)
+        if ($this->header) {
+            $lines[] = self::HEADER;
+        }
 
         # Directives
         if ($this->mode !== 'warn') {
@@ -113,8 +117,13 @@ class Encoder {
             $lines[] = '';
         }
 
-        foreach ($this->encodeValue($data, 0) as $line) {
-            $lines[] = $line;
+        # Explicit {} for empty object (preserves type distinction vs [])
+        if (is_array($data) && empty($data) && !array_is_list($data)) {
+            $lines[] = '{}';
+        } else {
+            foreach ($this->encodeValue($data, 0) as $line) {
+                $lines[] = $line;
+            }
         }
 
         # Prune orphan schemas: defined but never referenced in the body

@@ -23,7 +23,7 @@ final class FeePolicyRepository
     const VERSION = '1.0.0';
 
     # Cache namespace (transparente: Swoole\Table o static array via bX\Cache)
-    private const CACHE_NS = 'fee:policy';
+    private const CACHE_NS = 'global:fee:policy';
     private const CACHE_TTL = 3600; # 1h
 
     /**

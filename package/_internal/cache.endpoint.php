@@ -7,14 +7,34 @@ use bX\Cache;
 use bX\Log;
 use bX\Args;
 
-# Flush de cache namespace — solo server-to-server (FPM → Channel)
+# Invalidación de cache — solo server-to-server (FPM → Channel)
+# action=flush: flush namespace con scope (construye prefix correcto)
+# action=delete: delete entry específica por fullKey
 Router::register(['POST'], 'flush', function() {
-    $ns = Args::ctx()->opt['namespace'] ?? '';
-    if ($ns) {
-        Cache::flush($ns);
-        Log::logInfo("Cache namespace '{$ns}' flushed via system endpoint");
+    $action = Args::ctx()->opt['action'] ?? 'flush';
+
+    if ($action === 'delete') {
+        $key = Args::ctx()->opt['key'] ?? '';
+        if ($key) {
+            Cache::delete_raw($key);
+            Log::logInfo("Cache key '{$key}' deleted via system endpoint");
+        }
+        return Response::json(['deleted' => $key]);
     }
-    return Response::json(['flushed' => $ns]);
+
+    # action=flush — construir prefix con scope recibido
+    $ns = Args::ctx()->opt['namespace'] ?? '';
+    $scope = (int)(Args::ctx()->opt['scope'] ?? 0);
+    if ($ns) {
+        if (str_starts_with($ns, 'global:')) {
+            Cache::flushPrefix("{$ns}:");
+        } else {
+            $prefix = $scope > 0 ? "{$scope}:{$ns}:" : "{$ns}:";
+            Cache::flushPrefix($prefix);
+        }
+        Log::logInfo("Cache namespace '{$ns}' flushed via system endpoint (scope={$scope})");
+    }
+    return Response::json(['flushed' => $ns, 'scope' => $scope]);
 }, ROUTER_SCOPE_SYSTEM);
 
 # Cache GET — retorna valor + flag exists (1 solo round-trip para has()+get())

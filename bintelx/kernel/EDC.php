@@ -30,7 +30,7 @@ use Exception;
 class EDC {
 
     # Cache namespace (transparente: Swoole\Table o static array via bX\Cache)
-    private const CACHE_NS = 'edc:schema';
+    private const CACHE_NS = 'global:edc:schema';
     private const CACHE_TTL = 1800; # 30min
 
     // ==================== FORM DEFINITIONS ====================
@@ -118,7 +118,7 @@ class EDC {
             // Invalidar cache
             $cacheKey = self::getCacheKey($formName, $scopeEntityId);
             Cache::delete(self::CACHE_NS, $cacheKey);
-            Cache::notifyChannel(self::CACHE_NS);
+            Cache::notifyChannel(self::CACHE_NS, $cacheKey);
 
             Log::logInfo('EDC.defineForm', [
                 'form_name' => $formName,
@@ -1101,6 +1101,7 @@ class EDC {
      * @return string Cache key
      */
     private static function getCacheKey(string $formName, ?int $scopeEntityId): string {
+        # global: namespace = sin auto-scope, scope explícito en key (cross-scope safe)
         $scope = $scopeEntityId ?? Tenant::resolve();
         return ($scope ?? 0) . ':' . $formName;
     }

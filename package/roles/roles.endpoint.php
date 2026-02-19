@@ -19,6 +19,7 @@ use bX\Log;
 use bX\Args;
 use bX\RoleTemplateService;
 use bX\DataCaptureService;
+use bX\Cache;
 
 # ============================================
 # EAV variable definitions (idempotent UPSERT)
@@ -217,6 +218,10 @@ Router::register(['POST'], 'assign\.json', function() {
         # EAV audit: reactivation
         _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'reactivate');
 
+        # Invalidar cache de roles del perfil afectado
+        Cache::delete('global:profile:roles', (string)$targetProfileId);
+        Cache::notifyChannel('global:profile:roles', (string)$targetProfileId);
+
         return Response::json([
             'success' => true,
             'message' => 'Role already assigned, reactivated',
@@ -242,6 +247,10 @@ Router::register(['POST'], 'assign\.json', function() {
 
     # EAV audit: assign
     _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'assign');
+
+    # Invalidar cache de roles del perfil afectado
+    Cache::delete('profile:roles', (string)$targetProfileId);
+    Cache::notifyChannel('profile:roles', (string)$targetProfileId);
 
     Log::logInfo("Role assigned", [
         'target_profile_id' => $targetProfileId,
@@ -290,6 +299,10 @@ Router::register(['POST'], 'revoke\.json', function() {
 
     # EAV audit: revoke
     _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'revoke');
+
+    # Invalidar cache de roles del perfil afectado
+    Cache::delete('profile:roles', (string)$targetProfileId);
+    Cache::notifyChannel('profile:roles', (string)$targetProfileId);
 
     Log::logInfo("Role revoked", [
         'target_profile_id' => $targetProfileId,
@@ -486,6 +499,25 @@ Router::register(['GET'], 'templates/preview/(?P<relationKind>[a-z_]+)', functio
         'roles' => $roles
     ]);
 }, ROUTER_SCOPE_READ);
+
+# ============================================
+# Cache invalidation — invalidar roles de un perfil en Channel Server
+# ============================================
+
+/**
+ * @endpoint   POST /api/roles/invalidate-cache
+ * @scope      ROUTER_SCOPE_WRITE (migrar a SYSTEM después de testing)
+ * @purpose    Forzar invalidación de cache de roles para un perfil
+ */
+Router::register(['POST'], 'invalidate-cache', function() {
+    $profileId = (int)(Args::ctx()->opt['profile_id'] ?? 0);
+    if ($profileId <= 0) {
+        return Response::json(['success' => false, 'message' => 'profile_id required'], 400);
+    }
+    Cache::delete('global:profile:roles', (string)$profileId);
+    Cache::notifyChannel('global:profile:roles', (string)$profileId);
+    return Response::json(['success' => true, 'invalidated' => $profileId]);
+}, ROUTER_SCOPE_WRITE);
 
 # ============================================
 # Internal: EAV audit for role changes

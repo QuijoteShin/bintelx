@@ -139,6 +139,10 @@ class RoleTemplateService
         }
 
         if (!empty($applied)) {
+            # Invalidar cache de roles del perfil afectado
+            Cache::delete('global:profile:roles', (string)$profileId);
+            Cache::notifyChannel('global:profile:roles', (string)$profileId);
+
             Log::logInfo("RoleTemplate: Applied roles to profile {$profileId} for scope {$scopeEntityId}", [
                 'trigger_relation' => $relationKind,
                 'roles' => $applied

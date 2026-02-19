@@ -41,11 +41,11 @@ class GeoService
     public const VERSION = '1.0.0';
 
     # Cache namespaces (transparente: Swoole\Table o static array via bX\Cache)
-    private const CACHE_RATES = 'geo:rates';
-    private const CACHE_TAX = 'geo:tax';
-    private const CACHE_POLICY = 'geo:policy';
-    private const CACHE_COUNTRY = 'geo:country';
-    private const CACHE_CURRENCY = 'geo:currency';
+    private const CACHE_RATES = 'global:geo:rates';
+    private const CACHE_TAX = 'global:geo:tax';
+    private const CACHE_POLICY = 'global:geo:policy';
+    private const CACHE_COUNTRY = 'global:geo:country';
+    private const CACHE_CURRENCY = 'global:geo:currency';
     private const TTL_SCOPED = 3600;    # 1h for tenant-scoped data
     private const TTL_GLOBAL = 86400;   # 24h for global catalogs
 

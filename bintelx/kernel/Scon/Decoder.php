@@ -130,6 +130,11 @@ class Decoder {
             # Has a key prefix (e.g. tags[3]:) — fall through to decodeObject
         }
 
+        # Explicit empty object marker
+        if (count($parsedLines) === 1 && $first['content'] === '{}') {
+            return [];
+        }
+
         if (count($parsedLines) === 1 && !$this->isKeyValueLine($first['content'])) {
             $val = $this->parsePrimitive($first['content']);
             return is_array($val) ? $val : [$val];

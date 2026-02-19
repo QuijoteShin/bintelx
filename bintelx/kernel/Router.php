@@ -327,7 +327,7 @@ class Router
           # New way: Return Response object
           ob_end_clean(); # Discard captured output, Response will handle its own output
           $result->send();
-        } elseif (!empty($result)) {
+        } elseif (is_array($result)) {
           # Auto-formato: detecta extensión de URI y envuelve en Response apropiado
           ob_end_clean();
           $detectedFormat = self::detectFormat($uriPathForRouteMatching);

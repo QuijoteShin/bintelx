@@ -189,8 +189,9 @@ class TreeHash
         if ($val === null) return "\x00";
         if ($val === true) return "\x01\x01";
         if ($val === false) return "\x01\x00";
-        if (is_int($val)) return "\x02" . pack('q', $val);
-        if (is_float($val)) return "\x03" . pack('E', $val);
+        # String representation for cross-language compatibility (JS port uses String())
+        if (is_int($val)) return "\x02" . (string)$val;
+        if (is_float($val)) return "\x03" . (string)$val;
         if (is_string($val)) return "\x04" . $val;
         return "\x04" . (string)$val;
     }

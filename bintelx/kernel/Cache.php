@@ -24,9 +24,19 @@ class Cache {
         return self::$backend;
     }
 
-    # Construye key interno: "{ns}:{key}"
+    # Prefijo que excluye auto-scope (catálogos globales: country, currency, holidays)
+    private const GLOBAL_PREFIX = 'global:';
+
+    # Construye key interno con auto-scope por tenant
+    # Namespaces sin prefijo global: → "{scope}:{ns}:{key}" (tenant-isolated)
+    # Namespaces con prefijo global: → "global:{ns}:{key}" (shared, sin scope)
+    # En FPM/CLI sin scope autenticado: key sin scope prefix (ArrayBackend muere con el request)
     private static function makeKey(string $ns, string $key): string {
-        return "{$ns}:{$key}";
+        if (str_starts_with($ns, self::GLOBAL_PREFIX)) {
+            return "{$ns}:{$key}";
+        }
+        $scope = Profile::ctx()->scopeEntityId ?? 0;
+        return $scope > 0 ? "{$scope}:{$ns}:{$key}" : "{$ns}:{$key}";
     }
 
     public static function get(string $ns, string $key): mixed {
@@ -61,21 +71,42 @@ class Cache {
         self::ensureBackend()->delete(self::makeKey($ns, $key));
     }
 
-    # Flush all entries in a namespace
+    # Flush all entries in a namespace (respeta auto-scope)
+    # Flush scoped: solo borra entries del tenant actual
+    # Flush global: borra todas las entries del namespace global
     public static function flush(string $ns): void {
-        self::ensureBackend()->flush("{$ns}:");
+        if (str_starts_with($ns, self::GLOBAL_PREFIX)) {
+            self::ensureBackend()->flush("{$ns}:");
+            return;
+        }
+        $scope = Profile::ctx()->scopeEntityId ?? 0;
+        $prefix = $scope > 0 ? "{$scope}:{$ns}:" : "{$ns}:";
+        self::ensureBackend()->flush($prefix);
     }
 
     # Notifica al Channel Server para invalidar cache desde FPM/CLI
+    # key null = flush namespace (con scope del contexto), key presente = delete entry específica
     # Fire-and-forget: si el Channel no está corriendo, falla silenciosamente
     # Usa ROUTER_SCOPE_SYSTEM: auth vía X-System-Key header
-    public static function notifyChannel(string $ns): void {
+    public static function notifyChannel(string $ns, ?string $key = null): void {
         if (self::$backend instanceof \bX\Cache\SwooleTableBackend) return;
 
         $channelHost = getenv('CHANNEL_HOST') ?: '127.0.0.1';
         $channelPort = getenv('CHANNEL_PORT') ?: '8000';
         $url = "http://{$channelHost}:{$channelPort}/api/_internal/flush";
-        $payload = json_encode(['namespace' => $ns]);
+
+        if ($key !== null) {
+            # Delete entry específica — construir fullKey y usar action=delete
+            $fullKey = self::makeKey($ns, $key);
+            $payload = json_encode(['action' => 'delete', 'key' => $fullKey]);
+        } else {
+            # Flush namespace — enviar scope para que Channel construya prefix correcto
+            $scope = 0;
+            if (!str_starts_with($ns, self::GLOBAL_PREFIX)) {
+                $scope = Profile::ctx()->scopeEntityId ?? 0;
+            }
+            $payload = json_encode(['action' => 'flush', 'namespace' => $ns, 'scope' => $scope]);
+        }
 
         $headers = "Content-Type: application/json\r\n";
         $systemSecret = Config::get('SYSTEM_SECRET', '');
@@ -91,6 +122,11 @@ class Cache {
                 'timeout' => 1,
             ]
         ]));
+    }
+
+    # Flush por prefix directo — bypass makeKey(), para uso en endpoints _internal
+    public static function flushPrefix(string $prefix): void {
+        self::ensureBackend()->flush($prefix);
     }
 
     # Acceso directo al backend con key completa (para endpoints _internal)
