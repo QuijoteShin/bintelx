@@ -78,6 +78,15 @@ class Router
     };
   }
 
+  # Extrae formato de respuesta de la URI (json|scon|toon), default json
+  private static function detectFormat(string $uri): string
+  {
+    if (preg_match('/\.(json|scon|toon)$/i', $uri, $m)) {
+      return strtolower($m[1]);
+    }
+    return 'json';
+  }
+
   /**
    * Finds endpoint definition files using bX\Cardex.
    * @param array $data ['find_str' => string (base path for Cardex search),
@@ -319,9 +328,10 @@ class Router
           ob_end_clean(); # Discard captured output, Response will handle its own output
           $result->send();
         } elseif (!empty($result)) {
-          # New way: Return data directly, wrap in Response
-          ob_end_clean(); # Discard captured output
-          \bX\Response::success($result)->send();
+          # Auto-formato: detecta extensión de URI y envuelve en Response apropiado
+          ob_end_clean();
+          $detectedFormat = self::detectFormat($uriPathForRouteMatching);
+          \bX\Response::auto($result, $detectedFormat)->send();
         } else {
           # Legacy way: Endpoint did echo directly
           $output = ob_get_clean();

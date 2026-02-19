@@ -77,6 +77,16 @@ class Response
         return $response;
     }
 
+    # Auto-formato por extensión de URL; usado por Router::dispatch
+    public static function auto(mixed $data, string $format, int $code = 200): self
+    {
+        return match ($format) {
+            'toon' => self::toon($data, $code),
+            'scon' => self::scon($data, $code),
+            default => self::json($data, $code),
+        };
+    }
+
     # Para contenido RAW (HTML, texto plano, etc)
     public static function raw(string $content, string $contentType = 'text/plain'): self
     {
@@ -166,12 +176,22 @@ class Response
             }
         }
 
+        # Propagar Content-Type al contexto de coroutine para Channel Server HTTP
+        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::getContext()['_content_type'] = $this->headers['Content-Type'];
+        }
+
         # Send data (tal cual, el dev controla la estructura)
         echo json_encode($this->data);
     }
 
     protected function sendRaw(): void
     {
+        # Propagar Content-Type al contexto de coroutine para Channel Server HTTP
+        if (class_exists('\Swoole\Coroutine', false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::getContext()['_content_type'] = $this->headers['Content-Type'] ?? 'text/plain';
+        }
+
         # Send headers
         foreach ($this->headers as $name => $value) {
             if (!headers_sent()) {

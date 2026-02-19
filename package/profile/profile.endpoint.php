@@ -303,7 +303,7 @@ Router::register(['PUT'], 'email', function() {
  * Returns scopes with metadata ready for frontend.
  * All SQL logic encapsulated in Profile::getAllowedScopesWithMeta().
  */
-Router::register(['GET'], 'scopes.json', function() {
+Router::register(['GET'], 'scopes\.(json|scon|toon)', function() {
   if ($authError = profile_require_auth()) {
     return $authError;
   }
@@ -311,7 +311,8 @@ Router::register(['GET'], 'scopes.json', function() {
   # Delegate to Profile (no SQL in endpoint)
   $scopes = Profile::getAllowedScopesWithMeta();
 
-  return Response::json(['success' => true, 'scopes' => $scopes]);
+  # Auto-formato: Router detecta extensión y serializa como json/scon/toon
+  return ['success' => true, 'scopes' => $scopes];
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
