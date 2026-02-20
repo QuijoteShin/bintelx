@@ -44,6 +44,7 @@ class Profile {
         'routes' => ['*' => 'public'],
         'roles' => []
     ];
+    public array $categories = []; # RBAC: module category codes del usuario
     public ?array $cachedAllowedScopes = null;
 
     /**
@@ -522,6 +523,12 @@ class Profile {
 
             $scopeEntityId = isset($row['scope_entity_id']) ? (int)$row['scope_entity_id'] : null;
 
+            # RBAC: try role_route_permissions table first, fallback to permissions_json
+            $rolePerms = self::getRoutePermissionsForRole($roleCode, $scopeEntityId);
+            if ($rolePerms === null) {
+                $rolePerms = self::decodePermissionsJson($row['permissions_json'] ?? null);
+            }
+
             $roleAssignment = [
                 'profileRoleId' => (int)($row['profile_role_id'] ?? 0),
                 'profileId' => (int)($row['profile_id'] ?? 0),
@@ -530,7 +537,7 @@ class Profile {
                 'scopeType' => $row['scope_type'] ?? null,
                 'scopeEntityId' => $scopeEntityId,
                 'scopeName' => $row['scope_name'] ?? null,
-                'permissions' => self::decodePermissionsJson($row['permissions_json'] ?? null),
+                'permissions' => $rolePerms,
             ];
 
             # System admin gets full access
@@ -571,6 +578,12 @@ class Profile {
             'routes' => $routeMap,
             'roles' => array_keys($byRole)
         ];
+
+        # RBAC: extract categorySet from user's packages
+        self::ctx()->categories = ModuleCategoryService::getProfileCategories(
+            self::ctx()->profileId,
+            self::ctx()->scopeEntityId > 0 ? self::ctx()->scopeEntityId : null
+        );
     }
 
     /**
@@ -587,6 +600,29 @@ class Profile {
         self::$rolePermissionsColumnExists = !empty($columns);
         self::$rolePermissionsColumnChecked = true;
         return self::$rolePermissionsColumnExists;
+    }
+
+    /**
+     * Get route permissions from role_route_permissions table for a role.
+     * Returns null if no records found (caller should fallback to permissions_json).
+     */
+    private static function getRoutePermissionsForRole(string $roleCode, ?int $scopeEntityId = null): ?array
+    {
+        $params = [':role' => $roleCode];
+        $sql = "SELECT route_pattern, scope_level FROM role_route_permissions
+                WHERE role_code = :role";
+
+        $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
+        if ($scopeEntityId > 0) $opts['scope_entity_id'] = $scopeEntityId;
+
+        $sql = Tenant::applySql($sql, 'scope_entity_id', $opts, $params);
+
+        $routes = [];
+        CONN::dml($sql, $params, function ($row) use (&$routes) {
+            $routes[$row['route_pattern']] = $row['scope_level'];
+        });
+
+        return !empty($routes) ? ['routes' => $routes] : null;
     }
 
     /**

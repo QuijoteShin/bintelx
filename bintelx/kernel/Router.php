@@ -223,6 +223,17 @@ class Router
     if ($requiredScope === ROUTER_SCOPE_PUBLIC || $requiredScope === ROUTER_SCOPE_PUBLIC_WRITE) {
       return true;
     }
+
+    # Category macro-filter: deny if route belongs to a category the user doesn't have
+    $routeCategory = ModuleCategoryService::getRouteCategory($pathAfterPrefix, Profile::ctx()->scopeEntityId);
+    if ($routeCategory !== null) {
+      $profileId = Profile::ctx()->profileId;
+      if ($profileId > 0 && !ACL::hasCategory($profileId, $routeCategory, Profile::ctx()->scopeEntityId)) {
+        Log::logInfo("Router::hasPermission - Category DENIED: profile={$profileId}, category='{$routeCategory}', path='{$pathAfterPrefix}'");
+        return false;
+      }
+    }
+
     $effectiveUserScope = ROUTER_SCOPE_PUBLIC; # Default to the lowest permission.
 
     $userPerms = Profile::getRoutePermissions();

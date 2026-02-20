@@ -33,7 +33,7 @@ class RoleTemplateService
         $roles = [];
         $params = [':kind' => $relationKind];
 
-        $sql = "SELECT role_code, scope_entity_id
+        $sql = "SELECT role_code, package_code, scope_entity_id
                 FROM role_templates
                 WHERE relation_kind = :kind
                   AND is_active = 1";
@@ -64,7 +64,19 @@ class RoleTemplateService
             if ($hasSpecificScope && in_array((int)$row['scope_entity_id'], $globalIds, true)) {
                 continue;
             }
-            $roles[] = $row['role_code'];
+
+            # Si tiene package_code → expandir a roles individuales
+            if (!empty($row['package_code'])) {
+                $expanded = RolePackageService::expand($row['package_code'], $scopeEntityId);
+                foreach ($expanded['roles'] as $expandedRole) {
+                    $roles[] = $expandedRole;
+                }
+            }
+
+            # Si tiene role_code directo → agregar
+            if (!empty($row['role_code'])) {
+                $roles[] = $row['role_code'];
+            }
         }
 
         return array_unique($roles);
@@ -118,13 +130,14 @@ class RoleTemplateService
             # Create the role assignment in profile_roles
             $result = CONN::nodml(
                 "INSERT INTO profile_roles
-                 (profile_id, role_code, scope_entity_id, status, created_by_profile_id, updated_by_profile_id)
+                 (profile_id, role_code, scope_entity_id, source_package_code, status, created_by_profile_id, updated_by_profile_id)
                  VALUES
-                 (:pid, :role, :scope, 'active', :actor, :actor)",
+                 (:pid, :role, :scope, :pkg, 'active', :actor, :actor)",
                 [
                     ':pid' => $profileId,
                     ':role' => $roleCode,
                     ':scope' => $scopeEntityId,
+                    ':pkg' => null,
                     ':actor' => $actor
                 ]
             );

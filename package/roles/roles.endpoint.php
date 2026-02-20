@@ -17,7 +17,11 @@ use bX\Profile;
 use bX\CONN;
 use bX\Log;
 use bX\Args;
+use bX\ACL;
 use bX\RoleTemplateService;
+use bX\RolePackageService;
+use bX\ModuleCategoryService;
+use bX\TenantPositionService;
 use bX\DataCaptureService;
 use bX\Cache;
 
@@ -166,18 +170,22 @@ Router::register(['GET'], 'my-roles\.json', function() {
  * @endpoint   /api/roles/assign.json
  * @method     POST
  * @scope      ROUTER_SCOPE_WRITE
- * @purpose    Assign role to a profile (EAV audited)
- * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int|null }
+ * @purpose    Assign role to a profile via ACL (EAV audited)
+ * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int }
  */
 Router::register(['POST'], 'assign\.json', function() {
-    $input = Args::ctx()->opt;;
+    $input = Args::ctx()->opt;
 
     $targetProfileId = (int)($input['profile_id'] ?? 0);
     $roleCode = $input['role_code'] ?? '';
-    $scopeEntityId = isset($input['scope_entity_id']) ? (int)$input['scope_entity_id'] : null;
+    $scopeEntityId = (int)($input['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
 
     if ($targetProfileId <= 0 || empty($roleCode)) {
         return Response::json(['success' => false, 'message' => 'profile_id and role_code required'], 400);
+    }
+
+    if ($scopeEntityId <= 0) {
+        return Response::json(['success' => false, 'message' => 'scope_entity_id required (cannot be NULL)'], 400);
     }
 
     # Verify role exists
@@ -195,116 +203,66 @@ Router::register(['POST'], 'assign\.json', function() {
         return Response::json(['success' => false, 'message' => 'Role not found: ' . $roleCode], 404);
     }
 
-    # Check if already assigned in profile_roles
-    $existingId = null;
-    CONN::dml(
-        "SELECT profile_role_id FROM profile_roles
-         WHERE profile_id = :pid AND role_code = :role
-           AND scope_entity_id = :scope",
-        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId],
-        function($row) use (&$existingId) {
-            $existingId = (int)$row['profile_role_id'];
-            return false;
-        }
-    );
-
-    if ($existingId) {
-        # Reactivate if inactive
-        CONN::nodml(
-            "UPDATE profile_roles SET status = 'active', updated_by_profile_id = :actor WHERE profile_role_id = :id",
-            [':id' => $existingId, ':actor' => Profile::ctx()->profileId]
-        );
-
-        # EAV audit: reactivation
-        _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'reactivate');
-
-        # Invalidar cache de roles del perfil afectado
-        Cache::delete('global:profile:roles', (string)$targetProfileId);
-        Cache::notifyChannel('global:profile:roles', (string)$targetProfileId);
-
-        return Response::json([
-            'success' => true,
-            'message' => 'Role already assigned, reactivated',
-            'profile_role_id' => $existingId
-        ]);
-    }
-
-    # Create new assignment in profile_roles
-    $result = CONN::nodml(
-        "INSERT INTO profile_roles (profile_id, role_code, scope_entity_id, status, created_by_profile_id)
-         VALUES (:pid, :role, :scope, 'active', :actor)",
-        [
-            ':pid' => $targetProfileId,
-            ':role' => $roleCode,
-            ':scope' => $scopeEntityId,
-            ':actor' => Profile::ctx()->profileId
-        ]
-    );
+    # Delegar a ACL (maneja dedup, reactivación, cache invalidation)
+    $sourcePackage = $input['source_package_code'] ?? null;
+    $result = ACL::assignRole($targetProfileId, $roleCode, $scopeEntityId, null, $sourcePackage);
 
     if (!$result['success']) {
-        return Response::json(['success' => false, 'message' => 'Failed to assign role'], 500);
+        return Response::json(['success' => false, 'message' => $result['error'] ?? 'Failed to assign role'], 500);
     }
 
-    # EAV audit: assign
-    _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'assign');
+    # EAV audit
+    $action = ($result['already_exists'] ?? false) ? 'reactivate' : 'assign';
+    _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, $action);
 
-    # Invalidar cache de roles del perfil afectado
-    Cache::delete('profile:roles', (string)$targetProfileId);
-    Cache::notifyChannel('profile:roles', (string)$targetProfileId);
-
-    Log::logInfo("Role assigned", [
+    Log::logInfo("Role assigned via ACL", [
         'target_profile_id' => $targetProfileId,
         'role_code' => $roleCode,
         'scope_entity_id' => $scopeEntityId,
+        'already_existed' => $result['already_exists'] ?? false,
         'assigned_by' => Profile::ctx()->profileId
     ]);
 
     return Response::json([
         'success' => true,
-        'message' => 'Role assigned successfully',
-        'profile_role_id' => (int)$result['last_id']
-    ], 201);
+        'message' => ($result['already_exists'] ?? false) ? 'Role reactivated' : 'Role assigned',
+        'already_exists' => $result['already_exists'] ?? false
+    ], ($result['already_exists'] ?? false) ? 200 : 201);
 }, ROUTER_SCOPE_WRITE);
 
 /**
  * @endpoint   /api/roles/revoke.json
  * @method     POST
  * @scope      ROUTER_SCOPE_WRITE
- * @purpose    Revoke role from a profile (EAV audited)
- * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int|null }
+ * @purpose    Revoke role from a profile via ACL (EAV audited)
+ * @body       { "profile_id": int, "role_code": string, "scope_entity_id": int }
  */
 Router::register(['POST'], 'revoke\.json', function() {
-    $input = Args::ctx()->opt;;
+    $input = Args::ctx()->opt;
 
     $targetProfileId = (int)($input['profile_id'] ?? 0);
     $roleCode = $input['role_code'] ?? '';
-    $scopeEntityId = isset($input['scope_entity_id']) ? (int)$input['scope_entity_id'] : null;
+    $scopeEntityId = (int)($input['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
 
     if ($targetProfileId <= 0 || empty($roleCode)) {
         return Response::json(['success' => false, 'message' => 'profile_id and role_code required'], 400);
     }
 
-    $result = CONN::nodml(
-        "UPDATE profile_roles
-         SET status = 'inactive', updated_by_profile_id = :actor
-         WHERE profile_id = :pid AND role_code = :role
-           AND scope_entity_id = :scope
-           AND status = 'active'",
-        [':pid' => $targetProfileId, ':role' => $roleCode, ':scope' => $scopeEntityId, ':actor' => Profile::ctx()->profileId]
-    );
+    if ($scopeEntityId <= 0) {
+        return Response::json(['success' => false, 'message' => 'scope_entity_id required (cannot be NULL)'], 400);
+    }
 
-    if (($result['rowCount'] ?? 0) === 0) {
-        return Response::json(['success' => false, 'message' => 'Role assignment not found'], 404);
+    # Delegar a ACL (maneja cache invalidation)
+    $result = ACL::revokeRole($targetProfileId, $roleCode, $scopeEntityId);
+
+    if (!$result['success']) {
+        return Response::json(['success' => false, 'message' => $result['error'] ?? 'Failed to revoke role'], 500);
     }
 
     # EAV audit: revoke
     _auditRoleChange($targetProfileId, $roleCode, $scopeEntityId, 'revoke');
 
-    # Invalidar cache de roles del perfil afectado
-    Cache::delete('profile:roles', (string)$targetProfileId);
-    Cache::notifyChannel('profile:roles', (string)$targetProfileId);
-
-    Log::logInfo("Role revoked", [
+    Log::logInfo("Role revoked via ACL", [
         'target_profile_id' => $targetProfileId,
         'role_code' => $roleCode,
         'scope_entity_id' => $scopeEntityId,
@@ -518,6 +476,274 @@ Router::register(['POST'], 'invalidate-cache', function() {
     Cache::notifyChannel('global:profile:roles', (string)$profileId);
     return Response::json(['success' => true, 'invalidated' => $profileId]);
 }, ROUTER_SCOPE_WRITE);
+
+# ============================================
+# RBAC: Package endpoints
+# ============================================
+
+/**
+ * @endpoint   GET /api/roles/packages/list.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    List all role packages for current scope
+ */
+Router::register(['GET'], 'packages/list\.json', function() {
+    $packages = RolePackageService::list(Profile::ctx()->scopeEntityId ?: null);
+    return Response::json(['success' => true, 'data' => $packages]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   POST /api/roles/packages/create.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Create a new role package
+ */
+Router::register(['POST'], 'packages/create\.json', function() {
+    $opt = Args::ctx()->opt;
+    $result = RolePackageService::create($opt);
+    return Response::json($result, $result['success'] ? 200 : 400);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   POST /api/roles/packages/assign.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Assign a package to a profile (expands to individual roles)
+ */
+Router::register(['POST'], 'packages/assign\.json', function() {
+    $opt = Args::ctx()->opt;
+    $profileId = (int)($opt['profile_id'] ?? 0);
+    $packageCode = $opt['package_code'] ?? '';
+    $scopeEntityId = (int)($opt['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+
+    if ($profileId <= 0 || empty($packageCode) || $scopeEntityId <= 0) {
+        return Response::json(['success' => false, 'message' => 'profile_id, package_code, scope_entity_id required'], 400);
+    }
+
+    $result = ACL::applyPackage($profileId, $packageCode, $scopeEntityId);
+    return Response::json($result);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   POST /api/roles/packages/revoke.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Revoke all roles from a package for a profile
+ */
+Router::register(['POST'], 'packages/revoke\.json', function() {
+    $opt = Args::ctx()->opt;
+    $profileId = (int)($opt['profile_id'] ?? 0);
+    $packageCode = $opt['package_code'] ?? '';
+    $scopeEntityId = (int)($opt['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+
+    if ($profileId <= 0 || empty($packageCode) || $scopeEntityId <= 0) {
+        return Response::json(['success' => false, 'message' => 'profile_id, package_code, scope_entity_id required'], 400);
+    }
+
+    $result = ACL::revokePackage($profileId, $packageCode, $scopeEntityId);
+    return Response::json($result);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   GET /api/roles/packages/diff.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Preview diff between current profile roles and package definition
+ */
+Router::register(['GET'], 'packages/diff\.json', function() {
+    $profileId = (int)($_GET['profile_id'] ?? 0);
+    $packageCode = $_GET['package_code'] ?? '';
+    $scopeEntityId = (int)($_GET['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+
+    if ($profileId <= 0 || empty($packageCode)) {
+        return Response::json(['success' => false, 'message' => 'profile_id, package_code required'], 400);
+    }
+
+    $diff = RolePackageService::diffPackageVsProfile($profileId, $packageCode, $scopeEntityId);
+    return Response::json(['success' => true, 'data' => $diff]);
+}, ROUTER_SCOPE_READ);
+
+# ============================================
+# RBAC: Category endpoints
+# ============================================
+
+/**
+ * @endpoint   GET /api/roles/categories/list.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    List all module categories for current scope
+ */
+Router::register(['GET'], 'categories/list\.json', function() {
+    $categories = ModuleCategoryService::listCategories(Profile::ctx()->scopeEntityId ?: null);
+    return Response::json(['success' => true, 'data' => $categories]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   POST /api/roles/categories/create.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Create a new module category (tenant-specific)
+ */
+Router::register(['POST'], 'categories/create\.json', function() {
+    $opt = Args::ctx()->opt;
+    $result = ModuleCategoryService::create($opt);
+    return Response::json($result, $result['success'] ? 200 : 400);
+}, ROUTER_SCOPE_WRITE);
+
+# ============================================
+# RBAC: ACL query endpoints
+# ============================================
+
+/**
+ * @endpoint   GET /api/roles/effective.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Get all effective roles for a profile (with package origin)
+ */
+Router::register(['GET'], 'effective\.json', function() {
+    $profileId = (int)($_GET['profile_id'] ?? Profile::ctx()->profileId);
+    $scopeEntityId = (int)($_GET['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+
+    $roles = ACL::getEffectiveRoles($profileId, $scopeEntityId ?: null);
+    $categories = ACL::getEffectiveCategories($profileId, $scopeEntityId ?: null);
+    $flags = ACL::getFlags($profileId, $scopeEntityId ?: null);
+
+    return Response::json([
+        'success' => true,
+        'data' => [
+            'roles' => $roles['roles'],
+            'by_source' => $roles['by_source'],
+            'categories' => $categories,
+            'flags' => $flags
+        ]
+    ]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   GET /api/roles/flags.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Get view-level flags for current user (frontend queries this)
+ */
+Router::register(['GET'], 'flags\.json', function() {
+    $flags = ACL::getFlags(Profile::ctx()->profileId, Profile::ctx()->scopeEntityId ?: null);
+    return Response::json(['success' => true, 'data' => $flags]);
+}, ROUTER_SCOPE_READ);
+
+# ============================================
+# RBAC: Tenant Positions (Org Chart)
+# ============================================
+
+/**
+ * @endpoint   GET /api/roles/positions/list.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    List tenant positions for current scope
+ */
+Router::register(['GET'], 'positions/list\.json', function() {
+    $scopeEntityId = (int)($_GET['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    if ($scopeEntityId <= 0) {
+        return Response::json(['success' => false, 'message' => 'scope_entity_id required'], 400);
+    }
+
+    # Tenant isolation: solo puede leer posiciones de su scope
+    Profile::assertScope($scopeEntityId);
+
+    $positions = TenantPositionService::list($scopeEntityId);
+    return Response::json(['success' => true, 'data' => $positions]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   GET /api/roles/positions/tree.json
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Get hierarchical position tree for current scope
+ */
+Router::register(['GET'], 'positions/tree\.json', function() {
+    $scopeEntityId = (int)($_GET['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    if ($scopeEntityId <= 0) {
+        return Response::json(['success' => false, 'message' => 'scope_entity_id required'], 400);
+    }
+
+    # Tenant isolation
+    Profile::assertScope($scopeEntityId);
+
+    $tree = TenantPositionService::getTree($scopeEntityId);
+    return Response::json(['success' => true, 'data' => $tree]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   POST /api/roles/positions/create.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Create a new tenant position (governance: owner/admin.local only)
+ * @body       { scope_entity_id, position_code, position_label, relation_kind?, package_code?, parent_position_id?, department?, sort_order? }
+ */
+Router::register(['POST'], 'positions/create\.json', function() {
+    $opt = Args::ctx()->opt;
+
+    # scope_entity_id defaults to current scope
+    if (empty($opt['scope_entity_id'])) {
+        $opt['scope_entity_id'] = Profile::ctx()->scopeEntityId;
+    }
+
+    $result = TenantPositionService::create($opt);
+    return Response::json($result, $result['success'] ? 201 : 400);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   PUT /api/roles/positions/update.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Update a tenant position (governance: owner/admin.local only)
+ * @body       { position_id, position_label?, relation_kind?, package_code?, parent_position_id?, department?, sort_order?, is_active? }
+ */
+Router::register(['PUT', 'POST'], 'positions/update\.json', function() {
+    $opt = Args::ctx()->opt;
+    $positionId = (int)($opt['position_id'] ?? 0);
+
+    if ($positionId <= 0) {
+        return Response::json(['success' => false, 'message' => 'position_id required'], 400);
+    }
+
+    # Remove position_id from update data
+    unset($opt['position_id']);
+
+    $result = TenantPositionService::update($positionId, $opt);
+    return Response::json($result, $result['success'] ? 200 : 400);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   POST /api/roles/positions/delete.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Deactivate a tenant position (governance: owner/admin.local only)
+ * @body       { position_id }
+ */
+Router::register(['POST'], 'positions/delete\.json', function() {
+    $positionId = (int)(Args::ctx()->opt['position_id'] ?? 0);
+
+    if ($positionId <= 0) {
+        return Response::json(['success' => false, 'message' => 'position_id required'], 400);
+    }
+
+    $result = TenantPositionService::delete($positionId);
+    return Response::json($result, $result['success'] ? 200 : 400);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   GET /api/roles/positions/resolve/<positionId>
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Preview what relation_kind + package would be applied for a position
+ */
+Router::register(['GET'], 'positions/resolve/(?P<positionId>\d+)', function($positionId) {
+    $positionId = (int)$positionId;
+    $resolved = TenantPositionService::resolveForOnboarding($positionId);
+
+    if (!$resolved) {
+        return Response::json(['success' => false, 'message' => 'Position not found or inactive'], 404);
+    }
+
+    # Expand package for preview
+    $expanded = null;
+    if (!empty($resolved['package_code'])) {
+        $expanded = RolePackageService::expand($resolved['package_code'], Profile::ctx()->scopeEntityId);
+    }
+
+    return Response::json([
+        'success' => true,
+        'data' => [
+            'position' => $resolved,
+            'package_expanded' => $expanded
+        ]
+    ]);
+}, ROUTER_SCOPE_READ);
 
 # ============================================
 # Internal: EAV audit for role changes

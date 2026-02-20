@@ -2,10 +2,11 @@
 # bintelx/kernel/Entity/Graph.php
 namespace bX\Entity;
 
+use bX\ACL;
 use bX\CONN;
 use bX\Profile;
 use bX\Tenant;
-use bX\RoleTemplateService;
+use bX\TenantPositionService;
 
 /**
  * Graph - Entity graph edges (connections between entities/profiles)
@@ -39,6 +40,7 @@ class Graph
      *   'profile_id' => int (required),
      *   'entity_id' => int (required),
      *   'relation_kind' => string (default: 'member'),
+     *   'position_id' => int|null (if set, overrides relation_kind + applies position's package),
      *   'role_code' => string|null,
      *   'grant_mode' => string|null,
      *   'relationship_label' => string|null
@@ -55,12 +57,24 @@ class Graph
         $profileId = (int)($data['profile_id'] ?? 0);
         $entityId = (int)($data['entity_id'] ?? 0);
         $kind = $data['relation_kind'] ?? self::KIND_MEMBER;
+        $positionId = !empty($data['position_id']) ? (int)$data['position_id'] : null;
         $roleCode = $data['role_code'] ?? null;
         $grantMode = $data['grant_mode'] ?? null;
         $label = $data['relationship_label'] ?? null;
 
         if ($profileId <= 0 || $entityId <= 0) {
             return ['success' => false, 'message' => 'profile_id and entity_id are required'];
+        }
+
+        # Si position_id, resolver la posición y usar su relation_kind + package
+        $positionPackageCode = null;
+        if ($positionId !== null) {
+            $resolved = TenantPositionService::resolveForOnboarding($positionId);
+            if (!$resolved) {
+                return ['success' => false, 'message' => 'Position not found or inactive'];
+            }
+            $kind = $resolved['relation_kind'];
+            $positionPackageCode = $resolved['package_code'];
         }
 
         # Validate tenant for write
@@ -85,30 +99,62 @@ class Graph
             ':created_by' => Profile::ctx()->profileId ?: null
         ];
 
-        $result = CONN::nodml($sql, $params);
+        # Wrap relationship + role assignment in transaction (race condition prevention)
+        try {
+            return CONN::transaction(function () use ($sql, $params, $profileId, $entityId, $kind, $tenant, $positionPackageCode) {
+                $result = CONN::nodml($sql, $params);
 
-        if (!$result['success']) {
-            return ['success' => false, 'message' => 'Failed to create relationship: ' . ($result['error'] ?? 'Unknown error')];
+                if (!$result['success']) {
+                    throw new \RuntimeException('Failed to create relationship: ' . ($result['error'] ?? 'Unknown error'));
+                }
+
+                $relationshipId = (int)$result['last_id'];
+                $actor = Profile::ctx()->profileId ?: null;
+
+                # Auto-apply role templates via ACL orchestrator
+                $templateResult = ACL::applyTemplates(
+                    $profileId,
+                    $entityId,
+                    $kind,
+                    $tenant['scope'],
+                    $actor
+                );
+
+                # Si la posición tiene un package explícito, aplicarlo además de los templates
+                # (cubre el caso donde el template no tiene package pero la posición sí)
+                $positionPackageResult = null;
+                if ($positionPackageCode !== null
+                    && !in_array($positionPackageCode, $templateResult['packages_expanded'], true)
+                ) {
+                    $positionPackageResult = ACL::applyPackage(
+                        $profileId,
+                        $positionPackageCode,
+                        $tenant['scope'],
+                        $actor
+                    );
+                }
+
+                return [
+                    'success' => true,
+                    'relationship_id' => $relationshipId,
+                    'message' => 'Relationship created',
+                    'roles_applied' => array_merge(
+                        $templateResult['applied'],
+                        $positionPackageResult ? $positionPackageResult['applied'] : []
+                    ),
+                    'roles_skipped' => array_merge(
+                        $templateResult['skipped'],
+                        $positionPackageResult ? $positionPackageResult['skipped'] : []
+                    ),
+                    'packages_expanded' => array_merge(
+                        $templateResult['packages_expanded'],
+                        $positionPackageCode ? [$positionPackageCode] : []
+                    )
+                ];
+            });
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
         }
-
-        $relationshipId = (int)$result['last_id'];
-
-        # Auto-apply role templates for this relation_kind
-        $templateResult = RoleTemplateService::applyTemplates(
-            $profileId,
-            $entityId,
-            $kind,
-            $tenant['scope'],
-            Profile::ctx()->profileId ?: null
-        );
-
-        return [
-            'success' => true,
-            'relationship_id' => $relationshipId,
-            'message' => 'Relationship created',
-            'roles_applied' => $templateResult['applied'],
-            'roles_skipped' => $templateResult['skipped']
-        ];
     }
 
     /**
