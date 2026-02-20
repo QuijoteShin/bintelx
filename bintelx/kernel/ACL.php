@@ -15,6 +15,50 @@ namespace bX;
  * - ModuleCategoryService — resuelve categorías
  * - bX\Cache — lee/escribe cache de roles
  *
+ * Uso en endpoints/handlers — sin parámetros, usa el contexto actual:
+ *
+ *   # OR — ¿tiene ALGUNO de estos roles?
+ *   if (ACL::hasAnyRole(['finance.all', 'company.owner'])) {
+ *       # ver precios y totales
+ *   }
+ *
+ *   # AND — ¿tiene TODOS estos roles?
+ *   if (ACL::hasAllRoles(['finance.all', 'admin.local'])) {
+ *       # operación que requiere ambos
+ *   }
+ *
+ *   # Explícito solo cuando consultas otro profile
+ *   if (ACL::hasAnyRole(['finance.all'], profileId: 200, scopeEntityId: 105)) {
+ *       # ...
+ *   }
+ *
+ * Guard pattern — bloquear un módulo completo (Swoole-safe):
+ *
+ *   # kpi.endpoint.php
+ *   namespace kpi;
+ *
+ *   use bX\Router;
+ *   use bX\Response;
+ *   use bX\ACL;
+ *
+ *   # Guard reutilizable para todo el archivo
+ *   function guardFinance(): ?array {
+ *       if (!ACL::hasAnyRole(['finance.all', 'company.owner', 'admin.global'])) {
+ *           return Response::json(['error' => 'Insufficient permissions'], 403);
+ *       }
+ *       return null;
+ *   }
+ *
+ *   Router::register(['GET'], 'summary\.json', function() {
+ *       if ($deny = guardFinance()) return $deny;
+ *       # ... lógica
+ *   }, ROUTER_SCOPE_READ);
+ *
+ *   Router::register(['GET'], 'totals\.json', function() {
+ *       if ($deny = guardFinance()) return $deny;
+ *       # ... lógica
+ *   }, ROUTER_SCOPE_READ);
+ *
  * @package bX
  */
 class ACL
@@ -408,6 +452,54 @@ class ACL
     }
 
     /**
+     * Check if profile has ANY of the given roles (OR logic)
+     * Uses current profile+scope from context if not specified
+     *
+     * Usage: ACL::hasAnyRole(['finance.all', 'company.owner', 'admin.global'])
+     *
+     * @param array $roleCodes
+     * @param int|null $profileId NULL = current user
+     * @param int|null $scopeEntityId NULL = current scope
+     * @return bool
+     */
+    public static function hasAnyRole(array $roleCodes, ?int $profileId = null, ?int $scopeEntityId = null): bool
+    {
+        $pid = $profileId ?? Profile::ctx()->profileId;
+        $scope = $scopeEntityId ?? (Profile::ctx()->scopeEntityId > 0 ? Profile::ctx()->scopeEntityId : null);
+
+        foreach ($roleCodes as $code) {
+            if (self::hasRole($pid, $code, $scope)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if profile has ALL of the given roles (AND logic)
+     * Uses current profile+scope from context if not specified
+     *
+     * Usage: ACL::hasAllRoles(['finance.all', 'admin.local'])
+     *
+     * @param array $roleCodes
+     * @param int|null $profileId NULL = current user
+     * @param int|null $scopeEntityId NULL = current scope
+     * @return bool
+     */
+    public static function hasAllRoles(array $roleCodes, ?int $profileId = null, ?int $scopeEntityId = null): bool
+    {
+        $pid = $profileId ?? Profile::ctx()->profileId;
+        $scope = $scopeEntityId ?? (Profile::ctx()->scopeEntityId > 0 ? Profile::ctx()->scopeEntityId : null);
+
+        foreach ($roleCodes as $code) {
+            if (!self::hasRole($pid, $code, $scope)) {
+                return false;
+            }
+        }
+        return !empty($roleCodes);
+    }
+
+    /**
      * Check if profile has access to a module category
      *
      * @param int $profileId
@@ -538,6 +630,175 @@ class ACL
         });
 
         return $flags;
+    }
+
+    # =========================================================================
+    # RESYNC
+    # =========================================================================
+
+    /**
+     * Re-sync a package for all profiles in a tenant that have it
+     * Use after adding/removing roles from a package definition
+     *
+     * Algorithm:
+     * 1. Find all profiles with source_package_code = $packageCode in this scope
+     * 2. Expand the current package definition
+     * 3. For each profile: add missing roles, optionally revoke removed roles
+     *
+     * @param string $packageCode Package to resync
+     * @param int $scopeEntityId Tenant scope
+     * @param int|null $actorProfileId Who triggered this
+     * @param bool $revokeRemoved If true, revoke roles no longer in the package
+     * @return array ['profiles_affected' => int, 'added' => [], 'revoked' => [], 'errors' => []]
+     */
+    public static function resyncTenantPackage(
+        string $packageCode,
+        int $scopeEntityId,
+        ?int $actorProfileId = null,
+        bool $revokeRemoved = false
+    ): array {
+        $actor = $actorProfileId ?? Profile::ctx()->profileId;
+
+        # Expandir definición actual del package
+        $expanded = RolePackageService::expand($packageCode, $scopeEntityId);
+        $currentRoles = $expanded['roles'] ?? [];
+
+        if (empty($currentRoles) && !$revokeRemoved) {
+            return ['profiles_affected' => 0, 'added' => [], 'revoked' => [], 'errors' => []];
+        }
+
+        # Encontrar perfiles que tienen este package en este scope
+        $profileIds = [];
+        CONN::dml(
+            "SELECT DISTINCT profile_id FROM profile_roles
+             WHERE source_package_code = :pkg
+               AND scope_entity_id = :scope
+               AND status = 'active'",
+            [':pkg' => $packageCode, ':scope' => $scopeEntityId],
+            function ($row) use (&$profileIds) {
+                $profileIds[] = (int)$row['profile_id'];
+            }
+        );
+
+        if (empty($profileIds)) {
+            return ['profiles_affected' => 0, 'added' => [], 'revoked' => [], 'errors' => []];
+        }
+
+        $totalAdded = [];
+        $totalRevoked = [];
+        $errors = [];
+
+        foreach ($profileIds as $pid) {
+            # Roles actuales de este package para este profile
+            $existingRoles = [];
+            CONN::dml(
+                "SELECT role_code FROM profile_roles
+                 WHERE profile_id = :pid
+                   AND source_package_code = :pkg
+                   AND scope_entity_id = :scope
+                   AND status = 'active'",
+                [':pid' => $pid, ':pkg' => $packageCode, ':scope' => $scopeEntityId],
+                function ($row) use (&$existingRoles) {
+                    $existingRoles[] = $row['role_code'];
+                }
+            );
+
+            # Agregar roles que faltan
+            $toAdd = array_diff($currentRoles, $existingRoles);
+            foreach ($toAdd as $roleCode) {
+                $result = self::assignRole($pid, $roleCode, $scopeEntityId, $actor, $packageCode);
+                if ($result['success'] && !($result['already_exists'] ?? false)) {
+                    $totalAdded[] = "{$pid}:{$roleCode}";
+                } elseif (!$result['success']) {
+                    $errors[] = "{$pid}:{$roleCode} → " . ($result['error'] ?? 'unknown');
+                }
+            }
+
+            # Revocar roles que ya no están en el package
+            if ($revokeRemoved) {
+                $toRevoke = array_diff($existingRoles, $currentRoles);
+                foreach ($toRevoke as $roleCode) {
+                    $result = self::revokeRole($pid, $roleCode, $scopeEntityId, $actor);
+                    if ($result['success']) {
+                        $totalRevoked[] = "{$pid}:{$roleCode}";
+                    }
+                }
+            }
+        }
+
+        Log::logInfo("ACL::resyncTenantPackage complete", [
+            'package' => $packageCode,
+            'scope' => $scopeEntityId,
+            'profiles' => count($profileIds),
+            'added' => count($totalAdded),
+            'revoked' => count($totalRevoked)
+        ]);
+
+        return [
+            'profiles_affected' => count($profileIds),
+            'added' => $totalAdded,
+            'revoked' => $totalRevoked,
+            'errors' => $errors
+        ];
+    }
+
+    /**
+     * Re-init a specific profile: revoke all package roles and re-apply from templates
+     * Use when a profile needs a clean restart of its RBAC state
+     *
+     * @param int $profileId
+     * @param int $scopeEntityId
+     * @param int|null $actorProfileId
+     * @return array ['revoked' => int, 'applied' => [], 'packages' => []]
+     */
+    public static function reinitProfile(
+        int $profileId,
+        int $scopeEntityId,
+        ?int $actorProfileId = null
+    ): array {
+        $actor = $actorProfileId ?? Profile::ctx()->profileId;
+
+        # Obtener relation_kind del profile en este scope
+        $rels = CONN::dml(
+            "SELECT relation_kind FROM entity_relationships
+             WHERE profile_id = :pid AND scope_entity_id = :scope AND status = 'active'",
+            [':pid' => $profileId, ':scope' => $scopeEntityId]
+        );
+
+        if (empty($rels)) {
+            return ['revoked' => 0, 'applied' => [], 'packages' => [], 'error' => 'No active relationship found'];
+        }
+
+        # Revocar todos los roles con source_package_code en este scope
+        $revokeResult = CONN::nodml(
+            "UPDATE profile_roles
+             SET status = 'inactive', updated_by_profile_id = :actor
+             WHERE profile_id = :pid
+               AND scope_entity_id = :scope
+               AND source_package_code IS NOT NULL
+               AND status = 'active'",
+            [':pid' => $profileId, ':scope' => $scopeEntityId, ':actor' => $actor]
+        );
+
+        $revokedCount = $revokeResult['rowCount'] ?? 0;
+
+        # Re-aplicar templates por cada relación activa
+        $allApplied = [];
+        $allPackages = [];
+        foreach ($rels as $rel) {
+            $kind = $rel['relation_kind'];
+            $templateResult = self::applyTemplates($profileId, $scopeEntityId, $kind, $scopeEntityId, $actor);
+            $allApplied = array_merge($allApplied, $templateResult['applied'] ?? []);
+            $allPackages = array_merge($allPackages, $templateResult['packages_expanded'] ?? []);
+        }
+
+        self::invalidateCache($profileId);
+
+        return [
+            'revoked' => $revokedCount,
+            'applied' => $allApplied,
+            'packages' => array_unique($allPackages)
+        ];
     }
 
     # =========================================================================
