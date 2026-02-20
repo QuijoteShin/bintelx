@@ -224,13 +224,20 @@ class Router
       return true;
     }
 
-    # Category macro-filter: deny if route belongs to a category the user doesn't have
+    # Category macro-filter: opt-in por usuario
+    # Solo aplica cuando el usuario tiene packages asignados (source_package_code en profile_roles).
+    # Usuarios legacy sin packages → skip, seguridad delegada a roles/scopes existentes.
+    # Al asignar el primer package (onboarding), se activa el filtro estricto de categorías.
     $routeCategory = ModuleCategoryService::getRouteCategory($pathAfterPrefix, Profile::ctx()->scopeEntityId);
     if ($routeCategory !== null) {
       $profileId = Profile::ctx()->profileId;
-      if ($profileId > 0 && !ACL::hasCategory($profileId, $routeCategory, Profile::ctx()->scopeEntityId)) {
-        Log::logInfo("Router::hasPermission - Category DENIED: profile={$profileId}, category='{$routeCategory}', path='{$pathAfterPrefix}'");
-        return false;
+      if ($profileId > 0) {
+        $userCategories = Profile::ctx()->categories;
+        # Solo filtrar si el usuario tiene categorías (tiene packages asignados)
+        if (!empty($userCategories) && !in_array($routeCategory, $userCategories, true)) {
+          Log::logInfo("Router::hasPermission - Category DENIED: profile={$profileId}, category='{$routeCategory}', path='{$pathAfterPrefix}'");
+          return false;
+        }
       }
     }
 
