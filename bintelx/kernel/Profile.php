@@ -461,6 +461,7 @@ class Profile {
                 LEFT JOIN entities e ON e.entity_id = pr.scope_entity_id
                 WHERE pr.profile_id = :profile_id
                   AND pr.status = 'active'
+                  AND (pr.expires_at IS NULL OR pr.expires_at > NOW())
                   AND r.status = 'active'
                 ORDER BY r.role_label ASC";
 
