@@ -65,9 +65,20 @@ class RolePackageService
             }
         );
 
+        # Obtener route permissions del package
+        $routePermissions = [];
+        CONN::dml(
+            "SELECT route_pattern, scope_level FROM role_package_route_permissions WHERE package_id = :pid",
+            [':pid' => $packageId],
+            function ($row) use (&$routePermissions) {
+                $routePermissions[] = ['route_pattern' => $row['route_pattern'], 'scope_level' => $row['scope_level']];
+            }
+        );
+
         $result = [
             'roles' => $roles,
             'categories' => $categories,
+            'route_permissions' => $routePermissions,
             'source_package' => $packageCode
         ];
 
@@ -115,10 +126,12 @@ class RolePackageService
         $params = [];
 
         $sql = "SELECT p.*, GROUP_CONCAT(DISTINCT i.role_code ORDER BY i.role_code) AS role_codes,
-                       GROUP_CONCAT(DISTINCT c.category_code ORDER BY c.category_code) AS category_codes
+                       GROUP_CONCAT(DISTINCT c.category_code ORDER BY c.category_code) AS category_codes,
+                       GROUP_CONCAT(DISTINCT CONCAT(rp.route_pattern, ':', rp.scope_level) ORDER BY rp.route_pattern) AS route_permissions_raw
                 FROM role_packages p
                 LEFT JOIN role_package_items i ON i.package_id = p.package_id
                 LEFT JOIN role_package_categories c ON c.package_id = p.package_id
+                LEFT JOIN role_package_route_permissions rp ON rp.package_id = p.package_id
                 WHERE p.is_active = 1";
 
         $opts = !empty(Tenant::globalIds()) ? ['force_scope' => true] : [];
@@ -265,6 +278,119 @@ class RolePackageService
             'to_remove' => array_values($toRemove),
             'unchanged' => array_values($unchanged)
         ];
+    }
+
+    /**
+     * Get route permissions for a package
+     *
+     * @param string $packageCode
+     * @param int|null $scopeEntityId
+     * @return array [['route_pattern' => string, 'scope_level' => string], ...]
+     */
+    public static function getPackageRoutePermissions(string $packageCode, ?int $scopeEntityId = null): array
+    {
+        $package = self::resolvePackage($packageCode, $scopeEntityId);
+        if (!$package) return [];
+
+        $permissions = [];
+        CONN::dml(
+            "SELECT route_pattern, scope_level FROM role_package_route_permissions WHERE package_id = :pid ORDER BY route_pattern",
+            [':pid' => (int)$package['package_id']],
+            function ($row) use (&$permissions) {
+                $permissions[] = ['route_pattern' => $row['route_pattern'], 'scope_level' => $row['scope_level']];
+            }
+        );
+
+        return $permissions;
+    }
+
+    /**
+     * Set route permissions for a package (replace all) + sync synthetic role
+     * Patrón DELETE+INSERT como setPackageCategories()
+     *
+     * @param int $packageId
+     * @param array $permissions [['route_pattern' => string, 'scope_level' => string], ...]
+     * @param string $packageCode Para sync synthetic role
+     * @return array ['success' => bool, 'count' => int]
+     */
+    public static function setPackageRoutePermissions(int $packageId, array $permissions, string $packageCode): array
+    {
+        # Delete existing
+        CONN::nodml("DELETE FROM role_package_route_permissions WHERE package_id = :pid", [':pid' => $packageId]);
+
+        $count = 0;
+        foreach ($permissions as $perm) {
+            $pattern = $perm['route_pattern'] ?? '';
+            $level = $perm['scope_level'] ?? 'read';
+            if (empty($pattern)) continue;
+
+            $result = CONN::nodml(
+                "INSERT IGNORE INTO role_package_route_permissions (package_id, route_pattern, scope_level)
+                 VALUES (:pid, :pattern, :level)",
+                [':pid' => $packageId, ':pattern' => $pattern, ':level' => $level]
+            );
+            if ($result['success']) $count++;
+        }
+
+        # Sincronizar synthetic role
+        self::syncSyntheticRole($packageCode, $permissions);
+
+        self::invalidateCache();
+
+        return ['success' => true, 'count' => $count];
+    }
+
+    /**
+     * Sync synthetic role for a package
+     * Crea/actualiza el rol sys.pkg.{code} en `roles` y sincroniza `role_route_permissions`
+     *
+     * @param string $packageCode
+     * @param array $permissions Route permissions del package
+     */
+    public static function syncSyntheticRole(string $packageCode, array $permissions): void
+    {
+        $syntheticCode = 'sys.pkg.' . $packageCode;
+        $globalScope = 2000000000; # GLOBAL_TENANT_ID
+
+        # Asegurar que el rol sintético existe en el catálogo
+        CONN::nodml(
+            "INSERT IGNORE INTO roles (role_code, role_label, scope_type, is_hidden, role_group)
+             VALUES (:code, :label, 'global', 1, 'system')",
+            [':code' => $syntheticCode, ':label' => 'Package: ' . $packageCode]
+        );
+
+        # Sincronizar route permissions (DELETE + INSERT)
+        CONN::nodml(
+            "DELETE FROM role_route_permissions WHERE role_code = :code AND scope_entity_id = :scope",
+            [':code' => $syntheticCode, ':scope' => $globalScope]
+        );
+
+        foreach ($permissions as $perm) {
+            $pattern = $perm['route_pattern'] ?? '';
+            $level = $perm['scope_level'] ?? 'read';
+            if (empty($pattern)) continue;
+
+            # Convertir glob a regex: engagement/* → engagement/.* (Router evalúa como regex)
+            $regexPattern = self::globToRegex($pattern);
+
+            CONN::nodml(
+                "INSERT IGNORE INTO role_route_permissions (role_code, route_pattern, scope_level, scope_entity_id)
+                 VALUES (:code, :pattern, :level, :scope)",
+                [':code' => $syntheticCode, ':pattern' => $regexPattern, ':level' => $level, ':scope' => $globalScope]
+            );
+        }
+    }
+
+    /**
+     * Convert glob pattern to regex for Router compatibility
+     * Router uses preg_match with patterns, so * must become .*
+     * Special case: standalone * stays as * (Router handles it specially)
+     */
+    private static function globToRegex(string $pattern): string
+    {
+        if ($pattern === '*') return '*';
+        # engagement/* → engagement/.*
+        return str_replace('/*', '/.*', $pattern);
     }
 
     /**
