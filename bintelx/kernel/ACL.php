@@ -196,7 +196,8 @@ class ACL
         $actor = $actorProfileId ?? Profile::ctx()->profileId;
         $expanded = RolePackageService::expand($packageCode, $scopeEntityId);
 
-        if (empty($expanded['roles'])) {
+        # Package puede tener solo route_permissions sin roles individuales
+        if (empty($expanded['roles']) && empty($expanded['route_permissions'])) {
             return ['success' => true, 'applied' => [], 'skipped' => [], 'errors' => []];
         }
 
@@ -204,7 +205,7 @@ class ACL
         $skipped = [];
         $errors = [];
 
-        foreach ($expanded['roles'] as $roleCode) {
+        foreach (($expanded['roles'] ?? []) as $roleCode) {
             $result = self::assignRole($profileId, $roleCode, $scopeEntityId, $actor, $packageCode);
             if ($result['success']) {
                 if ($result['already_exists'] ?? false) {
@@ -225,7 +226,7 @@ class ACL
         # Synthetic Role Bridge: asignar sys.pkg.{package_code} si el package tiene route_permissions
         if (!empty($expanded['route_permissions'])) {
             $syntheticCode = 'sys.pkg.' . $packageCode;
-            $result = self::assignRole($profileId, $syntheticCode, $scopeEntityId, $actor, $packageCode);
+            $result = self::assignRole($profileId, $syntheticCode, $scopeEntityId, $actor, $packageCode, allowSynthetic: true);
             if ($result['success'] && !($result['already_exists'] ?? false)) {
                 $applied[] = $syntheticCode;
             }
@@ -255,9 +256,15 @@ class ACL
         string $roleCode,
         int $scopeEntityId,
         ?int $actorProfileId = null,
-        ?string $sourcePackage = null
+        ?string $sourcePackage = null,
+        bool $allowSynthetic = false
     ): array {
         $actor = $actorProfileId ?? Profile::ctx()->profileId;
+
+        # Guard: synthetic roles solo via applyPackage (que pasa allowSynthetic=true)
+        if (!$allowSynthetic && str_starts_with($roleCode, 'sys.pkg.')) {
+            return ['success' => false, 'already_exists' => false, 'error' => 'Synthetic roles (sys.pkg.*) can only be assigned via package assignment'];
+        }
 
         # Check if already exists (active)
         $exists = CONN::dml(
@@ -326,9 +333,15 @@ class ACL
         int $profileId,
         string $roleCode,
         int $scopeEntityId,
-        ?int $actorProfileId = null
+        ?int $actorProfileId = null,
+        bool $allowSynthetic = false
     ): array {
         $actor = $actorProfileId ?? Profile::ctx()->profileId;
+
+        # Guard: synthetic roles solo via revokePackage (que pasa allowSynthetic=true)
+        if (!$allowSynthetic && str_starts_with($roleCode, 'sys.pkg.')) {
+            return ['success' => false, 'error' => 'Synthetic roles (sys.pkg.*) can only be revoked via package revocation'];
+        }
 
         $result = CONN::nodml(
             "UPDATE profile_roles

@@ -180,6 +180,11 @@ class RoleTemplateService
         ?int $scopeEntityId = null,
         int $priority = 0
     ): array {
+        # Guard: synthetic roles no se pueden usar en templates
+        if (str_starts_with($roleCode, 'sys.pkg.')) {
+            return ['success' => false, 'template_id' => null, 'error' => "Synthetic roles (sys.pkg.*) cannot be used in templates"];
+        }
+
         # Validate role exists
         $roleExists = CONN::dml(
             "SELECT 1 FROM roles WHERE role_code = :code AND status = 'active' LIMIT 1",

@@ -195,6 +195,13 @@ class RolePackageService
      */
     public static function setPackageRoles(int $packageId, array $roleCodes, int $scopeEntityId): array
     {
+        # Guard: no permitir roles sintéticos en packages (se gestionan automáticamente)
+        foreach ($roleCodes as $roleCode) {
+            if (str_starts_with($roleCode, 'sys.pkg.')) {
+                return ['success' => false, 'count' => 0, 'message' => "Cannot include synthetic role '$roleCode' in package — managed automatically"];
+            }
+        }
+
         # Delete existing
         CONN::nodml("DELETE FROM role_package_items WHERE package_id = :pid", [':pid' => $packageId]);
 
@@ -313,7 +320,7 @@ class RolePackageService
      * @param string $packageCode Para sync synthetic role
      * @return array ['success' => bool, 'count' => int]
      */
-    public static function setPackageRoutePermissions(int $packageId, array $permissions, string $packageCode): array
+    public static function setPackageRoutePermissions(int $packageId, array $permissions, string $packageCode, ?int $scopeEntityId = null): array
     {
         # Validar todos los patrones antes de guardar (fail-fast)
         $validated = [];
@@ -339,56 +346,82 @@ class RolePackageService
             $validated[] = ['route_pattern' => $pattern, 'scope_level' => $level];
         }
 
-        # Delete existing
-        CONN::nodml("DELETE FROM role_package_route_permissions WHERE package_id = :pid", [':pid' => $packageId]);
+        # Atómico: DELETE + INSERT + syncSyntheticRole en una transacción
+        $txResult = CONN::transaction(function() use ($packageId, $validated, $packageCode, $scopeEntityId) {
+            CONN::nodml("DELETE FROM role_package_route_permissions WHERE package_id = :pid", [':pid' => $packageId]);
 
-        $count = 0;
-        foreach ($validated as $perm) {
-            $result = CONN::nodml(
-                "INSERT IGNORE INTO role_package_route_permissions (package_id, route_pattern, scope_level)
-                 VALUES (:pid, :pattern, :level)",
-                [':pid' => $packageId, ':pattern' => $perm['route_pattern'], ':level' => $perm['scope_level']]
-            );
-            if ($result['success']) $count++;
+            $count = 0;
+            foreach ($validated as $perm) {
+                $result = CONN::nodml(
+                    "INSERT IGNORE INTO role_package_route_permissions (package_id, route_pattern, scope_level)
+                     VALUES (:pid, :pattern, :level)",
+                    [':pid' => $packageId, ':pattern' => $perm['route_pattern'], ':level' => $perm['scope_level']]
+                );
+                if ($result['success']) $count++;
+            }
+
+            # Sincronizar synthetic role dentro de la misma transacción
+            self::syncSyntheticRole($packageCode, $validated, $scopeEntityId);
+
+            return ['count' => $count];
+        });
+
+        if (!$txResult || !isset($txResult['count'])) {
+            return ['success' => false, 'message' => 'Transaction failed during route permissions update'];
         }
-
-        # Sincronizar synthetic role
-        self::syncSyntheticRole($packageCode, $validated);
 
         self::invalidateCache();
 
-        return ['success' => true, 'count' => $count];
+        return ['success' => true, 'count' => $txResult['count']];
     }
 
     # Prefijos reservados para endpoints de sistema — ningún tenant admin puede otorgar acceso
     private const RESERVED_PREFIXES = ['_internal', '_demo', '_system'];
 
+    # Chars que permiten cross-module injection via regex alternation/grouping
+    private const DANGEROUS_REGEX_CHARS = ['|', '(', ')'];
+
     /**
      * Valida un route_pattern antes de persistirlo
-     * - Blocklist de prefijos reservados
-     * - Catch-all solo para system.admin
+     * - Blocklist de prefijos reservados (case-insensitive)
+     * - Bloqueo de regex alternation/grouping para non-admin
+     * - Catch-all detection por probe (no por lista de literales)
      * - Regex válido
-     * - Escalation guard: no puedes otorgar permisos que no tienes
+     * - Escalation guard: no puedes otorgar permisos de módulos que no tienes
      *
      * @return true|string true si válido, string con mensaje de error
      */
     private static function validateRoutePattern(string $pattern, array $actorPerms, bool $isSystemAdmin): true|string
     {
-        # Blocklist: prefijos reservados (endpoints de sistema)
-        $normalized = ltrim($pattern, '^');
+        # system.admin bypasea toda validación
+        if ($isSystemAdmin) {
+            # Solo validar que el regex compile
+            if ($pattern !== '*') {
+                $testResult = @preg_match('#^' . $pattern . '$#i', 'test');
+                if ($testResult === false) {
+                    return "Invalid regex pattern '$pattern': " . preg_last_error_msg();
+                }
+            }
+            return true;
+        }
+
+        # Bloquear chars de regex que permiten cross-module injection (|, parenthesis)
+        foreach (self::DANGEROUS_REGEX_CHARS as $char) {
+            if (str_contains($pattern, $char)) {
+                return "Pattern '$pattern' contains forbidden character '$char' — regex alternation/grouping not allowed";
+            }
+        }
+
+        # Blocklist case-insensitive: prefijos reservados (endpoints de sistema)
+        # Limpiar anchors y regex noise para comparar contra prefijos
+        $normalized = strtolower(preg_replace('/^[\^\\\\]*/', '', $pattern));
         foreach (self::RESERVED_PREFIXES as $prefix) {
             if (str_starts_with($normalized, $prefix)) {
                 return "Route pattern '$pattern' matches reserved prefix '$prefix' — not allowed";
             }
         }
 
-        # Catch-all: solo system.admin puede otorgar acceso total
-        $catchAllPatterns = ['*', '.*', '.+', '(.*)'];
-        if (in_array($pattern, $catchAllPatterns, true) && !$isSystemAdmin) {
-            return "Catch-all pattern '$pattern' requires system.admin role";
-        }
-
-        # Validar que el regex compile (sin @ suppression)
+        # Validar que el regex compile
         if ($pattern !== '*') {
             $testResult = @preg_match('#^' . $pattern . '$#i', 'test');
             if ($testResult === false) {
@@ -396,30 +429,47 @@ class RolePackageService
             }
         }
 
-        # Escalation guard: no puedes otorgar permisos que no tienes (skip para system.admin)
-        if (!$isSystemAdmin && !empty($actorPerms)) {
-            $actorCanAccess = false;
-            foreach ($actorPerms as $actorPattern => $actorScope) {
-                # Si el actor tiene catch-all, puede otorgar cualquier patrón
-                if ($actorPattern === '*') {
-                    $actorCanAccess = true;
-                    break;
-                }
-                # Verificar si el patrón del actor "cubre" el patrón que intenta otorgar
-                # Heurística: el patrón que intenta otorgar debe empezar con el mismo módulo
-                $actorModule = explode('/', $actorPattern)[0] ?? '';
-                $targetModule = explode('/', $pattern)[0] ?? '';
-                # Limpiar regex del módulo para comparar
-                $actorModule = rtrim($actorModule, '.');
-                $targetModule = rtrim($targetModule, '.');
-                if ($actorModule === $targetModule && $actorModule !== '') {
-                    $actorCanAccess = true;
-                    break;
-                }
+        # Catch-all detection: probar si el pattern matchea rutas de módulos distintos
+        # Un patrón legítimo (engagement/.*) no matchea "totally/unrelated/path"
+        $probeRoutes = ['_internal/status', '_demo/login', 'zzz_nonexistent_module/test'];
+        if ($pattern === '*') {
+            return "Catch-all pattern '*' requires system.admin role";
+        }
+        foreach ($probeRoutes as $probe) {
+            if (@preg_match('#^' . $pattern . '$#i', $probe)) {
+                return "Pattern '$pattern' is too broad — matches '$probe'. Catch-all requires system.admin";
             }
-            if (!$actorCanAccess) {
-                return "Cannot grant route permission '$pattern' — you don't have access to this module";
+        }
+
+        # Escalation guard: el actor solo puede otorgar permisos de módulos a los que tiene acceso
+        # Excluir el default '* => private' (no es un permiso real, es fallback)
+        $actorCanAccess = false;
+        $targetModule = strtolower(rtrim(explode('/', $pattern)[0], '.'));
+
+        if (empty($targetModule)) {
+            return "Pattern '$pattern' must start with a module name (e.g. 'engagement/.*')";
+        }
+
+        foreach ($actorPerms as $actorPattern => $actorScope) {
+            # Ignorar el default fallback (* => private) — no es un permiso real otorgado
+            if ($actorPattern === '*' && $actorScope === 'private') {
+                continue;
             }
+            # Actor con catch-all real (scope >= read) puede otorgar cualquier módulo
+            if ($actorPattern === '*' && in_array($actorScope, ['read', 'write'], true)) {
+                $actorCanAccess = true;
+                break;
+            }
+            # Comparar módulo del actor vs módulo target
+            $actorModule = strtolower(rtrim(explode('/', $actorPattern)[0], '.'));
+            if ($actorModule === $targetModule && $actorModule !== '') {
+                $actorCanAccess = true;
+                break;
+            }
+        }
+
+        if (!$actorCanAccess) {
+            return "Cannot grant route permission '$pattern' — you don't have access to module '$targetModule'";
         }
 
         return true;
@@ -432,10 +482,13 @@ class RolePackageService
      * @param string $packageCode
      * @param array $permissions Route permissions del package
      */
-    public static function syncSyntheticRole(string $packageCode, array $permissions): void
+    public static function syncSyntheticRole(string $packageCode, array $permissions, ?int $scopeEntityId = null): void
     {
         $syntheticCode = 'sys.pkg.' . $packageCode;
-        $globalScope = 2000000000; # GLOBAL_TENANT_ID
+        # Usar scope del package para aislar route_permissions por tenant
+        # Si no se pasa scope, usar GLOBAL_TENANT_ID (backwards compat con packages globales)
+        $globalIds = Tenant::globalIds();
+        $effectiveScope = $scopeEntityId ?: ($globalIds[0] ?? 0);
 
         # Asegurar que el rol sintético existe en el catálogo
         CONN::nodml(
@@ -444,10 +497,10 @@ class RolePackageService
             [':code' => $syntheticCode, ':label' => 'Package: ' . $packageCode]
         );
 
-        # Sincronizar route permissions (DELETE + INSERT)
+        # Sincronizar route permissions (DELETE + INSERT) — scoped por tenant
         CONN::nodml(
             "DELETE FROM role_route_permissions WHERE role_code = :code AND scope_entity_id = :scope",
-            [':code' => $syntheticCode, ':scope' => $globalScope]
+            [':code' => $syntheticCode, ':scope' => $effectiveScope]
         );
 
         foreach ($permissions as $perm) {
@@ -461,7 +514,7 @@ class RolePackageService
             CONN::nodml(
                 "INSERT IGNORE INTO role_route_permissions (role_code, route_pattern, scope_level, scope_entity_id)
                  VALUES (:code, :pattern, :level, :scope)",
-                [':code' => $syntheticCode, ':pattern' => $regexPattern, ':level' => $level, ':scope' => $globalScope]
+                [':code' => $syntheticCode, ':pattern' => $regexPattern, ':level' => $level, ':scope' => $effectiveScope]
             );
         }
     }
