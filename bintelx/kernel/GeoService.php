@@ -804,6 +804,148 @@ class GeoService
     }
 
     # =========================================================================
+    # NATIONAL ID VALIDATION (Country Drivers)
+    # =========================================================================
+
+    /**
+     * Drivers por país — lazy-loaded, inmutables (safe en Swoole)
+     */
+    private static array $drivers = [
+        'CL' => \bX\Geo\CL::class,
+        'BR' => \bX\Geo\BR::class,
+        'DE' => \bX\Geo\DE::class,
+        'FR' => \bX\Geo\FR::class,
+        'US' => \bX\Geo\US::class,
+        'ES' => \bX\Geo\ES::class,
+    ];
+
+    /**
+     * Valida algorítmicamente un identificador nacional
+     *
+     * @param string $country ISO country code
+     * @param string $nationalId Identificador nacional (con o sin formato)
+     * @param string|null $type Tipo explícito (TAX_ID, PASSPORT, CPF...) o null para auto-detect
+     * @return array ['valid' => bool, 'type' => ?string, 'validation' => ?string, 'error' => ?string]
+     */
+    public static function validateNationalId(string $country, string $nationalId, ?string $type = null): array
+    {
+        $country = strtoupper($country);
+        $driverClass = self::$drivers[$country] ?? null;
+
+        if (!$driverClass) {
+            # País sin driver — validación básica (no vacío)
+            if (empty(trim($nationalId))) {
+                return ['valid' => false, 'type' => $type, 'error' => 'EMPTY_ID'];
+            }
+            if ($type === 'PASSPORT') {
+                # Validación ICAO directa (no hay driver, pero pasaporte es universal)
+                $clean = strtoupper(preg_replace('/[\s\-]/', '', $nationalId));
+                if (strlen($clean) < 5) return ['valid' => false, 'type' => 'PASSPORT', 'error' => 'TOO_SHORT'];
+                if (strlen($clean) > 20) return ['valid' => false, 'type' => 'PASSPORT', 'error' => 'TOO_LONG'];
+                if (!preg_match('/^[A-Z0-9]+$/', $clean)) return ['valid' => false, 'type' => 'PASSPORT', 'error' => 'INVALID_CHARS'];
+                return ['valid' => true, 'type' => 'PASSPORT', 'validation' => 'REGEX'];
+            }
+            return ['valid' => true, 'type' => $type ?? 'TAX_ID', 'validation' => 'NONE', 'driver' => 'generic'];
+        }
+
+        $result = $driverClass::validate($nationalId, $type);
+        return $result;
+    }
+
+    /**
+     * Normaliza un identificador nacional según reglas del país
+     *
+     * @param string $country ISO country code
+     * @param string $nationalId Identificador con formato variable
+     * @param string|null $type Tipo explícito o null para auto-detect
+     * @return string Identificador limpio
+     */
+    public static function normalizeNationalId(string $country, string $nationalId, ?string $type = null): string
+    {
+        $country = strtoupper($country);
+        $driverClass = self::$drivers[$country] ?? null;
+
+        if (!$driverClass) {
+            if ($type === 'PASSPORT') {
+                return strtoupper(preg_replace('/[\s\-]/', '', $nationalId));
+            }
+            return strtoupper(preg_replace('/[^0-9A-Za-z]/', '', $nationalId));
+        }
+
+        return $driverClass::normalize($nationalId, $type);
+    }
+
+    /**
+     * Formatea un identificador nacional con la presentación oficial del país
+     *
+     * @param string $country ISO country code
+     * @param string $nationalId Identificador (normalizado o con formato)
+     * @param string|null $type Tipo explícito o null para auto-detect
+     * @return string Identificador con formato oficial
+     */
+    public static function formatNationalId(string $country, string $nationalId, ?string $type = null): string
+    {
+        $country = strtoupper($country);
+        $driverClass = self::$drivers[$country] ?? null;
+
+        if (!$driverClass) {
+            return $nationalId;
+        }
+
+        return $driverClass::format($nationalId, $type);
+    }
+
+    /**
+     * Detecta el tipo de identificador (TAX_ID, CPF, CNPJ, VAT, etc.)
+     *
+     * @param string $country ISO country code
+     * @param string $nationalId Identificador
+     * @return string|null Tipo detectado o null
+     */
+    public static function detectNationalIdType(string $country, string $nationalId): ?string
+    {
+        $country = strtoupper($country);
+        $driverClass = self::$drivers[$country] ?? null;
+
+        if (!$driverClass) {
+            return null;
+        }
+
+        return $driverClass::detectType($nationalId);
+    }
+
+    /**
+     * Lista los tipos de identificación soportados por un país
+     * Países sin driver retornan fallback genérico (TAX_ID + PASSPORT)
+     *
+     * @param string $country ISO country code
+     * @return array Metadata de tipos soportados
+     */
+    public static function getSupportedIdTypes(string $country): array
+    {
+        $country = strtoupper($country);
+        $driverClass = self::$drivers[$country] ?? null;
+
+        if ($driverClass) {
+            return $driverClass::supportedTypes();
+        }
+
+        # Fallback genérico para países sin driver
+        return [
+            ['code' => 'TAX_ID', 'label' => 'Tax ID', 'validation' => 'NONE', 'entity_scope' => 'both'],
+            ['code' => 'PASSPORT', 'label' => 'Passport', 'validation' => 'REGEX', 'entity_scope' => 'person'],
+        ];
+    }
+
+    /**
+     * Lista los países con driver de validación algorítmica
+     */
+    public static function getCountriesWithIdValidation(): array
+    {
+        return array_keys(self::$drivers);
+    }
+
+    # =========================================================================
     # FORMATTING HELPERS
     # =========================================================================
 
