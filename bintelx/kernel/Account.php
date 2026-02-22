@@ -160,13 +160,19 @@ class Account {
                 $newAccountId = (string)$result['last_id'];
                 Log::logInfo("Account::createAccount - Account created: username=$username, account_id=$newAccountId");
 
-                // 2. Create empty Entity for this account
-                $entityId = Entity::save([
+                // 2. Create Entity for this account (con identidad si se proporcionó)
+                $entityPayload = [
                     'entity_type' => 'personal',
                     'entity_name' => $username,
                     'comp_id' => 0,
                     'comp_branch_id' => 0
-                ]);
+                ];
+                if (!empty($otherAccountDetails['national_id']) && !empty($otherAccountDetails['country_code'])) {
+                    $entityPayload['national_id'] = $otherAccountDetails['national_id'];
+                    $entityPayload['national_isocode'] = $otherAccountDetails['country_code'];
+                    $entityPayload['national_id_type'] = $otherAccountDetails['national_id_type'] ?? null;
+                }
+                $entityId = Entity::save($entityPayload);
 
                 if (!$entityId) {
                     throw new Exception("Failed to create entity for account $newAccountId");
