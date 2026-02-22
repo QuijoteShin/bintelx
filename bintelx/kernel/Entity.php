@@ -18,26 +18,34 @@ class Entity {
     }
 
     /**
-     * Normaliza un identificador nacional según el país
-     * Elimina puntos, guiones, espacios y convierte a mayúsculas
+     * Normaliza un identificador nacional — delega a GeoService (country drivers)
      */
     public static function normalizeNationalId(string $nationalId, string $isocode = ''): string
     {
+        if (!empty($isocode)) {
+            return GeoService::normalizeNationalId($isocode, $nationalId);
+        }
+        # Fallback genérico sin país
         $clean = preg_replace('/[^0-9A-Za-z]/', '', $nationalId);
         return strtoupper($clean);
     }
 
     /**
      * Calcula el identity_hash para matching de entities
-     * NOTA: No incluye entity_type - una empresa es una sola entidad
+     * HMAC-SHA256 truncado a 128 bits (32 hex) — solo el sistema puede generarlo
+     * Payload: "ISOCODE|ID_TYPE|NORMALIZED_ID"
+     * NOTA: No incluye entity_type — una empresa es una sola entidad
      */
     public static function calculateIdentityHash(
         string $nationalIsocode,
-        string $nationalId
+        string $nationalId,
+        string $nationalIdType = 'TAX_ID'
     ): string {
         $normalized = self::normalizeNationalId($nationalId, $nationalIsocode);
-        $payload = strtoupper($nationalIsocode) . '|' . $normalized;
-        return hash('sha256', $payload);
+        $payload = strtoupper($nationalIsocode) . '|' . strtoupper($nationalIdType) . '|' . $normalized;
+        $secret = Config::required('JWT_SECRET');
+        $hmac = hash_hmac('sha256', $payload, $secret);
+        return substr($hmac, 0, 32); # 128 bits = 32 hex chars
     }
 
     /**
@@ -112,27 +120,45 @@ class Entity {
             $nationalId = $entity['entity_idn'] ?? $entity['national_id'] ?? null;
             $nationalIsocode = $entity['entity_country'] ?? $entity['national_isocode'] ?? null;
 
+            # Resolver tipo de documento: explícito > auto-detect > default
+            $nationalIdType = $entity['national_id_type'] ?? null;
             $identityHash = null;
+            $checksumOk = null;
+
             if (!empty($nationalId) && !empty($nationalIsocode)) {
-                $identityHash = self::calculateIdentityHash($nationalIsocode, $nationalId);
+                if (empty($nationalIdType)) {
+                    $nationalIdType = GeoService::detectNationalIdType($nationalIsocode, $nationalId) ?? 'TAX_ID';
+                }
+                $identityHash = self::calculateIdentityHash($nationalIsocode, $nationalId, $nationalIdType);
+
+                # Validar checksum si el driver soporta el tipo
+                $validation = GeoService::validateNationalId($nationalIsocode, $nationalId, $nationalIdType);
+                $checksumOk = $validation['valid'] ? 1 : 0;
             }
 
             $query = "INSERT INTO `entities`
                         (entity_type, primary_name, national_id, national_isocode,
-                         identity_hash, status, created_by_profile_id, updated_by_profile_id)
+                         national_id_type, identity_hash, identity_checksum_ok,
+                         identity_assurance, status,
+                         created_by_profile_id, updated_by_profile_id)
                         VALUES
                         (:entity_type, :primary_name, :national_id, :national_isocode,
-                         :identity_hash, :status, :created_by, :updated_by)";
+                         :national_id_type, :identity_hash, :identity_checksum_ok,
+                         :identity_assurance, :status,
+                         :created_by, :updated_by)";
 
             $params = [
-                ':entity_type'        => $entityType,
-                ':primary_name'       => $entity['entity_name'] ?? $entity['primary_name'] ?? null,
-                ':national_id'        => $nationalId,
-                ':national_isocode'   => $nationalIsocode,
-                ':identity_hash'      => $identityHash,
-                ':status'             => $entity['status'] ?? 'active',
-                ':created_by'         => $entity['created_by_profile_id'] ?? null,
-                ':updated_by'         => $entity['updated_by_profile_id'] ?? null,
+                ':entity_type'          => $entityType,
+                ':primary_name'         => $entity['entity_name'] ?? $entity['primary_name'] ?? null,
+                ':national_id'          => $nationalId,
+                ':national_isocode'     => $nationalIsocode,
+                ':national_id_type'     => $nationalIdType,
+                ':identity_hash'        => $identityHash,
+                ':identity_checksum_ok' => $checksumOk,
+                ':identity_assurance'   => (!empty($nationalId)) ? 'claimed' : null,
+                ':status'               => $entity['status'] ?? 'active',
+                ':created_by'           => $entity['created_by_profile_id'] ?? null,
+                ':updated_by'           => $entity['updated_by_profile_id'] ?? null,
             ];
             $result = CONN::nodml($query, $params);
 
@@ -140,7 +166,19 @@ class Entity {
                 $errorMsg = $result['error'] ?? 'Unknown error';
                 throw new \Exception("No se pudo insertar la entidad: $errorMsg");
             }
-            return $result['last_id'];
+
+            $newEntityId = (int)$result['last_id'];
+
+            # EAV: registrar validación de identidad si hay national_id
+            if (!empty($nationalId) && $checksumOk !== null) {
+                self::recordIdentityValidationEAV(
+                    $newEntityId,
+                    $checksumOk === 1 ? 'CHECKSUM' : 'FORMAT_ONLY',
+                    $entity['created_by_profile_id'] ?? 0
+                );
+            }
+
+            return $newEntityId;
         }
     }
 
@@ -240,5 +278,109 @@ class Entity {
         ];
         CONN::dml($query, $params);
         return CONN::getLastInsertId();
+    }
+
+    # =========================================================================
+    # EAV — Historial de verificación de identidad
+    # =========================================================================
+
+    /**
+     * Define las variables EAV para identidad (idempotente, safe para llamar siempre)
+     */
+    private static bool $eavIdentityDefined = false;
+
+    private static function ensureIdentityEAVDefined(int $actorProfileId): void
+    {
+        if (self::$eavIdentityDefined) return;
+
+        $fields = [
+            [
+                'unique_name' => 'entity.identity_validated_at',
+                'label' => 'Identity Validation Timestamp',
+                'data_type' => 'DATETIME',
+                'is_pii' => false
+            ],
+            [
+                'unique_name' => 'entity.identity_validated_by',
+                'label' => 'Identity Validated By (profile_id or system)',
+                'data_type' => 'STRING',
+                'is_pii' => false
+            ],
+            [
+                'unique_name' => 'entity.identity_validation_method',
+                'label' => 'Identity Validation Method',
+                'data_type' => 'STRING',
+                'is_pii' => false
+            ],
+        ];
+
+        foreach ($fields as $def) {
+            DataCaptureService::defineCaptureField($def, $actorProfileId);
+        }
+
+        self::$eavIdentityDefined = true;
+    }
+
+    /**
+     * Registra un evento de validación de identidad en EAV
+     *
+     * @param int $entityId Entity validada
+     * @param string $method Método: CHECKSUM, FORMAT_ONLY, KYC, MANUAL
+     * @param int $actorProfileId Quién validó (0 = system)
+     */
+    public static function recordIdentityValidationEAV(
+        int $entityId,
+        string $method,
+        int $actorProfileId = 0
+    ): void {
+        try {
+            $profileId = $actorProfileId > 0 ? $actorProfileId : (Profile::ctx()->profileId ?: 0);
+
+            self::ensureIdentityEAVDefined($profileId);
+
+            $validatedBy = $profileId > 0 ? (string)$profileId : 'system';
+
+            DataCaptureService::saveData(
+                $profileId,
+                $entityId,
+                Profile::ctx()->scopeEntityId ?: null,
+                [
+                    'macro_context' => 'entity',
+                    'event_context' => 'identity_validation',
+                    'sub_context'   => $method
+                ],
+                [
+                    ['variable_name' => 'entity.identity_validated_at', 'value' => date('Y-m-d H:i:s')],
+                    ['variable_name' => 'entity.identity_validated_by', 'value' => $validatedBy],
+                    ['variable_name' => 'entity.identity_validation_method', 'value' => $method],
+                ],
+                'identity_validation'
+            );
+        } catch (\Exception $e) {
+            # EAV es complementario — no debe bloquear la creación de la entity
+            Log::logWarning("Entity::recordIdentityValidationEAV failed for entity $entityId: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Promueve identity_assurance de 'claimed' a 'verified' y registra en EAV
+     *
+     * @param int $entityId Entity a verificar
+     * @param string $method Método de verificación (KYC, MANUAL, etc.)
+     * @param int $actorProfileId Quién verifica
+     */
+    public static function verifyIdentity(int $entityId, string $method = 'KYC', int $actorProfileId = 0): bool
+    {
+        $result = CONN::nodml(
+            "UPDATE entities SET identity_assurance = 'verified' WHERE entity_id = :eid AND identity_assurance = 'claimed'",
+            [':eid' => $entityId]
+        );
+
+        if ($result['rowCount'] > 0) {
+            self::recordIdentityValidationEAV($entityId, $method, $actorProfileId);
+            return true;
+        }
+
+        return false;
     }
 }

@@ -4,6 +4,7 @@ namespace bX\Entity;
 
 use bX\Entity;
 use bX\CONN;
+use bX\GeoService;
 use bX\Profile;
 use bX\Tenant;
 
@@ -54,9 +55,12 @@ class Customer
 
         $nationalIsocode = $data['national_isocode'] ?? 'CL';
         $entityType = $data['entity_type'] ?? self::ENTITY_TYPE;
+        $nationalIdType = $data['national_id_type']
+            ?? GeoService::detectNationalIdType($nationalIsocode, $data['national_id'])
+            ?? 'TAX_ID';
 
         # Calcular identity_hash para buscar duplicados
-        $identityHash = Entity::calculateIdentityHash($nationalIsocode, $data['national_id']);
+        $identityHash = Entity::calculateIdentityHash($nationalIsocode, $data['national_id'], $nationalIdType);
 
         # Buscar si ya existe un entity con este hash en este scope
         $existing = self::findByIdentityHash($identityHash, $options);
@@ -78,6 +82,7 @@ class Customer
                 'primary_name' => $data['primary_name'],
                 'national_id' => $data['national_id'],
                 'national_isocode' => $nationalIsocode,
+                'national_id_type' => $nationalIdType,
                 'created_by_profile_id' => Profile::ctx()->profileId
             ]);
 
@@ -166,7 +171,10 @@ class Customer
             return null;
         }
 
-        $hash = Entity::calculateIdentityHash($isocode, $nationalId);
+        $idType = $data['national_id_type']
+            ?? GeoService::detectNationalIdType($isocode, $nationalId)
+            ?? 'TAX_ID';
+        $hash = Entity::calculateIdentityHash($isocode, $nationalId, $idType);
         return self::findByIdentityHash($hash, $options);
     }
 
