@@ -71,6 +71,7 @@ class Router
   private static function getScopeWeight(string $scope): int
   {
     return match ($scope) {
+      ROUTER_SCOPE_SYSTEM => 99, # unreachable via route permissions (early return), defense in depth
       ROUTER_SCOPE_WRITE => 3,
       ROUTER_SCOPE_READ => 2,
       ROUTER_SCOPE_PRIVATE => 1,

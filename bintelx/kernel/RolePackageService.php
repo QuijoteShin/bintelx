@@ -315,29 +315,114 @@ class RolePackageService
      */
     public static function setPackageRoutePermissions(int $packageId, array $permissions, string $packageCode): array
     {
-        # Delete existing
-        CONN::nodml("DELETE FROM role_package_route_permissions WHERE package_id = :pid", [':pid' => $packageId]);
+        # Validar todos los patrones antes de guardar (fail-fast)
+        $validated = [];
+        $actorPerms = Profile::getRoutePermissions();
+        $isSystemAdmin = Tenant::isAdmin();
 
-        $count = 0;
         foreach ($permissions as $perm) {
             $pattern = $perm['route_pattern'] ?? '';
             $level = $perm['scope_level'] ?? 'read';
             if (empty($pattern)) continue;
 
+            # Validar scope_level
+            if (!in_array($level, ['read', 'write'], true)) {
+                return ['success' => false, 'message' => "Invalid scope_level '$level' — must be 'read' or 'write'"];
+            }
+
+            # Validar patrón
+            $check = self::validateRoutePattern($pattern, $actorPerms, $isSystemAdmin);
+            if ($check !== true) {
+                return ['success' => false, 'message' => $check];
+            }
+
+            $validated[] = ['route_pattern' => $pattern, 'scope_level' => $level];
+        }
+
+        # Delete existing
+        CONN::nodml("DELETE FROM role_package_route_permissions WHERE package_id = :pid", [':pid' => $packageId]);
+
+        $count = 0;
+        foreach ($validated as $perm) {
             $result = CONN::nodml(
                 "INSERT IGNORE INTO role_package_route_permissions (package_id, route_pattern, scope_level)
                  VALUES (:pid, :pattern, :level)",
-                [':pid' => $packageId, ':pattern' => $pattern, ':level' => $level]
+                [':pid' => $packageId, ':pattern' => $perm['route_pattern'], ':level' => $perm['scope_level']]
             );
             if ($result['success']) $count++;
         }
 
         # Sincronizar synthetic role
-        self::syncSyntheticRole($packageCode, $permissions);
+        self::syncSyntheticRole($packageCode, $validated);
 
         self::invalidateCache();
 
         return ['success' => true, 'count' => $count];
+    }
+
+    # Prefijos reservados para endpoints de sistema — ningún tenant admin puede otorgar acceso
+    private const RESERVED_PREFIXES = ['_internal', '_demo', '_system'];
+
+    /**
+     * Valida un route_pattern antes de persistirlo
+     * - Blocklist de prefijos reservados
+     * - Catch-all solo para system.admin
+     * - Regex válido
+     * - Escalation guard: no puedes otorgar permisos que no tienes
+     *
+     * @return true|string true si válido, string con mensaje de error
+     */
+    private static function validateRoutePattern(string $pattern, array $actorPerms, bool $isSystemAdmin): true|string
+    {
+        # Blocklist: prefijos reservados (endpoints de sistema)
+        $normalized = ltrim($pattern, '^');
+        foreach (self::RESERVED_PREFIXES as $prefix) {
+            if (str_starts_with($normalized, $prefix)) {
+                return "Route pattern '$pattern' matches reserved prefix '$prefix' — not allowed";
+            }
+        }
+
+        # Catch-all: solo system.admin puede otorgar acceso total
+        $catchAllPatterns = ['*', '.*', '.+', '(.*)'];
+        if (in_array($pattern, $catchAllPatterns, true) && !$isSystemAdmin) {
+            return "Catch-all pattern '$pattern' requires system.admin role";
+        }
+
+        # Validar que el regex compile (sin @ suppression)
+        if ($pattern !== '*') {
+            $testResult = @preg_match('#^' . $pattern . '$#i', 'test');
+            if ($testResult === false) {
+                return "Invalid regex pattern '$pattern': " . preg_last_error_msg();
+            }
+        }
+
+        # Escalation guard: no puedes otorgar permisos que no tienes (skip para system.admin)
+        if (!$isSystemAdmin && !empty($actorPerms)) {
+            $actorCanAccess = false;
+            foreach ($actorPerms as $actorPattern => $actorScope) {
+                # Si el actor tiene catch-all, puede otorgar cualquier patrón
+                if ($actorPattern === '*') {
+                    $actorCanAccess = true;
+                    break;
+                }
+                # Verificar si el patrón del actor "cubre" el patrón que intenta otorgar
+                # Heurística: el patrón que intenta otorgar debe empezar con el mismo módulo
+                $actorModule = explode('/', $actorPattern)[0] ?? '';
+                $targetModule = explode('/', $pattern)[0] ?? '';
+                # Limpiar regex del módulo para comparar
+                $actorModule = rtrim($actorModule, '.');
+                $targetModule = rtrim($targetModule, '.');
+                if ($actorModule === $targetModule && $actorModule !== '') {
+                    $actorCanAccess = true;
+                    break;
+                }
+            }
+            if (!$actorCanAccess) {
+                return "Cannot grant route permission '$pattern' — you don't have access to this module";
+            }
+        }
+
+        return true;
     }
 
     /**

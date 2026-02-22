@@ -188,6 +188,11 @@ Router::register(['POST'], 'assign\.json', function() {
         return Response::json(['success' => false, 'message' => 'scope_entity_id required (cannot be NULL)'], 400);
     }
 
+    # Bloquear asignación manual de roles sintéticos — solo via ACL::applyPackage()
+    if (str_starts_with($roleCode, 'sys.pkg.')) {
+        return Response::json(['success' => false, 'message' => 'Synthetic roles (sys.pkg.*) cannot be assigned manually — use package assignment'], 403);
+    }
+
     # Verify role exists
     $roleExists = false;
     CONN::dml(
@@ -250,6 +255,11 @@ Router::register(['POST'], 'revoke\.json', function() {
 
     if ($scopeEntityId <= 0) {
         return Response::json(['success' => false, 'message' => 'scope_entity_id required (cannot be NULL)'], 400);
+    }
+
+    # Bloquear revoke manual de roles sintéticos — solo via ACL::revokePackage()
+    if (str_starts_with($roleCode, 'sys.pkg.')) {
+        return Response::json(['success' => false, 'message' => 'Synthetic roles (sys.pkg.*) cannot be revoked manually — use package revocation'], 403);
     }
 
     # Delegar a ACL (maneja cache invalidation)
