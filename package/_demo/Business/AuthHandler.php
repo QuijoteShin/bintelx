@@ -178,7 +178,12 @@ class AuthHandler
       $accountData = $accountService->createAccount(
         $inputData['username'],
         $inputData['password'],
-        true  // is_active
+        true,  // is_active
+        [
+            'country_code' => $inputData['country_code'] ?? null,
+            'national_id' => $inputData['national_id'] ?? null,
+            'national_id_type' => $inputData['national_id_type'] ?? null,
+        ]
       );
 
       if ($accountData === false) {
@@ -266,137 +271,85 @@ class AuthHandler
       // Note: Accounts can have multiple profiles (multiple "hats")
       // No need to check for existing profiles - this is intentional
 
-      \bX\CONN::begin();
+      return \bX\CONN::transaction(function () use ($isUpdate, $accountId, $profileId, $entityId, $entityType, $entityName, $nationalId, $nationalIsocode, $inputData) {
 
-      if ($isUpdate) {
-        // UPDATE MODE: Update existing entity and profile
-        \bX\Log::logInfo("Updating existing profile: profile_id=$profileId, entity_id=$entityId");
+        if ($isUpdate) {
+          // UPDATE MODE: Update existing entity and profile
+          \bX\Log::logInfo("Updating existing profile: profile_id=$profileId, entity_id=$entityId");
 
-        // 1. Update entity
-        $entitySql = "UPDATE entities
-                      SET entity_type = :type,
-                          primary_name = :name,
-                          national_id = :nid,
-                          national_isocode = :iso,
-                          updated_at = NOW()
-                      WHERE entity_id = :entity_id";
+          $entityResult = \bX\CONN::nodml(
+            "UPDATE entities
+             SET entity_type = :type, primary_name = :name, national_id = :nid, national_isocode = :iso, updated_at = NOW()
+             WHERE entity_id = :entity_id",
+            [':entity_id' => $entityId, ':type' => $entityType, ':name' => $entityName, ':nid' => $nationalId, ':iso' => $nationalIsocode]
+          );
+          if (!$entityResult['success']) {
+            throw new \RuntimeException('Failed to update entity.');
+          }
 
-        $entityResult = \bX\CONN::nodml($entitySql, [
-          ':entity_id' => $entityId,
-          ':type' => $entityType,
-          ':name' => $entityName,
-          ':nid' => $nationalId,
-          ':iso' => $nationalIsocode
-        ]);
+          $profileName = $inputData['profileName'] ?? "Profile for $entityName";
+          $profileResult = \bX\CONN::nodml(
+            "UPDATE profiles SET profile_name = :profile_name, updated_at = NOW() WHERE profile_id = :profile_id",
+            [':profile_id' => $profileId, ':profile_name' => $profileName]
+          );
+          if (!$profileResult['success']) {
+            throw new \RuntimeException('Failed to update profile.');
+          }
 
-        if (!$entityResult['success']) {
-          \bX\CONN::rollback();
-          http_response_code(500);
-          return ['success' => false, 'message' => 'Failed to update entity.'];
+          \bX\Log::logInfo("Profile updated successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
+
+          return [
+            'success' => true,
+            'message' => 'Profile and entity updated successfully.',
+            'data' => [
+              'profileId' => $profileId, 'accountId' => $accountId, 'primaryEntityId' => $entityId,
+              'entityType' => $entityType, 'entityName' => $entityName
+            ]
+          ];
+
+        } else {
+          // CREATE MODE: Create new entity and profile
+          \bX\Log::logInfo("Creating new profile and entity for account_id=$accountId");
+
+          $entityResult = \bX\CONN::nodml(
+            "INSERT INTO entities (entity_type, primary_name, national_id, national_isocode, status) VALUES (:type, :name, :nid, :iso, 'active')",
+            [':type' => $entityType, ':name' => $entityName, ':nid' => $nationalId, ':iso' => $nationalIsocode]
+          );
+          if (!$entityResult['success']) {
+            throw new \RuntimeException('Failed to create entity.');
+          }
+          $entityId = (int)$entityResult['last_id'];
+
+          $profileName = $inputData['profileName'] ?? "Profile for $entityName";
+          $profileResult = \bX\CONN::nodml(
+            "INSERT INTO profiles (account_id, primary_entity_id, profile_name, status) VALUES (:account_id, :entity_id, :profile_name, 'active')",
+            [':account_id' => $accountId, ':entity_id' => $entityId, ':profile_name' => $profileName]
+          );
+          if (!$profileResult['success']) {
+            throw new \RuntimeException('Failed to create profile.');
+          }
+          $profileId = (int)$profileResult['last_id'];
+
+          \bX\Log::logInfo("Profile created successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
+
+          return [
+            'success' => true,
+            'message' => 'Profile and entity created successfully.',
+            'data' => [
+              'profileId' => $profileId, 'accountId' => $accountId, 'primaryEntityId' => $entityId,
+              'entityType' => $entityType, 'entityName' => $entityName
+            ]
+          ];
         }
+      });
 
-        // 2. Update profile
-        $profileName = $inputData['profileName'] ?? "Profile for $entityName";
-
-        $profileSql = "UPDATE profiles
-                       SET profile_name = :profile_name,
-                           updated_at = NOW()
-                       WHERE profile_id = :profile_id";
-
-        $profileResult = \bX\CONN::nodml($profileSql, [
-          ':profile_id' => $profileId,
-          ':profile_name' => $profileName
-        ]);
-
-        if (!$profileResult['success']) {
-          \bX\CONN::rollback();
-          http_response_code(500);
-          return ['success' => false, 'message' => 'Failed to update profile.'];
-        }
-
-        \bX\CONN::commit();
-
-        \bX\Log::logInfo("Profile updated successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
-
-        
-        return [
-          'success' => true,
-          'message' => 'Profile and entity updated successfully.',
-          'data' => [
-            'profileId' => $profileId,
-            'accountId' => $accountId,
-            'primaryEntityId' => $entityId,
-            'entityType' => $entityType,
-            'entityName' => $entityName
-          ]
-        ];
-
-      } else {
-        // CREATE MODE: Create new entity and profile
-        \bX\Log::logInfo("Creating new profile and entity for account_id=$accountId");
-
-        // 1. Create entity first
-        $entitySql = "INSERT INTO entities (entity_type, primary_name, national_id, national_isocode, status)
-                      VALUES (:type, :name, :nid, :iso, 'active')";
-
-        $entityResult = \bX\CONN::nodml($entitySql, [
-          ':type' => $entityType,
-          ':name' => $entityName,
-          ':nid' => $nationalId,
-          ':iso' => $nationalIsocode
-        ]);
-
-        if (!$entityResult['success']) {
-          \bX\CONN::rollback();
-          http_response_code(500);
-          return ['success' => false, 'message' => 'Failed to create entity.'];
-        }
-
-        $entityId = (int)$entityResult['last_id'];
-
-        // 2. Create profile linked to entity
-        $profileName = $inputData['profileName'] ?? "Profile for $entityName";
-
-        $profileSql = "INSERT INTO profiles
-                       (account_id, primary_entity_id, profile_name, status)
-                       VALUES (:account_id, :entity_id, :profile_name, 'active')";
-
-        $profileResult = \bX\CONN::nodml($profileSql, [
-          ':account_id' => $accountId,
-          ':entity_id' => $entityId,
-          ':profile_name' => $profileName
-        ]);
-
-        if (!$profileResult['success']) {
-          \bX\CONN::rollback();
-          http_response_code(500);
-          return ['success' => false, 'message' => 'Failed to create profile.'];
-        }
-
-        $profileId = (int)$profileResult['last_id'];
-
-        \bX\CONN::commit();
-
-        \bX\Log::logInfo("Profile created successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
-
-        
-        return [
-          'success' => true,
-          'message' => 'Profile and entity created successfully.',
-          'data' => [
-            'profileId' => $profileId,
-            'accountId' => $accountId,
-            'primaryEntityId' => $entityId,
-            'entityType' => $entityType,
-            'entityName' => $entityName
-          ]
-        ];
-      }
-
+    } catch (\RuntimeException $e) {
+      # CONN::transaction() ya hizo rollback, solo reportar
+      \bX\Log::logError("Create Profile error: " . $e->getMessage());
+      http_response_code(500);
+      return ['success' => false, 'message' => $e->getMessage()];
     } catch (\Exception $e) {
-      if (\bX\CONN::isInTransaction()) {
-        \bX\CONN::rollback();
-      }
+      # Error inesperado — CONN::transaction() ya hizo rollback
       \bX\Log::logError("Create Profile Exception in AuthHandler: " . $e->getMessage());
       http_response_code(500);
       return ['success' => false, 'message' => 'An internal error occurred.'];
@@ -478,128 +431,106 @@ class AuthHandler
 
       $nationalIsocode = $inputData['nationalIsocode'] ?? 'CL';
 
-      \bX\CONN::begin();
-
-      # 1. Crear Account
-      $jwtSecret = \bX\Config::get('JWT_SECRET');
-      $accountService = new \bX\Account($jwtSecret);
-
-      # Verificar si username ya existe
+      # Verificar si username ya existe (antes de transacción — es solo lectura)
       $existing = \bX\CONN::dml(
         "SELECT account_id FROM accounts WHERE username = :u LIMIT 1",
         [':u' => $inputData['username']]
       );
       if (!empty($existing)) {
-        \bX\CONN::rollback();
         return ['success' => false, 'message' => 'Username already exists.'];
       }
 
-      # Crear account (sin profile/entity automático - lo hacemos manual)
-      $hashedPassword = password_hash($inputData['password'], PASSWORD_DEFAULT);
-      $accountResult = \bX\CONN::nodml(
-        "INSERT INTO accounts (username, password_hash, is_active, status) VALUES (:u, :p, 1, 'active')",
-        [':u' => $inputData['username'], ':p' => $hashedPassword]
-      );
+      $jwtSecret = \bX\Config::get('JWT_SECRET');
+      $accountService = new \bX\Account($jwtSecret);
 
-      if (!$accountResult['success']) {
-        \bX\CONN::rollback();
-        return ['success' => false, 'message' => 'Failed to create account.'];
-      }
+      $txResult = \bX\CONN::transaction(function () use ($inputData, $nationalIsocode) {
 
-      $accountId = (int)$accountResult['last_id'];
+        # 1. Crear Account
+        $hashedPassword = password_hash($inputData['password'], PASSWORD_DEFAULT);
+        $accountResult = \bX\CONN::nodml(
+          "INSERT INTO accounts (username, password_hash, is_active, status) VALUES (:u, :p, 1, 'active')",
+          [':u' => $inputData['username'], ':p' => $hashedPassword]
+        );
+        if (!$accountResult['success']) throw new \RuntimeException('Failed to create account.');
+        $accountId = (int)$accountResult['last_id'];
 
-      # 2. Crear Entity "person" (el usuario/dueño)
-      $personEntityId = \bX\Entity::save([
-        'entity_type' => 'person',
-        'primary_name' => $inputData['personName'],
-        'national_id' => $inputData['personNationalId'] ?? null,
-        'national_isocode' => $nationalIsocode,
-        'status' => 'active'
-      ]);
+        # 2. Crear Entity "person" (el usuario/dueño)
+        $personEntityId = \bX\Entity::save([
+          'entity_type' => 'person',
+          'primary_name' => $inputData['personName'],
+          'national_id' => $inputData['personNationalId'] ?? null,
+          'national_isocode' => $nationalIsocode,
+          'status' => 'active'
+        ]);
+        if (!$personEntityId) throw new \RuntimeException('Failed to create person entity.');
 
-      if (!$personEntityId) {
-        \bX\CONN::rollback();
-        return ['success' => false, 'message' => 'Failed to create person entity.'];
-      }
+        # 3. Crear Entity "organization" (la empresa)
+        $companyEntityId = \bX\Entity::save([
+          'entity_type' => 'organization',
+          'primary_name' => $inputData['companyName'],
+          'national_id' => $inputData['companyNationalId'] ?? null,
+          'national_isocode' => $nationalIsocode,
+          'status' => 'active'
+        ]);
+        if (!$companyEntityId) throw new \RuntimeException('Failed to create company entity.');
 
-      # 3. Crear Entity "organization" (la empresa)
-      $companyEntityId = \bX\Entity::save([
-        'entity_type' => 'organization',
-        'primary_name' => $inputData['companyName'],
-        'national_id' => $inputData['companyNationalId'] ?? null,
-        'national_isocode' => $nationalIsocode,
-        'status' => 'active'
-      ]);
+        # 4. Crear Profile vinculado a Account + Person Entity
+        $profileResult = \bX\CONN::nodml(
+          "INSERT INTO profiles (account_id, primary_entity_id, profile_name, status) VALUES (:account_id, :entity_id, :profile_name, 'active')",
+          [':account_id' => $accountId, ':entity_id' => $personEntityId, ':profile_name' => "Profile - " . $inputData['personName']]
+        );
+        if (!$profileResult['success']) throw new \RuntimeException('Failed to create profile.');
+        $profileId = (int)$profileResult['last_id'];
 
-      if (!$companyEntityId) {
-        \bX\CONN::rollback();
-        return ['success' => false, 'message' => 'Failed to create company entity.'];
-      }
+        # 5. Crear Relationship: Profile → Company (owner)
+        $relResult = \bX\Entity\Graph::create([
+          'profile_id' => $profileId,
+          'entity_id' => $companyEntityId,
+          'relation_kind' => 'owner',
+          'relationship_label' => $inputData['companyName']
+        ], ['scope_entity_id' => $companyEntityId]);
+        if (!$relResult['success']) throw new \RuntimeException('Failed to create relationship.');
 
-      # 4. Crear Profile vinculado a Account + Person Entity
-      $profileResult = \bX\CONN::nodml(
-        "INSERT INTO profiles (account_id, primary_entity_id, profile_name, status)
-         VALUES (:account_id, :entity_id, :profile_name, 'active')",
-        [
-          ':account_id' => $accountId,
-          ':entity_id' => $personEntityId,
-          ':profile_name' => "Profile - " . $inputData['personName']
-        ]
-      );
+        return [
+          'accountId' => $accountId,
+          'profileId' => $profileId,
+          'personEntityId' => $personEntityId,
+          'companyEntityId' => $companyEntityId
+        ];
+      });
 
-      if (!$profileResult['success']) {
-        \bX\CONN::rollback();
-        return ['success' => false, 'message' => 'Failed to create profile.'];
-      }
-
-      $profileId = (int)$profileResult['last_id'];
-
-      # 5. Crear Relationship: Profile → Company (owner)
-      # Pasamos scope_entity_id = companyEntityId porque es el tenant del nuevo usuario
-      $relResult = \bX\Entity\Graph::create([
-        'profile_id' => $profileId,
-        'entity_id' => $companyEntityId,
-        'relation_kind' => 'owner',
-        'relationship_label' => $inputData['companyName']
-      ], ['scope_entity_id' => $companyEntityId]);
-
-      if (!$relResult['success']) {
-        \bX\CONN::rollback();
-        return ['success' => false, 'message' => 'Failed to create relationship.'];
-      }
-
-      \bX\CONN::commit();
-
-      # 6. Generar token con scope de la empresa
+      # 6. Generar token con scope de la empresa (fuera de transacción — no es DB write)
       $token = $accountService->generateToken(
-        (string)$accountId,
+        (string)$txResult['accountId'],
         null,
         null,
-        $profileId,
-        $companyEntityId,
+        $txResult['profileId'],
+        $txResult['companyEntityId'],
         $inputData['device_hash'] ?? null
       );
 
-      \bX\Log::logInfo("Company registered: account_id=$accountId, person_entity=$personEntityId, company_entity=$companyEntityId, profile=$profileId");
+      \bX\Log::logInfo("Company registered: account_id={$txResult['accountId']}, person_entity={$txResult['personEntityId']}, company_entity={$txResult['companyEntityId']}, profile={$txResult['profileId']}");
 
       return [
         'success' => true,
         'message' => 'Company account created successfully.',
         'token' => $token,
         'data' => [
-          'accountId' => $accountId,
-          'profileId' => $profileId,
-          'personEntityId' => $personEntityId,
-          'companyEntityId' => $companyEntityId,
-          'scopeEntityId' => $companyEntityId,
+          'accountId' => $txResult['accountId'],
+          'profileId' => $txResult['profileId'],
+          'personEntityId' => $txResult['personEntityId'],
+          'companyEntityId' => $txResult['companyEntityId'],
+          'scopeEntityId' => $txResult['companyEntityId'],
           'username' => $inputData['username']
         ]
       ];
 
+    } catch (\RuntimeException $e) {
+      # CONN::transaction() ya hizo rollback
+      \bX\Log::logError("RegisterCompany error: " . $e->getMessage());
+      return ['success' => false, 'message' => $e->getMessage()];
     } catch (\Exception $e) {
-      if (\bX\CONN::isInTransaction()) {
-        \bX\CONN::rollback();
-      }
+      # Error inesperado — CONN::transaction() ya hizo rollback
       \bX\Log::logError("RegisterCompany Exception: " . $e->getMessage());
       return ['success' => false, 'message' => 'An internal error occurred during registration.'];
     }
