@@ -62,18 +62,34 @@ Router::register(['GET','POST'], '', function() {
     # 2. Cargar configuración DB (tiene prioridad)
     $dbConfig = loadDbNavigationConfig();
 
-    # 3. Aplicar config DB sobre rutas locales
+    # 3. Aplicar config DB sobre rutas locales + incluir rutas DB-only
     foreach ($dbConfig as $path => $config) {
         if (isset($routesByPath[$path])) {
-            # Ruta existe en local, aplicar config DB
+            # Ruta existe en local → DB sobreescribe config
             $routesByPath[$path] = array_merge($routesByPath[$path], [
                 'label' => $config['label'] ?? $routesByPath[$path]['label'],
                 'hidden' => $config['hidden'] ?? $routesByPath[$path]['hidden'],
                 'group' => $config['group'] ?? $routesByPath[$path]['group'],
                 'required_roles' => $config['required_roles'] ?? [],
+                'category_code' => $config['category_code'] ?? null,
                 'order_index' => $config['order_index'] ?? 0,
                 'source' => 'db'
             ]);
+        } else {
+            # Ruta solo existe en DB → incluirla (tenant/global ready)
+            $routesByPath[$path] = [
+                'path' => $path,
+                'app' => null,
+                'moduleName' => null,
+                'prefix' => null,
+                'label' => $config['label'],
+                'hidden' => $config['hidden'] ?? false,
+                'group' => $config['group'],
+                'required_roles' => $config['required_roles'] ?? [],
+                'category_code' => $config['category_code'] ?? null,
+                'order_index' => $config['order_index'] ?? 0,
+                'source' => 'db-only'
+            ];
         }
     }
 
@@ -81,9 +97,10 @@ Router::register(['GET','POST'], '', function() {
     $routes = array_values($routesByPath);
     $routes = applyAclInheritance($routes, $dbConfig);
 
-    # 5. Filtrar por roles del usuario
+    # 5. Filtrar por roles del usuario + categorías
     $userRoles = getUserRoles();
-    $filtered = filterByRoles($routes, $userRoles);
+    $userCategories = Profile::ctx()->categories ?? [];
+    $filtered = filterByRolesAndCategories($routes, $userRoles, $userCategories);
 
     # 6. Ordenar
     usort($filtered, function($a, $b) {
@@ -277,11 +294,21 @@ function mergeRoles(array $existing, array $inherited): array {
     return $merged;
 }
 
-function filterByRoles(array $routes, array $userRoles): array {
-    return array_values(array_filter($routes, function($route) use ($userRoles) {
+function filterByRolesAndCategories(array $routes, array $userRoles, array $userCategories): array {
+    return array_values(array_filter($routes, function($route) use ($userRoles, $userCategories) {
+        # --- Filtro por categoría ---
+        $catCode = $route['category_code'] ?? null;
+        if ($catCode !== null && !empty($userCategories)) {
+            # Usuario tiene packages → verificar categoría
+            if (!in_array($catCode, $userCategories, true)) return false;
+        }
+        # catCode null = todos lo ven
+        # userCategories vacío = legacy, no filtrar por categoría
+
+        # --- Filtro por roles ---
         $required = $route['required_roles'] ?? [];
 
-        # Sin requisitos = público
+        # Sin requisitos = visible
         if (empty($required)) return true;
 
         # system.admin tiene acceso a todo
@@ -313,7 +340,8 @@ function ensureNavigationTable(): void {
         label VARCHAR(255) DEFAULT NULL,
         hidden TINYINT(1) DEFAULT 0,
         route_group VARCHAR(100) DEFAULT NULL,
-        required_roles_json JSON DEFAULT NULL,
+        required_roles_json VARCHAR(4000) DEFAULT NULL,
+        category_code VARCHAR(100) DEFAULT NULL COMMENT 'operational|administrative|vision|supplier|NULL=todos',
         order_index INT DEFAULT 0,
         is_active TINYINT(1) NOT NULL DEFAULT 1,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -326,7 +354,7 @@ function loadDbNavigationConfig(): array {
     $scopeId = Profile::ctx()->scopeEntityId ?? null;
     $params = [];
 
-    $sql = "SELECT path, label, hidden, route_group, required_roles_json, order_index, scope_entity_id
+    $sql = "SELECT path, label, hidden, route_group, required_roles_json, category_code, order_index, scope_entity_id
             FROM navigation_routes
             WHERE is_active = 1";
 
@@ -353,6 +381,7 @@ function loadDbNavigationConfig(): array {
             'hidden' => (bool)$r['hidden'],
             'group' => $r['route_group'],
             'required_roles' => normalizeRequiredRoles($r['required_roles_json']),
+            'category_code' => $r['category_code'] ?? null,
             'order_index' => (int)$r['order_index'],
             'scope_entity_id' => $r['scope_entity_id']
         ];
@@ -383,13 +412,14 @@ function upsertNavigationRoutes(array $routes, bool $replace): int {
         $rolesJson = json_encode(normalizeRequiredRolesForSave($r['required_roles'] ?? []));
 
         $res = CONN::nodml(
-            "INSERT INTO navigation_routes (path, scope_entity_id, label, hidden, route_group, required_roles_json, order_index, is_active)
-             VALUES (:p, :s, :l, :h, :g, :r, :o, 1)
+            "INSERT INTO navigation_routes (path, scope_entity_id, label, hidden, route_group, required_roles_json, category_code, order_index, is_active)
+             VALUES (:p, :s, :l, :h, :g, :r, :cat, :o, 1)
              ON DUPLICATE KEY UPDATE
                 label = VALUES(label),
                 hidden = VALUES(hidden),
                 route_group = VALUES(route_group),
                 required_roles_json = VALUES(required_roles_json),
+                category_code = VALUES(category_code),
                 order_index = VALUES(order_index),
                 is_active = 1",
             [
@@ -399,6 +429,7 @@ function upsertNavigationRoutes(array $routes, bool $replace): int {
                 ':h' => !empty($r['hidden']) ? 1 : 0,
                 ':g' => $r['group'] ?? null,
                 ':r' => $rolesJson,
+                ':cat' => $r['category_code'] ?? null,
                 ':o' => (int)($r['order_index'] ?? 0)
             ]
         );

@@ -559,6 +559,141 @@ Router::register(['GET'], 'packages/diff\.json', function() {
 }, ROUTER_SCOPE_READ);
 
 # ============================================
+# RBAC: Package Route Permissions
+# ============================================
+
+/**
+ * @endpoint   GET /api/roles/packages/route-permissions.json?package_code=X
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Get route permissions defined for a package
+ */
+Router::register(['GET'], 'packages/route-permissions\.json', function() {
+    $packageCode = $_GET['package_code'] ?? '';
+    if (empty($packageCode)) {
+        return Response::json(['success' => false, 'message' => 'package_code required'], 400);
+    }
+
+    $scopeEntityId = (int)($_GET['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    $permissions = RolePackageService::getPackageRoutePermissions($packageCode, $scopeEntityId ?: null);
+
+    return Response::json(['success' => true, 'data' => $permissions]);
+}, ROUTER_SCOPE_READ);
+
+/**
+ * @endpoint   POST /api/roles/packages/route-permissions.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Set route permissions for a package (replace all) + sync synthetic role
+ */
+Router::register(['POST'], 'packages/route-permissions\.json', function() {
+    $opt = Args::ctx()->opt;
+    $packageCode = $opt['package_code'] ?? '';
+    $permissions = $opt['route_permissions'] ?? [];
+
+    if (empty($packageCode)) {
+        return Response::json(['success' => false, 'message' => 'package_code required'], 400);
+    }
+
+    $scopeEntityId = (int)($opt['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    $package = RolePackageService::resolvePackage($packageCode, $scopeEntityId ?: null);
+
+    if (!$package) {
+        return Response::json(['success' => false, 'message' => 'Package not found'], 404);
+    }
+
+    $result = RolePackageService::setPackageRoutePermissions(
+        (int)$package['package_id'],
+        $permissions,
+        $packageCode
+    );
+
+    return Response::json($result);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   POST /api/roles/packages/roles.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Set roles for a package (replace all)
+ */
+Router::register(['POST'], 'packages/roles\.json', function() {
+    $opt = Args::ctx()->opt;
+    $packageCode = $opt['package_code'] ?? '';
+    $roleCodes = $opt['roles'] ?? [];
+
+    if (empty($packageCode)) {
+        return Response::json(['success' => false, 'message' => 'package_code required'], 400);
+    }
+
+    $scopeEntityId = (int)($opt['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    $package = RolePackageService::resolvePackage($packageCode, $scopeEntityId ?: null);
+
+    if (!$package) {
+        return Response::json(['success' => false, 'message' => 'Package not found'], 404);
+    }
+
+    $result = RolePackageService::setPackageRoles(
+        (int)$package['package_id'],
+        $roleCodes,
+        (int)$package['scope_entity_id']
+    );
+
+    return Response::json($result);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   POST /api/roles/packages/categories.json
+ * @scope      ROUTER_SCOPE_WRITE
+ * @purpose    Set categories for a package (replace all)
+ */
+Router::register(['POST'], 'packages/categories\.json', function() {
+    $opt = Args::ctx()->opt;
+    $packageCode = $opt['package_code'] ?? '';
+    $categoryCodes = $opt['categories'] ?? [];
+
+    if (empty($packageCode)) {
+        return Response::json(['success' => false, 'message' => 'package_code required'], 400);
+    }
+
+    $scopeEntityId = (int)($opt['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    $package = RolePackageService::resolvePackage($packageCode, $scopeEntityId ?: null);
+
+    if (!$package) {
+        return Response::json(['success' => false, 'message' => 'Package not found'], 404);
+    }
+
+    $result = RolePackageService::setPackageCategories(
+        (int)$package['package_id'],
+        $categoryCodes,
+        (int)$package['scope_entity_id']
+    );
+
+    return Response::json($result);
+}, ROUTER_SCOPE_WRITE);
+
+/**
+ * @endpoint   GET /api/roles/packages/detail.json?package_code=X
+ * @scope      ROUTER_SCOPE_READ
+ * @purpose    Get full package detail (roles + categories + route_permissions)
+ */
+Router::register(['GET'], 'packages/detail\.json', function() {
+    $packageCode = $_GET['package_code'] ?? '';
+    if (empty($packageCode)) {
+        return Response::json(['success' => false, 'message' => 'package_code required'], 400);
+    }
+
+    $scopeEntityId = (int)($_GET['scope_entity_id'] ?? Profile::ctx()->scopeEntityId);
+    $expanded = RolePackageService::expand($packageCode, $scopeEntityId ?: null);
+
+    if (empty($expanded['roles']) && empty($expanded['categories']) && empty($expanded['route_permissions'])) {
+        $package = RolePackageService::resolvePackage($packageCode, $scopeEntityId ?: null);
+        if (!$package) {
+            return Response::json(['success' => false, 'message' => 'Package not found'], 404);
+        }
+    }
+
+    return Response::json(['success' => true, 'data' => $expanded]);
+}, ROUTER_SCOPE_READ);
+
+# ============================================
 # RBAC: Category endpoints
 # ============================================
 

@@ -58,20 +58,45 @@ Router::register(['GET'], '', function() {
   }
 
   $fullName = trim((string)($row['primary_name'] ?? ''));
-  $parts = array_values(array_filter(preg_split('/\s+/', $fullName)));
-  $firstName = $parts[0] ?? '';
-  $lastName = count($parts) > 1 ? implode(' ', array_slice($parts, 1)) : '';
+  # EAV first/last name tienen prioridad sobre parseo de primary_name
+  if ($eavFirstName !== null) {
+    $firstName = $eavFirstName;
+    $lastName = $eavLastName ?? '';
+  } else {
+    # Fallback: parsear primary_name solo si no hay EAV
+    # 1-2 palabras → todo en nombre (ej: "Paolo Gustavo")
+    # 3+ palabras → primeras 2 nombre, resto apellido (ej: "Paolo Gustavo Pérez")
+    $parts = array_values(array_filter(preg_split('/\s+/', $fullName)));
+    $count = count($parts);
+    if ($count <= 2) {
+      $firstName = $fullName;
+      $lastName = '';
+    } else {
+      $firstName = implode(' ', array_slice($parts, 0, 2));
+      $lastName = implode(' ', array_slice($parts, 2));
+    }
+  }
   $displayName = $row['profile_name'] ?: ($fullName ?: $row['username']);
 
   $roles = Profile::ctx()->roles['assignments'] ?? [];
   $roleCode = !empty($roles) ? ($roles[0]['role_code'] ?? 'user') : 'user';
 
   $profileEmail = null;
+  $eavFirstName = null;
+  $eavLastName = null;
   $userRoles = [];
   if ($entityId > 0) {
-    $hot = DataCaptureService::getHotData($entityId, ['profile.contact_email']);
-    if (!empty($hot['success']) && !empty($hot['data']['profile.contact_email']['value'])) {
-      $profileEmail = $hot['data']['profile.contact_email']['value'];
+    $hot = DataCaptureService::getHotData($entityId, ['profile.contact_email', 'profile.first_name', 'profile.last_name']);
+    if (!empty($hot['success']) && !empty($hot['data'])) {
+      if (!empty($hot['data']['profile.contact_email']['value'])) {
+        $profileEmail = $hot['data']['profile.contact_email']['value'];
+      }
+      if (!empty($hot['data']['profile.first_name']['value'])) {
+        $eavFirstName = $hot['data']['profile.first_name']['value'];
+      }
+      if (!empty($hot['data']['profile.last_name']['value'])) {
+        $eavLastName = $hot['data']['profile.last_name']['value'];
+      }
     }
   }
   if (!empty(Profile::ctx()->roles['assignments'])) {
@@ -88,6 +113,7 @@ Router::register(['GET'], '', function() {
     'profile_id' => (int)$profileId,
     'account_id' => (int)$accountId,
     'entity_id' => (int)$entityId,
+    'username' => $row['username'],
     'first_name' => $firstName,
     'last_name' => $lastName,
     'display_name' => $displayName,
@@ -196,6 +222,26 @@ Router::register(['PUT'], 'name', function() {
     );
     if (!$resProfile['success']) {
       throw new \Exception($resProfile['error'] ?? 'Error al actualizar perfil');
+    }
+
+    # Guardar first_name y last_name en EAV para evitar parseo por espacios
+    if ($entityId > 0) {
+      DataCaptureService::defineCaptureField([
+        'unique_name' => 'profile.first_name', 'label' => 'Nombre', 'data_type' => 'STRING', 'is_pii' => true, 'status' => 'active'
+      ], $profileId);
+      DataCaptureService::defineCaptureField([
+        'unique_name' => 'profile.last_name', 'label' => 'Apellidos', 'data_type' => 'STRING', 'is_pii' => true, 'status' => 'active'
+      ], $profileId);
+
+      $nameFields = [
+        ['variable_name' => 'profile.first_name', 'value' => $first, 'reason' => 'profile-name-update'],
+        ['variable_name' => 'profile.last_name', 'value' => $last, 'reason' => 'profile-name-update'],
+      ];
+      DataCaptureService::saveData(
+        $profileId, $entityId, null,
+        ['macro_context' => 'profile', 'event_context' => 'contact', 'sub_context' => 'name_update'],
+        $nameFields, 'profile_name_update', 'PROFILE_APP'
+      );
     }
 
     CONN::commit();
@@ -311,8 +357,27 @@ Router::register(['GET'], 'scopes\.(json|scon|toon)', function() {
   # Delegate to Profile (no SQL in endpoint)
   $scopes = Profile::getAllowedScopesWithMeta();
 
+  # Verificar si el perfil tiene email real (no fallback a username)
+  $profileComplete = true;
+  $entityId = Profile::ctx()->entityId;
+  if ($entityId > 0) {
+    $hot = DataCaptureService::getHotData($entityId, ['profile.contact_email']);
+    $hasEavEmail = !empty($hot['success']) && !empty($hot['data']['profile.contact_email']['value']);
+    if (!$hasEavEmail) {
+      # Verificar accounts.email como fallback
+      $accEmail = null;
+      CONN::dml("SELECT email FROM accounts WHERE account_id = :id LIMIT 1",
+        [':id' => Profile::ctx()->accountId],
+        function($r) use (&$accEmail) { $accEmail = $r['email']; return false; }
+      );
+      if (empty($accEmail)) {
+        $profileComplete = false;
+      }
+    }
+  }
+
   # Auto-formato: Router detecta extensión y serializa como json/scon/toon
-  return ['success' => true, 'scopes' => $scopes];
+  return ['success' => true, 'scopes' => $scopes, 'profile_complete' => $profileComplete];
 }, ROUTER_SCOPE_PRIVATE);
 
 /**

@@ -20,23 +20,27 @@ Router::register(['GET'], 'countries\.json', function () {
         'items' => $countries,
         'total' => count($countries)
     ]]);
-}, ROUTER_SCOPE_READ);
+}, ROUTER_SCOPE_PUBLIC);
 
-# GET /api/geo/countries/{code}.json
-Router::register(['GET'], 'countries/(?P<code>[A-Z]{2})\.json', function ($code) {
+# GET /api/geo/countries/{code}.json|scon
+Router::register(['GET'], 'countries/(?P<code>[A-Z]{2})\.(?P<fmt>json|scon)', function ($code) {
     $country = GeoService::getCountry($code);
     if (!$country) {
-        return Response::json(['data' => [
+        return ['data' => [
             'success' => false,
             'error' => 'NOT_FOUND',
             'message' => "Country {$code} not found"
-        ]], 404);
+        ]];
     }
-    return Response::json(['data' => [
+
+    # Enriquecer con tipos de documento soportados
+    $country['documents'] = GeoService::getSupportedIdTypes(strtoupper($code));
+
+    return ['data' => [
         'success' => true,
         'country' => $country
-    ]]);
-}, ROUTER_SCOPE_READ);
+    ]];
+}, ROUTER_SCOPE_PUBLIC);
 
 # =============================================================================
 # CURRENCIES
@@ -358,3 +362,40 @@ Router::register(['GET'], 'countries/(?P<country>[A-Z]{2})/communes/(?P<code>[0-
         'commune' => $commune
     ]]);
 }, ROUTER_SCOPE_READ);
+
+# =============================================================================
+# IDENTITY — Validación de documentos nacionales
+# =============================================================================
+
+# GET /api/geo/countries/{code}/identity.json|scon?value=77.475.404-0&type=TAX_ID
+# Sin value → retorna tipos de documento soportados
+# Con value → valida, normaliza y formatea el identificador
+Router::register(['GET'], 'countries/(?P<code>[A-Z]{2})/identity\.(?P<fmt>json|scon)', function ($code) {
+    $country = strtoupper($code);
+    $value = $_GET['value'] ?? '';
+    $type = strtoupper($_GET['type'] ?? '');
+
+    # Sin value → solo retorna documentos soportados por este país
+    if (empty($value)) {
+        return ['data' => [
+            'success' => true,
+            'country' => $country,
+            'documents' => GeoService::getSupportedIdTypes($country)
+        ]];
+    }
+
+    # Con value → validar identidad
+    $idType = !empty($type) ? $type : (GeoService::detectNationalIdType($country, $value) ?? 'TAX_ID');
+    $validation = GeoService::validateNationalId($country, $value, $idType);
+
+    return ['data' => [
+        'success' => true,
+        'country' => $country,
+        'type' => $idType,
+        'valid' => $validation['valid'],
+        'validation' => $validation['validation'] ?? null,
+        'error' => $validation['error'] ?? null,
+        'normalized' => GeoService::normalizeNationalId($country, $value, $idType),
+        'formatted' => GeoService::formatNationalId($country, $value, $idType)
+    ]];
+}, ROUTER_SCOPE_PUBLIC);

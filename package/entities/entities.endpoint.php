@@ -10,6 +10,7 @@ use bX\CONN;
 use bX\Tenant;
 use bX\Entity;
 use bX\Entity\Graph;
+use bX\GeoService;
 use bX\DataCaptureService;
 
 # Definir variables EAV para entity (si no existen)
@@ -389,9 +390,13 @@ Router::register(['POST'], 'create', function() {
     # Calculate identity_hash if national_id provided
     $identityHash = null;
     if (!empty($data['national_id']) && !empty($data['national_isocode'])) {
+        $nationalIdType = $data['national_id_type']
+            ?? GeoService::detectNationalIdType($data['national_isocode'], $data['national_id'])
+            ?? 'TAX_ID';
         $identityHash = Entity::calculateIdentityHash(
             $data['national_isocode'],
-            $data['national_id']
+            $data['national_id'],
+            $nationalIdType
         );
 
         # Check for existing entity with same identity_hash
@@ -569,9 +574,19 @@ Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
         $finalIsocode = $newIsocode ?? $current['national_isocode'] ?? 'CL';
 
         if (!empty($finalNationalId)) {
-            $identityHash = Entity::calculateIdentityHash($finalIsocode, $finalNationalId);
+            $finalIdType = $data['national_id_type']
+                ?? GeoService::detectNationalIdType($finalIsocode, $finalNationalId)
+                ?? 'TAX_ID';
+            $identityHash = Entity::calculateIdentityHash($finalIsocode, $finalNationalId, $finalIdType);
             $updates[] = 'identity_hash = :identity_hash';
             $params[':identity_hash'] = $identityHash;
+            $updates[] = 'national_id_type = :national_id_type';
+            $params[':national_id_type'] = $finalIdType;
+
+            # Revalidar checksum
+            $validation = GeoService::validateNationalId($finalIsocode, $finalNationalId, $finalIdType);
+            $updates[] = 'identity_checksum_ok = :identity_checksum_ok';
+            $params[':identity_checksum_ok'] = $validation['valid'] ? 1 : 0;
         }
     }
 
@@ -683,9 +698,13 @@ Router::register(['POST'], 'ensure', function() {
     $identityHash = null;
 
     if (!empty($data['national_id']) && !empty($data['national_isocode'])) {
+        $upsertIdType = $data['national_id_type']
+            ?? GeoService::detectNationalIdType($data['national_isocode'], $data['national_id'])
+            ?? 'TAX_ID';
         $identityHash = Entity::calculateIdentityHash(
             $data['national_isocode'],
-            $data['national_id']
+            $data['national_id'],
+            $upsertIdType
         );
 
         $existing = CONN::dml(
@@ -818,8 +837,11 @@ Router::register(['GET'], 'check-identity/(?P<isocode>[A-Z]{2})/(?P<national_id>
         ]], 400);
     }
 
-    # Calculate identity hash
-    $identityHash = Entity::calculateIdentityHash($isocode, $nationalId);
+    # Calculate identity hash — tipo vía query param o auto-detect
+    $checkIdType = Args::$OPT['national_id_type']
+        ?? GeoService::detectNationalIdType($isocode, $nationalId)
+        ?? 'TAX_ID';
+    $identityHash = Entity::calculateIdentityHash($isocode, $nationalId, $checkIdType);
 
     # Search for existing entity with this hash
     $sql = "SELECT entity_id, primary_name, entity_type, national_id, status
