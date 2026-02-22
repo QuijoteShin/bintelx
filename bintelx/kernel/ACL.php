@@ -134,6 +134,10 @@ class ACL
                 foreach ($expanded['roles'] as $role) {
                     $rolesToAssign[$role] = $t['package_code'];
                 }
+                # Synthetic Role Bridge: si el package tiene route_permissions, agregar synthetic role
+                if (!empty($expanded['route_permissions'])) {
+                    $rolesToAssign['sys.pkg.' . $t['package_code']] = $t['package_code'];
+                }
                 $packagesExpanded[] = $t['package_code'];
             }
 
@@ -215,6 +219,15 @@ class ACL
                     'package' => $packageCode,
                     'error' => $result['error'] ?? 'Unknown'
                 ]);
+            }
+        }
+
+        # Synthetic Role Bridge: asignar sys.pkg.{package_code} si el package tiene route_permissions
+        if (!empty($expanded['route_permissions'])) {
+            $syntheticCode = 'sys.pkg.' . $packageCode;
+            $result = self::assignRole($profileId, $syntheticCode, $scopeEntityId, $actor, $packageCode);
+            if ($result['success'] && !($result['already_exists'] ?? false)) {
+                $applied[] = $syntheticCode;
             }
         }
 
@@ -662,6 +675,11 @@ class ACL
         # Expandir definición actual del package
         $expanded = RolePackageService::expand($packageCode, $scopeEntityId);
         $currentRoles = $expanded['roles'] ?? [];
+
+        # Incluir synthetic role si el package tiene route_permissions
+        if (!empty($expanded['route_permissions'])) {
+            $currentRoles[] = 'sys.pkg.' . $packageCode;
+        }
 
         if (empty($currentRoles) && !$revokeRemoved) {
             return ['profiles_affected' => 0, 'added' => [], 'revoked' => [], 'errors' => []];
