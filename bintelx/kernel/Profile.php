@@ -767,6 +767,14 @@ class Profile {
             }
         );
 
+        # Global tenant visible for system.admin
+        $globalIds = Tenant::globalIds();
+        if (!empty($globalIds) && self::hasRole(null, null, 'system.admin')) {
+            foreach ($globalIds as $gid) {
+                $scopes[] = $gid;
+            }
+        }
+
         # Fallback: if no scopes found, use profile's own entity_id
         if (empty($scopes) && self::ctx()->entityId > 0) {
             $scopes[] = self::ctx()->entityId;
