@@ -9,9 +9,51 @@ use bX\Log;
 use bX\Args;
 use bX\Entity\Graph;
 
-# Inicializa un perfil como owner de una entidad
-# Crea/reactiva relación owner + aplica packages via ACL
-# POST /api/_internal/rbac-init { profile_id, entity_id }
+# ──────────────────────────────────────────────
+# POST /api/_internal/rbac-init
+# Inicializa un perfil como owner de una entidad.
+# Crea/reactiva relación owner + aplica packages via ACL (role_templates).
+#
+# Body: { "profile_id": int, "entity_id": int }
+#
+# Scope: ROUTER_SCOPE_SYSTEM — solo Channel Server, nunca FPM.
+#
+# Auth (2 capas independientes):
+#
+#   Capa 1 — Acceso al endpoint (Router):
+#     El Router permite SCOPE_SYSTEM si cumple UNA de:
+#     - X-System-Key header (hash_equals vs secrets/system_secret.secret)
+#     - Request desde localhost (127.0.0.1 / ::1)
+#     Desde localhost no necesitas X-System-Key. Desde red externa sí.
+#
+#   Capa 2 — Profile::ctx() para operaciones internas:
+#     Graph::createIfNotExists() llama a Tenant::validateForWrite() que
+#     requiere isAdmin() = true. isAdmin() checa:
+#       - Profile::ctx()->accountId === 1 (system account)
+#       - Profile::ctx()->roles['by_role']['system.admin'] no vacío
+#     SCOPE_SYSTEM NO carga Profile::ctx() automáticamente.
+#     Para que isAdmin() pase, DEBES enviar JWT (Authorization: Bearer <token>)
+#     de un usuario con system.admin en el scope del entity_id destino.
+#
+# Ejemplo:
+#   curl -X POST http://localhost:8000/api/_internal/rbac-init \
+#     -H 'Content-Type: application/json' \
+#     -H 'Authorization: Bearer <JWT_CON_SYSTEM_ADMIN>' \
+#     -d '{"profile_id": 107, "entity_id": 2000000000}'
+#
+# Sin JWT o sin system.admin en scope:
+#   → relationship.success = false, "Global tenant scope requires admin"
+#
+# Flujo interno:
+#   1. Valida profile y entity existen
+#   2. Desactiva relaciones legacy sin scope_entity_id (NULL)
+#   3. Graph::createIfNotExists() en transacción:
+#      - INSERT entity_relationships (owner)
+#      - ACL::applyTemplates() busca role_templates para 'owner'
+#      - Expande packages → roles individuales (con source_package_code)
+#      - Crea synthetic role sys.pkg.{code} si el package tiene route_permissions
+#   4. Retorna relación + roles resultantes en scope
+# ──────────────────────────────────────────────
 Router::register(['POST'], 'rbac-init', function() {
     $profileId = (int)(Args::ctx()->opt['profile_id'] ?? 0);
     $entityId = (int)(Args::ctx()->opt['entity_id'] ?? 0);
