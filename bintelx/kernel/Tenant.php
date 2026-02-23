@@ -322,8 +322,10 @@ class Tenant
         $scope = self::resolve($options);
 
         if ($scope === null) {
-            # No scope — neutral priority (secondary ORDER decides)
-            return '(0) DESC';
+            # No scope — neutral sort (secondary ORDER decides)
+            # MySQL interprets ORDER BY 0 as column index → error
+            # (0+0) is an expression that evaluates to 0 without column index ambiguity
+            return '(0+0) DESC';
         }
 
         return "({$column} = {$scope}) DESC";
