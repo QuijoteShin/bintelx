@@ -44,11 +44,27 @@ class WarmUp
       $class_child = str_replace('\\', '/', $class_child);
       $class = str_replace('\\', '/', $class);
 
-      ## kernel - Try PSR-4 style first for deep namespaces (bX\Async\ClassName)
       $psr4Path = str_replace('bX/', '', $class);
-      $file = self::$BINTELX_HOME  . "kernel/{$psr4Path}.php";
+      $root = strtolower($class_root);
+      $file = '---';
 
-      ## kernel - fallback to legacy logic
+      ## custom FIRST — project overrides kernel (CUSTOM_PATH from .env)
+      $customBase = self::getCustomPath();
+      if (!empty($class_child)) {
+        $file = $customBase . "{$root}/Business/{$class_root}{$class_child}.php";
+      }
+      if (!file_exists($file)) {
+        $file = $customBase . "{$root}/Business/{$class_child}.php";
+      }
+      if (!file_exists($file)) {
+        $file = $customBase . "{$root}/Business/{$class_root}.php";
+      }
+
+      ## kernel - PSR-4 style (bX\Async\ClassName → kernel/Async/ClassName.php)
+      if (!file_exists($file)) {
+        $file = self::$BINTELX_HOME  . "kernel/{$psr4Path}.php";
+      }
+      ## kernel - legacy fallbacks
       if (!file_exists($file)) {
         $file = self::$BINTELX_HOME  . "kernel/{$class_root}.php";
       }
@@ -58,32 +74,15 @@ class WarmUp
       if (!file_exists($file)) {
         $file = self::$BINTELX_HOME  . "kernel/{$class_root}/{$class_root}.php";
       }
-      ## custom - uses configurable CUSTOM_PATH from .env
-      $customBase = self::getCustomPath();
-      if (!file_exists($file) && !empty($class_child)) {
-        $child = $class_child;
-        $root = strtolower($class_root);
-        $file = $customBase . "{$root}/Business/{$class_root}{$child}.php";
-      }
-      if (!file_exists($file)) {
-        $child = $class_child;
-        $root = strtolower($class_root);
-        $file = $customBase . "{$root}/Business/{$child}.php";
-      }
-      if (!file_exists($file)) {
-        $child = $class_root;
-        $root = strtolower($class_root);
-        $file = $customBase . "{$root}/Business/{$child}.php";
-      }
-      ## package - uses lowercase module directory (bX\Payroll\Handler → package/payroll/Business/Handler.php)
-      $packageModule = strtolower($class_root);
+
+      ## package - lowercase module directory (bX\Payroll\Handler → package/payroll/Business/Handler.php)
+      $packageModule = $root;
       if (!file_exists($file) && !empty($class_child)) {
         $file = self::$BINTELX_HOME  . "../package/{$packageModule}/Business{$class_child}.php";
       }
       if (!file_exists($file)) {
         $file = self::$BINTELX_HOME  . "../package/{$packageModule}/Business/{$class_root}.php";
       }
-
       if (!file_exists($file)) {
         $file = self::$BINTELX_HOME  . "../package/" . self::$moduleMain ."/{$class_root}{$class_child}.php";
       }
