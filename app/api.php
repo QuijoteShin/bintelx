@@ -93,6 +93,8 @@ try {
     }
   
   $module = explode('/', $uri)[2] ?? 'default';
+  # Strip format extension (.json, .scon, .toon) para matchear directorio del módulo
+  $module = preg_replace('/\.(?:json|scon|toon)$/i', '', $module);
 
   # Load endpoints CASCADE: package (system) → custom (override via CUSTOM_PATH)
   \bX\Router::load([
