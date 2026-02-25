@@ -123,28 +123,40 @@ class Router
       return;
     }
 
-    # Support multiple paths (CASCADE: package → custom)
+    # Support multiple paths — custom overrides package (same relative path)
     $paths = is_array($findStr) ? $findStr : ['single' => $findStr];
 
+    # Collect all files indexed by relative path, track source
+    $filesByRelative = [];
     foreach ($paths as $source => $path) {
       $routeFiles = self::find(["find_str" => $path, 'pattern' => $pattern]);
-
-      foreach ($routeFiles as $routeFileContext) {
-        if (empty($routeFileContext["real"]) || !is_file($routeFileContext["real"])) {
-          Log::logWarning("Router::load - Skipping invalid file from Cardex: " . ($routeFileContext["real"] ?? '[path not set]'));
-          continue;
+      foreach ($routeFiles as $rf) {
+        $relative = $rf['relative'] ?? basename($rf['real']);
+        if (!isset($filesByRelative[$relative])) {
+          $filesByRelative[$relative] = [];
         }
-
-        self::$CurrentRouteFileContext = $routeFileContext;
-
-        if ($loaderCallback) {
-          $loaderCallback($routeFileContext);
-        } else {
-          require_once $routeFileContext["real"];
-        }
-
-        self::$CurrentRouteFileContext = [];
+        $filesByRelative[$relative][$source] = $rf;
       }
+    }
+
+    # Load with priority: custom > package > any other source
+    foreach ($filesByRelative as $relative => $sources) {
+      $routeFileContext = $sources['custom'] ?? $sources['package'] ?? reset($sources);
+
+      if (empty($routeFileContext["real"]) || !is_file($routeFileContext["real"])) {
+        Log::logWarning("Router::load - Skipping invalid file from Cardex: " . ($routeFileContext["real"] ?? '[path not set]'));
+        continue;
+      }
+
+      self::$CurrentRouteFileContext = $routeFileContext;
+
+      if ($loaderCallback) {
+        $loaderCallback($routeFileContext);
+      } else {
+        require_once $routeFileContext["real"];
+      }
+
+      self::$CurrentRouteFileContext = [];
     }
   }
 
