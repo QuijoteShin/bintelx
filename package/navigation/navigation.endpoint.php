@@ -24,7 +24,7 @@ use bX\Tenant;
 use bX\Log;
 use bX\CONN;
 
-Router::register(['GET','POST'], '', function() {
+Router::register(['GET','POST'], '(?:\.(?:json|scon))?', function() {
     if (!Profile::isLoggedIn()) {
         return Response::json(['success' => false, 'message' => 'Authentication required'], 401);
     }
@@ -113,13 +113,14 @@ Router::register(['GET','POST'], '', function() {
     # Profile data for avatar display
     $profileData = getProfileAvatarData();
 
-    return Response::json([
+    # Array return → Router::dispatch usa Response::auto() → soporta .json y .scon
+    return [
         'success' => true,
         'routes' => $filtered,
         'roles' => $userRoles,
         'configured' => !empty($dbConfig),
         'profile' => $profileData
-    ]);
+    ];
 }, ROUTER_SCOPE_PRIVATE);
 
 /**
