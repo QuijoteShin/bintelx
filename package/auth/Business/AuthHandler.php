@@ -1,6 +1,6 @@
 <?php
-# custom/_demo/Business/AuthHandler.php
-namespace _demo;
+# package/auth/Business/AuthHandler.php
+namespace auth;
 
 /**
  * Handles authentication-related business logic.
@@ -9,13 +9,6 @@ namespace _demo;
  */
 class AuthHandler
 {
-  /**
-   * Handles a user login attempt.
-   * Verifies credentials against the database via bX\Auth and returns a JWT on success.
-   *
-   * @param array $inputData Associative array expected to contain 'username' and 'password'.
-   * @return array The result of the operation, including a JWT on success.
-   */
   /**
    * Handles a user login attempt by delegating to the Account service.
    * @param array $inputData Associative array expected to contain 'username' and 'password'.
@@ -101,17 +94,15 @@ class AuthHandler
    * Can validate tokens from:
    * 1. Authorization header or cookie (already validated by api.php)
    * 2. POST body JSON with {"token": "..."} (validated here)
-   *
-   * @return array Simple validation result: {"success": true|false}
    */
   public static function validateToken(): array
   {
-    // Check if user is already authenticated via header/cookie (handled by api.php)
+    # Check if user is already authenticated via header/cookie (handled by api.php)
     if (\bX\Profile::isLoggedIn()) {
       return self::buildValidationPayload('Token is valid.');
     }
 
-    // If not authenticated via header/cookie, check for token in POST body
+    # If not authenticated via header/cookie, check for token in POST body
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty(\bX\Args::ctx()->opt['token'])) {
       $token = \bX\Args::ctx()->opt['token'];
 
@@ -121,7 +112,6 @@ class AuthHandler
           \bX\Log::logWarning("ValidateToken: DB ping failed in POST branch");
         }
         $dbPingOk = !empty($ping[0]['ok']);
-        // Get JWT configuration from environment
         $jwtSecret = \bX\Config::get('JWT_SECRET');
         $jwtXorKey = \bX\Config::get('JWT_XOR_KEY');
 
@@ -137,48 +127,34 @@ class AuthHandler
           }
           return ['success' => false, 'message' => 'Profile not found for token.'];
         } else {
-          // Token verification failed
-          
           return ['success' => false, 'message' => 'Invalid or expired token.'];
         }
       } catch (\Exception $e) {
         \bX\Log::logError("Token validation exception: " . $e->getMessage());
-        
         return ['success' => false, 'message' => 'Token validation failed.'];
       }
     }
 
-    // No valid authentication found
-    
     return ['success' => false, 'message' => 'Authentication required.'];
   }
 
   /**
-   * Registers a new account with automatic profile and entity creation
-   * Creates a complete account setup: credentials + personal entity + profile
-   *
-   * @param array $inputData Expected: ['username' => string, 'password' => string]
-   * @return array
+   * Registers a new account with automatic profile and entity creation.
+   * Delegates to Account service which internally uses Entity::save().
    */
   public static function register(array $inputData): array
   {
     try {
-      // Validate input
       if (empty($inputData['username']) || empty($inputData['password'])) {
-        
-        return [
-          'success' => false,
-          'message' => 'Username and password are required.'
-        ];
+        return ['success' => false, 'message' => 'Username and password are required.'];
       }
 
-      // Create account using Account service (now includes entity + profile)
       $jwtSecret = \bX\Config::get('JWT_SECRET');
       $accountService = new \bX\Account($jwtSecret);
       $accountData = $accountService->createAccount(
         $inputData['username'],
         $inputData['password'],
-        true,  // is_active
+        true,
         [
             'country_code' => $inputData['country_code'] ?? null,
             'national_id' => $inputData['national_id'] ?? null,
@@ -187,16 +163,11 @@ class AuthHandler
       );
 
       if ($accountData === false) {
-        
-        return [
-          'success' => false,
-          'message' => 'Failed to create account. Username may already exist.'
-        ];
+        return ['success' => false, 'message' => 'Failed to create account. Username may already exist.'];
       }
 
       \bX\Log::logInfo("Account registered successfully: account_id={$accountData['account_id']}, username={$inputData['username']}, profile_id={$accountData['profile_id']}");
 
-      
       return [
         'success' => true,
         'message' => 'Account created successfully with profile and entity.',
@@ -210,18 +181,13 @@ class AuthHandler
 
     } catch (\Exception $e) {
       \bX\Log::logError("Registration Exception in AuthHandler: " . $e->getMessage());
-      
-      return [
-        'success' => false,
-        'message' => 'An internal error occurred during registration.'
-      ];
+      return ['success' => false, 'message' => 'An internal error occurred during registration.'];
     }
   }
 
   /**
-   * Creates or updates a profile for an account with entity
-   * - If profileId and entityId are provided: updates existing profile/entity
-   * - If not provided: creates new profile and entity (multiple "hats" for different contexts)
+   * Creates or updates a profile for an account with entity.
+   * Uses Entity::save() (identity_hash, checksum, EAV) and Profile::save().
    *
    * @param array $inputData Expected:
    *   - accountId: int (required)
@@ -232,12 +198,10 @@ class AuthHandler
    *   - nationalId: string (optional - RUT, DNI, etc.)
    *   - nationalIsocode: string (default: 'CL')
    *   - profileName: string (optional)
-   * @return array
    */
   public static function createProfile(array $inputData): array
   {
     try {
-      // Validate required fields
       if (empty($inputData['accountId'])) {
         http_response_code(400);
         return ['success' => false, 'message' => 'accountId is required.'];
@@ -257,7 +221,7 @@ class AuthHandler
       $nationalIsocode = $inputData['nationalIsocode'] ?? 'CL';
       $isUpdate = ($profileId && $entityId);
 
-      // Check if account exists
+      # Verificar que la account existe
       $accountExists = \bX\CONN::dml(
         "SELECT account_id FROM accounts WHERE account_id = :id",
         [':id' => $accountId]
@@ -268,33 +232,27 @@ class AuthHandler
         return ['success' => false, 'message' => 'Account not found.'];
       }
 
-      // Note: Accounts can have multiple profiles (multiple "hats")
-      // No need to check for existing profiles - this is intentional
+      # Accounts can have multiple profiles (multiple "hats") — no check for existing profiles
 
       return \bX\CONN::transaction(function () use ($isUpdate, $accountId, $profileId, $entityId, $entityType, $entityName, $nationalId, $nationalIsocode, $inputData) {
 
         if ($isUpdate) {
-          // UPDATE MODE: Update existing entity and profile
+          # UPDATE MODE: usa Entity::save() con entity_id → recalcula identity_hash
           \bX\Log::logInfo("Updating existing profile: profile_id=$profileId, entity_id=$entityId");
 
-          $entityResult = \bX\CONN::nodml(
-            "UPDATE entities
-             SET entity_type = :type, primary_name = :name, national_id = :nid, national_isocode = :iso, updated_at = NOW()
-             WHERE entity_id = :entity_id",
-            [':entity_id' => $entityId, ':type' => $entityType, ':name' => $entityName, ':nid' => $nationalId, ':iso' => $nationalIsocode]
-          );
-          if (!$entityResult['success']) {
-            throw new \RuntimeException('Failed to update entity.');
-          }
+          \bX\Entity::save([
+            'entity_id' => $entityId,
+            'entity_type' => $entityType,
+            'primary_name' => $entityName,
+            'national_id' => $nationalId,
+            'national_isocode' => $nationalIsocode
+          ]);
 
           $profileName = $inputData['profileName'] ?? "Profile for $entityName";
-          $profileResult = \bX\CONN::nodml(
-            "UPDATE profiles SET profile_name = :profile_name, updated_at = NOW() WHERE profile_id = :profile_id",
-            [':profile_id' => $profileId, ':profile_name' => $profileName]
-          );
-          if (!$profileResult['success']) {
-            throw new \RuntimeException('Failed to update profile.');
-          }
+          \bX\Profile::save([
+            'profile_id' => $profileId,
+            'profile_name' => $profileName
+          ]);
 
           \bX\Log::logInfo("Profile updated successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
 
@@ -308,27 +266,25 @@ class AuthHandler
           ];
 
         } else {
-          // CREATE MODE: Create new entity and profile
+          # CREATE MODE: Entity::save() genera identity_hash + checksum + EAV automáticamente
           \bX\Log::logInfo("Creating new profile and entity for account_id=$accountId");
 
-          $entityResult = \bX\CONN::nodml(
-            "INSERT INTO entities (entity_type, primary_name, national_id, national_isocode, status) VALUES (:type, :name, :nid, :iso, 'active')",
-            [':type' => $entityType, ':name' => $entityName, ':nid' => $nationalId, ':iso' => $nationalIsocode]
-          );
-          if (!$entityResult['success']) {
-            throw new \RuntimeException('Failed to create entity.');
-          }
-          $entityId = (int)$entityResult['last_id'];
+          $entityId = \bX\Entity::save([
+            'entity_type' => $entityType,
+            'primary_name' => $entityName,
+            'national_id' => $nationalId,
+            'national_isocode' => $nationalIsocode,
+            'status' => 'active'
+          ]);
 
           $profileName = $inputData['profileName'] ?? "Profile for $entityName";
-          $profileResult = \bX\CONN::nodml(
-            "INSERT INTO profiles (account_id, primary_entity_id, profile_name, status) VALUES (:account_id, :entity_id, :profile_name, 'active')",
-            [':account_id' => $accountId, ':entity_id' => $entityId, ':profile_name' => $profileName]
-          );
-          if (!$profileResult['success']) {
-            throw new \RuntimeException('Failed to create profile.');
-          }
-          $profileId = (int)$profileResult['last_id'];
+          $profileId = \bX\Profile::save([
+            'account_id' => $accountId,
+            'primary_entity_id' => $entityId,
+            'profile_name' => $profileName,
+            'status' => 'active',
+            'actor_profile_id' => null # bootstrap — no actor yet
+          ]);
 
           \bX\Log::logInfo("Profile created successfully: profile_id=$profileId, account_id=$accountId, entity_id=$entityId");
 
@@ -359,12 +315,6 @@ class AuthHandler
   /**
    * Create entity_relationship (profile → entity) to grant scope/role.
    * Delegates to kernel Entity\Graph class.
-   *
-   * Expected:
-   *   - profileId (int)
-   *   - entityId (int)
-   *   - relationKind (string, default 'owner')
-   *   - roleCode (string|null)
    */
   public static function createRelationship(array $inputData): array
   {
@@ -402,23 +352,12 @@ class AuthHandler
   }
 
   /**
-   * Registers a company account with 2 entities: person (user) + organization (company)
-   * Creates: Account → Profile → Entity(person) + Entity(organization) + Relationship
-   *
-   * @param array $inputData Expected:
-   *   - username: string (required)
-   *   - password: string (required)
-   *   - personName: string (required) - Nombre del usuario/dueño
-   *   - companyName: string (required) - Nombre de la empresa
-   *   - personNationalId: string (optional) - RUT/DNI del usuario
-   *   - companyNationalId: string (optional) - RUT de la empresa
-   *   - nationalIsocode: string (default: 'CL')
-   * @return array
+   * Registers a company account with 2 entities: person (user) + organization (company).
+   * Uses Entity::save() for both, Graph::create() for relationship, Profile::save() for profile.
    */
   public static function registerCompany(array $inputData): array
   {
     try {
-      # Validar campos requeridos
       if (empty($inputData['username']) || empty($inputData['password'])) {
         return ['success' => false, 'message' => 'Username and password are required.'];
       }
@@ -475,12 +414,14 @@ class AuthHandler
         if (!$companyEntityId) throw new \RuntimeException('Failed to create company entity.');
 
         # 4. Crear Profile vinculado a Account + Person Entity
-        $profileResult = \bX\CONN::nodml(
-          "INSERT INTO profiles (account_id, primary_entity_id, profile_name, status) VALUES (:account_id, :entity_id, :profile_name, 'active')",
-          [':account_id' => $accountId, ':entity_id' => $personEntityId, ':profile_name' => "Profile - " . $inputData['personName']]
-        );
-        if (!$profileResult['success']) throw new \RuntimeException('Failed to create profile.');
-        $profileId = (int)$profileResult['last_id'];
+        $profileId = \bX\Profile::save([
+          'account_id' => $accountId,
+          'primary_entity_id' => $personEntityId,
+          'profile_name' => "Profile - " . $inputData['personName'],
+          'status' => 'active',
+          'actor_profile_id' => null # bootstrap — no actor yet
+        ]);
+        if (!$profileId) throw new \RuntimeException('Failed to create profile.');
 
         # 5. Crear Relationship: Profile → Company (owner)
         $relResult = \bX\Entity\Graph::create([
@@ -538,13 +479,9 @@ class AuthHandler
 
   /**
    * Provides a generic public report or status.
-   * This is an example of a public, non-authenticated endpoint.
-   *
-   * @return array A public status report.
    */
   public static function DevToolsReport(): array
   {
-    
     return [
       'success' => true,
       'message' => 'Public report fetched successfully.',
