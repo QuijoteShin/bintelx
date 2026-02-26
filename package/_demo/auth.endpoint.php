@@ -2,7 +2,7 @@
 namespace _demo;
 use bX\Router;
 use bX\Response;
-use _demo\AuthHandler;
+use auth\AuthHandler;
 
 /**
  * @endpoint   /api/_demo/login
