@@ -49,26 +49,11 @@ Router::register(['GET'], 'list', function() {
     $profileId = Profile::ctx()->profileId;
     $params = [];
 
-    # Query 1: Obtener entities únicos (EXISTS para usuarios, directo para admin)
-    if (Tenant::isAdmin()) {
-        if ($relationKind) {
-            # Admin con filtro relation_kind: JOIN con entity_relationships
-            $sql = "SELECT DISTINCT e.entity_id, e.primary_name, e.entity_type,
-                           e.national_id, e.national_isocode,
-                           e.status, e.created_at
-                    FROM entities e
-                    INNER JOIN entity_relationships er ON er.entity_id = e.entity_id
-                    WHERE er.relation_kind = :relation_kind
-                      AND er.status = 'active'";
-            $params[':relation_kind'] = $relationKind;
-        } else {
-            $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
-                           e.national_id, e.national_isocode,
-                           e.status, e.created_at
-                    FROM entities e
-                    WHERE 1=1";
-        }
-    } else {
+    # force_scope: entities es dato operativo per-tenant, admin debe ver solo su workspace activo
+    $options['force_scope'] = true;
+
+    # Query 1: Obtener entities únicos via EXISTS + tenant filter (admin y usuarios)
+    {
         # EXISTS es más eficiente que DISTINCT+JOIN cuando hay múltiples relaciones por entity
         # Filtrar por: profile_id (relaciones del usuario) + scope_entity_id (tenant)
         $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
@@ -124,22 +109,14 @@ Router::register(['GET'], 'list', function() {
             $relParams[$key] = $id;
         }
 
-        if (Tenant::isAdmin()) {
-            # Admin: ver todas las relaciones sin filtro de scope
-            $relSql = "SELECT DISTINCT entity_id, relation_kind
-                       FROM entity_relationships
-                       WHERE status = 'active'
-                       AND entity_id IN (" . implode(',', $placeholders) . ")";
-        } else {
-            # Usuarios: todas las relaciones dentro de su scope (no solo las suyas)
-            $tenantFilter2 = Tenant::filter('scope_entity_id', $options);
-            $relSql = "SELECT DISTINCT entity_id, relation_kind
-                       FROM entity_relationships
-                       WHERE status = 'active'
-                       AND entity_id IN (" . implode(',', $placeholders) . ")"
-                       . $tenantFilter2['sql'];
-            $relParams = array_merge($relParams, $tenantFilter2['params']);
-        }
+        # force_scope ya está en $options — filtra por workspace activo
+        $tenantFilter2 = Tenant::filter('scope_entity_id', $options);
+        $relSql = "SELECT DISTINCT entity_id, relation_kind
+                   FROM entity_relationships
+                   WHERE status = 'active'
+                   AND entity_id IN (" . implode(',', $placeholders) . ")"
+                   . $tenantFilter2['sql'];
+        $relParams = array_merge($relParams, $tenantFilter2['params']);
 
         # Usar callback para armar el índice directamente
         CONN::dml($relSql, $relParams, function($row) use (&$relationsByEntity) {
@@ -187,40 +164,30 @@ Router::register(['POST'], 'find.json', function() {
     $query = trim($data['query'] ?? $data['search'] ?? '');
     $relationKind = $data['relation_kind'] ?? null;
     $limit = min((int)($data['limit'] ?? 20), 100);
-    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId, 'force_scope' => true];
     $params = [];
 
-    $sql = "SELECT e.entity_id, e.primary_name, e.entity_type, 
+    $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+    $kindSql = $relationKind ? "AND er.relation_kind = :kind" : "";
+
+    $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
                    e.national_id, e.national_isocode, e.status
             FROM entities e ";
 
     $conditions = ["1=1"];
 
-    # Tenant & Relationship Filter
-    if (Tenant::isAdmin()) {
-        if ($relationKind) {
-            $sql .= " JOIN entity_relationships er ON er.entity_id = e.entity_id ";
-            $conditions[] = "er.relation_kind = :kind";
-            $conditions[] = "er.status = 'active'";
-            $params[':kind'] = $relationKind;
-        }
-    } else {
-        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
-        $kindSql = $relationKind ? "AND er.relation_kind = :kind" : "";
-        
-        # Visibility: Entities linked to the current scope (not just user)
-        $exists = "EXISTS (
-            SELECT 1 FROM entity_relationships er
-            WHERE er.entity_id = e.entity_id
-            AND er.status = 'active'
-            {$kindSql}
-            {$tenantFilter['sql']}
-        )";
-        $conditions[] = $exists;
-        $params = array_merge($params, $tenantFilter['params']);
-        if ($relationKind) {
-            $params[':kind'] = $relationKind;
-        }
+    # Visibility: Entities linked to the current scope
+    $exists = "EXISTS (
+        SELECT 1 FROM entity_relationships er
+        WHERE er.entity_id = e.entity_id
+        AND er.status = 'active'
+        {$kindSql}
+        {$tenantFilter['sql']}
+    )";
+    $conditions[] = $exists;
+    $params = array_merge($params, $tenantFilter['params']);
+    if ($relationKind) {
+        $params[':kind'] = $relationKind;
     }
 
     if (!empty($query)) {
@@ -249,36 +216,24 @@ Router::register(['POST'], 'find.json', function() {
 Router::register(['GET'], '(?P<id>\d+)', function($id) {
     $entityId = (int)$id;
     $profileId = Profile::ctx()->profileId;
-    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId, 'force_scope' => true];
     $params = [':id' => $entityId];
 
-    # Admin: acceso directo sin verificar relaciones
-    if (Tenant::isAdmin()) {
-        $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
-                       e.national_id, e.national_isocode,
-                       e.status, e.identity_hash,
-                       e.canonical_entity_id, e.created_at
-                FROM entities e
-                WHERE e.entity_id = :id";
-    } else {
-        # Usuarios: verificar acceso via relationship + tenant
-        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
-        $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
-                       e.national_id, e.national_isocode,
-                       e.status, e.identity_hash,
-                       e.canonical_entity_id, e.created_at
-                FROM entities e
-                WHERE e.entity_id = :id
-                AND EXISTS (
-                    SELECT 1 FROM entity_relationships er
-                    WHERE er.entity_id = e.entity_id
-                    AND er.profile_id = :profile_id
-                    AND er.status = 'active'
-                    {$tenantFilter['sql']}
-                )";
-        $params[':profile_id'] = $profileId;
-        $params = array_merge($params, $tenantFilter['params']);
-    }
+    # Verificar acceso via relationship + tenant (force_scope para admin también)
+    $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+    $sql = "SELECT e.entity_id, e.primary_name, e.entity_type,
+                   e.national_id, e.national_isocode,
+                   e.status, e.identity_hash,
+                   e.canonical_entity_id, e.created_at
+            FROM entities e
+            WHERE e.entity_id = :id
+            AND EXISTS (
+                SELECT 1 FROM entity_relationships er
+                WHERE er.entity_id = e.entity_id
+                AND er.status = 'active'
+                {$tenantFilter['sql']}
+            )";
+    $params = array_merge($params, $tenantFilter['params']);
 
     $result = CONN::dml($sql, $params);
     $entity = $result[0] ?? null;
@@ -290,21 +245,12 @@ Router::register(['GET'], '(?P<id>\d+)', function($id) {
         ]], 404);
     }
 
-    # Obtener relation_kinds para este entity (todos los del scope, no solo del profile actual)
-    $relationKinds = [];
-    if (Tenant::isAdmin()) {
-        # Admin: ver todas las relaciones
-        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
-                   WHERE entity_id = :id AND status = 'active'";
-        $relParams = [':id' => $entityId];
-    } else {
-        # Usuarios: todas las relaciones dentro de su scope
-        $tenantFilter2 = Tenant::filter('scope_entity_id', $options);
-        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
-                   WHERE entity_id = :id AND status = 'active'"
-                   . $tenantFilter2['sql'];
-        $relParams = array_merge([':id' => $entityId], $tenantFilter2['params']);
-    }
+    # Obtener relation_kinds para este entity dentro del scope activo
+    $tenantFilter2 = Tenant::filter('scope_entity_id', $options);
+    $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
+               WHERE entity_id = :id AND status = 'active'"
+               . $tenantFilter2['sql'];
+    $relParams = array_merge([':id' => $entityId], $tenantFilter2['params']);
     $relations = CONN::dml($relSql, $relParams) ?? [];
     $entity['relation_kinds'] = array_column($relations, 'relation_kind');
 
@@ -508,29 +454,21 @@ Router::register(['POST'], '(?P<id>\d+)/update', function($id) {
     $entityId = (int)$id;
     $data = Args::ctx()->opt;
     $profileId = Profile::ctx()->profileId;
-    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId, 'force_scope' => true];
 
-    # Verificar que el entity existe y es accesible
-    if (Tenant::isAdmin()) {
-        $accessCheck = CONN::dml(
-            "SELECT entity_id FROM entities WHERE entity_id = :id",
-            [':id' => $entityId]
-        );
-    } else {
-        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
-        $accessCheck = CONN::dml(
-            "SELECT e.entity_id FROM entities e
-             WHERE e.entity_id = :id
-             AND EXISTS (
-                 SELECT 1 FROM entity_relationships er
-                 WHERE er.entity_id = e.entity_id
-                 AND er.profile_id = :profile_id
-                 AND er.status = 'active'
-                 {$tenantFilter['sql']}
-             )",
-            array_merge([':id' => $entityId, ':profile_id' => $profileId], $tenantFilter['params'])
-        );
-    }
+    # Verificar que el entity existe y es accesible en este scope
+    $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+    $accessCheck = CONN::dml(
+        "SELECT e.entity_id FROM entities e
+         WHERE e.entity_id = :id
+         AND EXISTS (
+             SELECT 1 FROM entity_relationships er
+             WHERE er.entity_id = e.entity_id
+             AND er.status = 'active'
+             {$tenantFilter['sql']}
+         )",
+        array_merge([':id' => $entityId], $tenantFilter['params'])
+    );
 
     if (empty($accessCheck)) {
         return Response::json(['data' => [
@@ -788,17 +726,11 @@ Router::register(['POST'], 'ensure', function() {
         [':id' => $entityId]
     )[0] ?? null;
 
-    # Obtener todos los relation_kinds
-    if (Tenant::isAdmin()) {
-        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
-                   WHERE entity_id = :id AND status = 'active'";
-        $relParams = [':id' => $entityId];
-    } else {
-        $tenantFilter = Tenant::filter('scope_entity_id', $options);
-        $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
-                   WHERE entity_id = :id AND status = 'active'" . $tenantFilter['sql'];
-        $relParams = array_merge([':id' => $entityId], $tenantFilter['params']);
-    }
+    # Obtener relation_kinds dentro del scope activo
+    $tenantFilterEnsure = Tenant::filter('scope_entity_id', $options);
+    $relSql = "SELECT DISTINCT relation_kind FROM entity_relationships
+               WHERE entity_id = :id AND status = 'active'" . $tenantFilterEnsure['sql'];
+    $relParams = array_merge([':id' => $entityId], $tenantFilterEnsure['params']);
     $relations = CONN::dml($relSql, $relParams) ?? [];
     $entity['relation_kinds'] = array_column($relations, 'relation_kind');
 
@@ -908,32 +840,21 @@ Router::register(['GET'], '(?P<id>\d+)/shadows', function($id) {
  */
 Router::register(['GET'], 'stats', function() {
     $profileId = Profile::ctx()->profileId;
-    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId];
+    $options = ['scope_entity_id' => Profile::ctx()->scopeEntityId, 'force_scope' => true];
     $params = [];
 
-    # Admin ve estadísticas globales
-    if (Tenant::isAdmin()) {
-        $sql = "SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN entity_type = 'supplier' OR entity_type LIKE '%supplier%' THEN 1 ELSE 0 END) as suppliers,
-                    SUM(CASE WHEN entity_type = 'customer' OR entity_type LIKE '%customer%' THEN 1 ELSE 0 END) as customers,
-                    SUM(CASE WHEN entity_type = 'person' THEN 1 ELSE 0 END) as persons
-                FROM entities";
-    } else {
-        # Usuarios normales: estadísticas basadas en relaciones del profile + tenant
-        $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
-        $sql = "SELECT
-                    COUNT(DISTINCT e.entity_id) as total,
-                    SUM(CASE WHEN er.relation_kind = 'supplier' THEN 1 ELSE 0 END) as suppliers,
-                    SUM(CASE WHEN er.relation_kind = 'customer' THEN 1 ELSE 0 END) as customers,
-                    SUM(CASE WHEN e.entity_type = 'person' THEN 1 ELSE 0 END) as persons
-                FROM entities e
-                INNER JOIN entity_relationships er ON e.entity_id = er.entity_id
-                WHERE er.profile_id = :profile_id AND er.status = 'active'"
-                . $tenantFilter['sql'];
-        $params[':profile_id'] = $profileId;
-        $params = array_merge($params, $tenantFilter['params']);
-    }
+    # Estadísticas basadas en relaciones dentro del scope activo
+    $tenantFilter = Tenant::filter('er.scope_entity_id', $options);
+    $sql = "SELECT
+                COUNT(DISTINCT e.entity_id) as total,
+                SUM(CASE WHEN er.relation_kind = 'supplier' THEN 1 ELSE 0 END) as suppliers,
+                SUM(CASE WHEN er.relation_kind = 'customer' THEN 1 ELSE 0 END) as customers,
+                SUM(CASE WHEN e.entity_type = 'person' OR e.entity_type = 'personal' THEN 1 ELSE 0 END) as persons
+            FROM entities e
+            INNER JOIN entity_relationships er ON e.entity_id = er.entity_id
+            WHERE er.status = 'active'"
+            . $tenantFilter['sql'];
+    $params = array_merge($params, $tenantFilter['params']);
 
     $result = CONN::dml($sql, $params);
     $stats = $result[0] ?? ['total' => 0, 'suppliers' => 0, 'customers' => 0, 'persons' => 0];
