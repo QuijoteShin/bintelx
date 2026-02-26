@@ -91,29 +91,63 @@ class Entity {
     public static function save(array $entity): int {
         $existingId = $entity['entity_id'] ?? 0;
         if ($existingId > 0) {
-            $query = "UPDATE `entities`
-                        SET
-                            comp_id = :comp_id,
-                            comp_branch_id = :comp_branch_id,
-                            snapshot_id = :snapshot_id,
-                            entity_type = :entity_type,
-                            entity_name = :entity_name,
-                            entity_idn = :entity_idn,
-                            entity_idn_clear = :entity_idn_clear,
-                            entity_country = :entity_country
-                        WHERE entity_id = :entity_id";
-            $params = [
-                ':entity_id'          => $existingId,
-                ':comp_id'            => $entity['comp_id'] ?? self::ctx()->compId,
-                ':comp_branch_id'     => $entity['comp_branch_id'] ?? self::ctx()->compBranchId,
-                ':snapshot_id'        => $entity['snapshot_id'] ?? 0,
-                ':entity_type'        => strtolower($entity['entity_type'] ?? ''),
-                ':entity_name'        => $entity['entity_name'] ?? null,
-                ':entity_idn'         => $entity['entity_idn'] ?? null,
-                ':entity_idn_clear'   => $entity['entity_idn_clear'] ?? null,
-                ':entity_country'     => $entity['entity_country'] ?? 'CL',
-            ];
-            CONN::nodml($query, $params);
+            # UPDATE: solo campos relevantes del esquema moderno
+            $updates = [];
+            $params = [':entity_id' => $existingId];
+
+            if (array_key_exists('entity_type', $entity)) {
+                $updates[] = 'entity_type = :entity_type';
+                $params[':entity_type'] = strtolower($entity['entity_type']);
+            }
+            if (array_key_exists('entity_name', $entity) || array_key_exists('primary_name', $entity)) {
+                $updates[] = 'primary_name = :primary_name';
+                $params[':primary_name'] = $entity['entity_name'] ?? $entity['primary_name'];
+            }
+            if (array_key_exists('national_id', $entity) || array_key_exists('entity_idn', $entity)) {
+                $nationalId = $entity['entity_idn'] ?? $entity['national_id'] ?? null;
+                $nationalIsocode = $entity['entity_country'] ?? $entity['national_isocode'] ?? null;
+
+                $updates[] = 'national_id = :national_id';
+                $params[':national_id'] = $nationalId;
+
+                if ($nationalIsocode) {
+                    $updates[] = 'national_isocode = :national_isocode';
+                    $params[':national_isocode'] = $nationalIsocode;
+                }
+
+                # Recalcular identity_hash si cambia national_id
+                if (!empty($nationalId) && !empty($nationalIsocode)) {
+                    $nationalIdType = $entity['national_id_type']
+                        ?? GeoService::detectNationalIdType($nationalIsocode, $nationalId)
+                        ?? 'TAX_ID';
+                    $updates[] = 'identity_hash = :identity_hash';
+                    $params[':identity_hash'] = self::calculateIdentityHash($nationalIsocode, $nationalId, $nationalIdType);
+                    $updates[] = 'national_id_type = :national_id_type';
+                    $params[':national_id_type'] = $nationalIdType;
+
+                    $validation = GeoService::validateNationalId($nationalIsocode, $nationalId, $nationalIdType);
+                    $updates[] = 'identity_checksum_ok = :identity_checksum_ok';
+                    $params[':identity_checksum_ok'] = $validation['valid'] ? 1 : 0;
+                }
+            }
+
+            if (empty($updates)) {
+                return $existingId; # nada que actualizar
+            }
+
+            $updates[] = 'updated_at = NOW()';
+            $updates[] = 'updated_by_profile_id = :updated_by';
+            $params[':updated_by'] = $entity['updated_by_profile_id']
+                ?? $entity['created_by_profile_id']
+                ?? (Profile::ctx()->profileId ?: null);
+
+            $query = "UPDATE `entities` SET " . implode(', ', $updates) . " WHERE entity_id = :entity_id";
+            $result = CONN::nodml($query, $params);
+
+            if (!$result['success']) {
+                throw new \Exception("No se pudo actualizar la entidad $existingId: " . ($result['error'] ?? 'Unknown'));
+            }
+
             return $existingId;
         } else {
             $entityType = strtolower($entity['entity_type'] ?? 'general');
@@ -183,7 +217,7 @@ class Entity {
     }
 
     /**
-     * Lee un registro de la tabla `entity` basado en entityId y opcionalmente comp_branch_id.
+     * @deprecated Legacy — filtra por comp_id que ya no se usa. Usar entities.endpoint o query directa.
      */
     public function read(array $params): bool
     {
@@ -211,7 +245,7 @@ class Entity {
     }
 
     /**
-     * Obtiene todas las entidades, opcionalmente filtrando por comp_branch_id.
+     * @deprecated Legacy — filtra por comp_id que ya no se usa. Usar entities.endpoint o query directa.
      */
     public function getAll(array $filters = []): array
     {
@@ -245,39 +279,17 @@ class Entity {
     }
 
     /**
-     * Elimina un registro de la tabla `entity`
+     * Soft-delete: marca entity como 'deleted'
      */
     public static function delete(int $entityId): bool {
-        $query = "UPDATE `entity`
-                SET entity_status = 'inactive'
-                WHERE entity_id = :entity_id
-                    AND comp_id = :comp_id
-                    AND comp_branch_id = :comp_branch_id";
-        $params = [
-            ':entity_id' => $entityId,
-            ':comp_id' => self::ctx()->compId,
-            ':comp_branch_id' => self::ctx()->compBranchId
-        ];
-        $result = CONN::nodml($query, $params);
-
+        $result = CONN::nodml(
+            "UPDATE entities SET status = 'deleted', updated_at = NOW(), updated_by_profile_id = :updated_by WHERE entity_id = :entity_id",
+            [
+                ':entity_id' => $entityId,
+                ':updated_by' => Profile::ctx()->profileId ?: null
+            ]
+        );
         return $result['success'];
-    }
-
-    # used on cli
-    public function create(array $entityData): int
-    {
-        $query = "INSERT INTO entity (comp_id, comp_branch_id, entity_type, entity_name, entity_idn, entity_country)
-                    VALUES (:comp_id, :comp_branch_id, :entity_type, :entity_name, :entity_idn, :entity_country)";
-        $params = [
-            ':comp_id'       => $entityData['comp_id'],
-            ':comp_branch_id'=> $entityData['comp_branch_id'],
-            ':entity_type'   => $entityData['entity_type'],
-            ':entity_name'   => $entityData['entity_name'],
-            ':entity_idn'    => $entityData['entity_idn'],
-            ':entity_country'=> $entityData['entity_country']
-        ];
-        CONN::dml($query, $params);
-        return CONN::getLastInsertId();
     }
 
     # =========================================================================
