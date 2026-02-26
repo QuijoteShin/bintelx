@@ -1,6 +1,7 @@
 <?php # bintelx/kernel/Account.php
 namespace bX;
 
+use bX\Entity\Graph;
 use Exception;
 
 class Account {
@@ -162,7 +163,7 @@ class Account {
 
                 // 2. Create Entity for this account (con identidad si se proporcionó)
                 $entityPayload = [
-                    'entity_type' => 'personal',
+                    'entity_type' => 'person',
                     'entity_name' => $username,
                     'comp_id' => 0,
                     'comp_branch_id' => 0
@@ -194,6 +195,18 @@ class Account {
                 }
 
                 Log::logInfo("Account::createAccount - Profile created: profile_id=$profileId, entity_id=$entityId for account_id=$newAccountId");
+
+                # Graph owner: person entity es propiedad del profile (self-scoped)
+                $graphResult = Graph::create(
+                    ['profile_id' => $profileId, 'entity_id' => $entityId,
+                     'relation_kind' => Graph::KIND_OWNER, 'created_by' => $profileId],
+                    ['bootstrap' => true, 'scope_entity_id' => $entityId]
+                );
+                if (!$graphResult['success']) {
+                    throw new Exception("Failed to create owner relationship: " . $graphResult['message']);
+                }
+
+                Log::logInfo("Account::createAccount - Owner relationship created for profile=$profileId → entity=$entityId");
 
                 // Commit transaction
                 CONN::commit();

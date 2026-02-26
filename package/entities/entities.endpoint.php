@@ -849,7 +849,7 @@ Router::register(['GET'], 'stats', function() {
                 COUNT(DISTINCT e.entity_id) as total,
                 SUM(CASE WHEN er.relation_kind = 'supplier' THEN 1 ELSE 0 END) as suppliers,
                 SUM(CASE WHEN er.relation_kind = 'customer' THEN 1 ELSE 0 END) as customers,
-                SUM(CASE WHEN e.entity_type = 'person' OR e.entity_type = 'personal' THEN 1 ELSE 0 END) as persons
+                SUM(CASE WHEN e.entity_type = 'person' THEN 1 ELSE 0 END) as persons
             FROM entities e
             INNER JOIN entity_relationships er ON e.entity_id = er.entity_id
             WHERE er.status = 'active'"

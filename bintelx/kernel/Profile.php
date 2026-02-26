@@ -818,7 +818,7 @@ class Profile {
             CONN::dml(
                 "SELECT entity_id, primary_name
                  FROM entities
-                 WHERE entity_type IN ('company', 'crm_company')
+                 WHERE entity_type IN ('company')
                    AND status = 'active'",
                 [],
                 function(array $row) use (&$result, $personalEntityId) {

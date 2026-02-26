@@ -66,6 +66,8 @@ class Graph
             return ['success' => false, 'message' => 'profile_id and entity_id are required'];
         }
 
+        $bootstrap = !empty($options['bootstrap']);
+
         # Si position_id, resolver la posición y usar su relation_kind + package
         $positionPackageCode = null;
         if ($positionId !== null) {
@@ -77,10 +79,18 @@ class Graph
             $positionPackageCode = $resolved['package_code'];
         }
 
-        # Validate tenant for write
-        $tenant = Tenant::validateForWrite($options);
-        if (!$tenant['valid']) {
-            return ['success' => false, 'message' => $tenant['error']];
+        # Bootstrap: scope explícito sin Tenant::validateForWrite (Account creation, sin ctx aún)
+        if (!$bootstrap) {
+            $tenant = Tenant::validateForWrite($options);
+            if (!$tenant['valid']) {
+                return ['success' => false, 'message' => $tenant['error']];
+            }
+            $scope = $tenant['scope'];
+        } else {
+            $scope = (int)($options['scope_entity_id'] ?? 0);
+            if ($scope <= 0) {
+                return ['success' => false, 'message' => 'bootstrap requires valid scope_entity_id > 0'];
+            }
         }
 
         $sql = "INSERT INTO entity_relationships
@@ -91,13 +101,31 @@ class Graph
         $params = [
             ':profile_id' => $profileId,
             ':entity_id' => $entityId,
-            ':scope_entity_id' => $tenant['scope'],
+            ':scope_entity_id' => $scope,
             ':kind' => $kind,
             ':role_code' => $roleCode,
             ':grant_mode' => $grantMode,
             ':label' => $label,
-            ':created_by' => Profile::ctx()->profileId ?: null
+            ':created_by' => $data['created_by'] ?? (Profile::ctx()->profileId ?: null)
         ];
+
+        # Bootstrap: INSERT directo sin transaction ni ACL (Account creation flow)
+        if ($bootstrap) {
+            try {
+                $result = CONN::nodml($sql, $params);
+                if (!$result['success']) {
+                    throw new \RuntimeException('Failed to create relationship: ' . ($result['error'] ?? 'Unknown'));
+                }
+                return [
+                    'success' => true,
+                    'relationship_id' => (int)$result['last_id'],
+                    'message' => 'Relationship created (bootstrap)',
+                    'roles_applied' => [], 'roles_skipped' => [], 'packages_expanded' => []
+                ];
+            } catch (\Throwable $e) {
+                return ['success' => false, 'message' => $e->getMessage()];
+            }
+        }
 
         # Wrap relationship + role assignment in transaction (race condition prevention)
         try {
