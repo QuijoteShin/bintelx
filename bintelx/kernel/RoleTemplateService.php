@@ -2,11 +2,13 @@
 # bintelx/kernel/RoleTemplateService.php
 namespace bX;
 
+use bX\Entity\Graph;
+
 /**
  * RoleTemplateService - Auto-asignación de roles por tipo de relación
  *
  * Define qué roles se asignan automáticamente cuando se crea una relación
- * de cierto tipo (owner, technician, doctor, supplier, etc.)
+ * de cierto tipo (owner, collaborator, customer, member, supplier)
  *
  * Prioridad de templates:
  *   1. scope_entity_id específico (template de la empresa)
@@ -283,19 +285,13 @@ class RoleTemplateService
      */
     public static function getRelationKinds(): array
     {
-        # Core relation kinds from Graph.php + common business types
+        # Los 5 relation_kinds válidos — alineados con Graph::VALID_KINDS
         return [
-            'owner' => 'Dueño/Propietario',
-            'member' => 'Miembro',
-            'technician' => 'Técnico',
-            'manager' => 'Gerente/Manager',
-            'viewer' => 'Visualizador',
-            'doctor' => 'Médico',
-            'nurse' => 'Enfermero/a',
-            'supplier' => 'Proveedor',
-            'client' => 'Cliente',
-            'auditor' => 'Auditor',
-            'consultant' => 'Consultor'
+            Graph::KIND_OWNER => 'Propietario',
+            Graph::KIND_COLLABORATOR => 'Colaborador',
+            Graph::KIND_CUSTOMER => 'Cliente',
+            Graph::KIND_MEMBER => 'Miembro',
+            Graph::KIND_SUPPLIER => 'Proveedor',
         ];
     }
 }
