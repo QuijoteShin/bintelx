@@ -74,7 +74,7 @@ class ACL
      *
      * @param int $profileId Profile receiving roles
      * @param int $entityId Entity the relationship is with
-     * @param string $relationKind Relation type (owner, technician, etc.)
+     * @param string $relationKind Relation type (owner, collaborator, customer, member, supplier)
      * @param int $scopeEntityId Tenant scope
      * @param int|null $actorProfileId Who triggered this (for audit)
      * @return array ['applied' => [], 'skipped' => [], 'packages_expanded' => []]
