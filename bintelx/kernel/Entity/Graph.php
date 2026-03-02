@@ -13,7 +13,7 @@ use bX\TenantPositionService;
  *
  * Manages the entity_relationships table as a graph structure:
  * - Nodes: entities, profiles
- * - Edges: relationships with kind (owner, member, supplier, customer, contact, partner, etc.)
+ * - Edges: relationships with kind (owner, collaborator, customer, member, supplier)
  *
  * All methods follow Bintelx signature: (array $data, array $options, ?callable $callback)
  * Multi-tenant: uses Tenant helper for scope filtering
@@ -22,12 +22,21 @@ use bX\TenantPositionService;
  */
 class Graph
 {
-    # Relation kinds constants
+    # Relation kinds — los 5 tipos válidos de relación entity↔profile
     public const KIND_OWNER = 'owner';
+    public const KIND_COLLABORATOR = 'collaborator';
+    public const KIND_CUSTOMER = 'customer';
     public const KIND_MEMBER = 'member';
-    public const KIND_TECHNICIAN = 'technician';
-    public const KIND_MANAGER = 'manager';
-    public const KIND_VIEWER = 'viewer';
+    public const KIND_SUPPLIER = 'supplier';
+
+    # Whitelist para validación
+    public const VALID_KINDS = [
+        self::KIND_OWNER,
+        self::KIND_COLLABORATOR,
+        self::KIND_CUSTOMER,
+        self::KIND_MEMBER,
+        self::KIND_SUPPLIER,
+    ];
 
     # Status constants
     public const STATUS_ACTIVE = 'active';
@@ -39,9 +48,8 @@ class Graph
      * @param array $data [
      *   'profile_id' => int (required),
      *   'entity_id' => int (required),
-     *   'relation_kind' => string (default: 'member'),
+     *   'relation_kind' => string (default: 'member', must be one of VALID_KINDS),
      *   'position_id' => int|null (if set, overrides relation_kind + applies position's package),
-     *   'role_code' => string|null,
      *   'grant_mode' => string|null,
      *   'relationship_label' => string|null
      * ]
@@ -58,7 +66,6 @@ class Graph
         $entityId = (int)($data['entity_id'] ?? 0);
         $kind = $data['relation_kind'] ?? self::KIND_MEMBER;
         $positionId = !empty($data['position_id']) ? (int)$data['position_id'] : null;
-        $roleCode = $data['role_code'] ?? null;
         $grantMode = $data['grant_mode'] ?? null;
         $label = $data['relationship_label'] ?? null;
 
@@ -79,6 +86,11 @@ class Graph
             $positionPackageCode = $resolved['package_code'];
         }
 
+        # Validar relation_kind contra whitelist (después de posible override por position)
+        if (!in_array($kind, self::VALID_KINDS, true)) {
+            return ['success' => false, 'message' => "Invalid relation_kind: {$kind}"];
+        }
+
         # Bootstrap: scope explícito sin Tenant::validateForWrite (Account creation, sin ctx aún)
         if (!$bootstrap) {
             $tenant = Tenant::validateForWrite($options);
@@ -94,16 +106,15 @@ class Graph
         }
 
         $sql = "INSERT INTO entity_relationships
-                (profile_id, entity_id, scope_entity_id, relation_kind, role_code, grant_mode, relationship_label, status, created_by_profile_id)
+                (profile_id, entity_id, scope_entity_id, relation_kind, grant_mode, relationship_label, status, created_by_profile_id)
                 VALUES
-                (:profile_id, :entity_id, :scope_entity_id, :kind, :role_code, :grant_mode, :label, 'active', :created_by)";
+                (:profile_id, :entity_id, :scope_entity_id, :kind, :grant_mode, :label, 'active', :created_by)";
 
         $params = [
             ':profile_id' => $profileId,
             ':entity_id' => $entityId,
             ':scope_entity_id' => $scope,
             ':kind' => $kind,
-            ':role_code' => $roleCode,
             ':grant_mode' => $grantMode,
             ':label' => $label,
             ':created_by' => $data['created_by'] ?? (Profile::ctx()->profileId ?: null)
@@ -389,7 +400,7 @@ class Graph
                 WHERE er.relation_kind = :kind";
         $params = [':kind' => $kind];
 
-        # For findByKind, entity_id = scope (technicians OF a company)
+        # For findByKind, entity_id = scope (collaborators OF a company)
         if ($scope !== null) {
             $sql .= " AND er.entity_id = :scope_id";
             $params[':scope_id'] = $scope;
@@ -438,9 +449,14 @@ class Graph
             return ['success' => false, 'message' => $tenant['error']];
         }
 
-        $allowedFields = ['relation_kind', 'role_code', 'grant_mode', 'relationship_label', 'status'];
+        $allowedFields = ['relation_kind', 'grant_mode', 'relationship_label', 'status'];
         $sets = [];
         $params = [':id' => $relationshipId];
+
+        # Validar relation_kind si viene en la data
+        if (isset($data['relation_kind']) && !in_array($data['relation_kind'], self::VALID_KINDS, true)) {
+            return ['success' => false, 'message' => "Invalid relation_kind: {$data['relation_kind']}"];
+        }
 
         foreach ($data as $field => $value) {
             if (in_array($field, $allowedFields, true)) {
